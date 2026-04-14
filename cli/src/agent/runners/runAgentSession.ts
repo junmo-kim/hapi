@@ -1,4 +1,5 @@
-import type { AgentState, SessionPermissionMode } from '@/api/types';
+import type { AgentState, Session, SessionPermissionMode } from '@/api/types';
+import type { ApiSessionClient } from '@/api/apiSession';
 import { logger } from '@/ui/logger';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { hashObject } from '@/utils/deterministicJson';
@@ -27,21 +28,27 @@ function emitReadyIfIdle(props: {
     props.sendReady();
 }
 
-export async function runAgentSession(opts: {
+/**
+ * Dependencies that can be pre-created and injected (e.g. from the runner process).
+ * When provided, the session loop reuses these instead of creating its own.
+ */
+export type AgentSessionDeps = {
+    session: ApiSessionClient;
+    sessionInfo: Session;
     agentType: string;
-    startedBy?: 'runner' | 'terminal';
+    workingDirectory: string;
     permissionMode?: SessionPermissionMode;
-}): Promise<void> {
-    const workingDirectory = getInvokedCwd();
-    const initialState: AgentState = {
-        controlledByUser: false
-    };
-    const { session, sessionInfo } = await bootstrapSession({
-        flavor: opts.agentType,
-        startedBy: opts.startedBy ?? 'terminal',
-        workingDirectory,
-        agentState: initialState
-    });
+    /** External abort signal – when aborted the session loop exits gracefully. */
+    abortSignal?: AbortSignal;
+}
+
+/**
+ * Core agent session loop that can run with pre-created dependencies.
+ * This is the shared implementation used by both the standalone CLI entry
+ * point (`runAgentSession`) and the runner's session worker.
+ */
+export async function runAgentSessionWithDeps(deps: AgentSessionDeps): Promise<void> {
+    const { session, sessionInfo, agentType, workingDirectory } = deps;
 
     session.updateAgentState((currentState) => ({
         ...currentState,
@@ -55,9 +62,9 @@ export async function runAgentSession(opts: {
         messageQueue.push(formattedText, {});
     });
 
-    let currentPermissionMode: SessionPermissionMode = opts.permissionMode ?? sessionInfo.permissionMode ?? 'default';
+    let currentPermissionMode: SessionPermissionMode = deps.permissionMode ?? sessionInfo.permissionMode ?? 'default';
 
-    const backend: AgentBackend = AgentRegistry.create(opts.agentType);
+    const backend: AgentBackend = AgentRegistry.create(agentType);
     await backend.initialize();
 
     const permissionAdapter = new PermissionAdapter(session, backend, () => currentPermissionMode);
@@ -82,6 +89,17 @@ export async function runAgentSession(opts: {
     let shouldExit = false;
     let waitAbortController: AbortController | null = null;
 
+    // Listen for external abort signal (e.g. from session worker stop)
+    const onAbort = () => {
+        shouldExit = true;
+        if (waitAbortController) {
+            waitAbortController.abort();
+        }
+    };
+    if (deps.abortSignal) {
+        deps.abortSignal.addEventListener('abort', onAbort, { once: true });
+    }
+
     const syncKeepAlive = () => {
         session.keepAlive(thinking, 'remote', {
             permissionMode: currentPermissionMode
@@ -90,7 +108,7 @@ export async function runAgentSession(opts: {
 
     const resolvePermissionMode = (value: unknown): SessionPermissionMode => {
         const parsed = PermissionModeSchema.safeParse(value);
-        if (!parsed.success || !isPermissionModeAllowedForFlavor(parsed.data, opts.agentType)) {
+        if (!parsed.success || !isPermissionModeAllowedForFlavor(parsed.data, agentType)) {
             throw new Error('Invalid permission mode');
         }
         return parsed.data as SessionPermissionMode;
@@ -192,6 +210,10 @@ export async function runAgentSession(opts: {
             }
         }
     } finally {
+        // Clean up abort signal listener to prevent leaks
+        if (deps.abortSignal) {
+            deps.abortSignal.removeEventListener('abort', onAbort);
+        }
         clearInterval(keepAliveInterval);
         await permissionAdapter.cancelAll('Session ended');
         session.sendSessionDeath();
@@ -200,4 +222,33 @@ export async function runAgentSession(opts: {
         await backend.disconnect();
         happyServer.stop();
     }
+}
+
+/**
+ * Standalone entry point – bootstraps a fresh session then runs the loop.
+ * Used when `hapi claude` is invoked as a separate CLI process.
+ */
+export async function runAgentSession(opts: {
+    agentType: string;
+    startedBy?: 'runner' | 'terminal';
+    permissionMode?: SessionPermissionMode;
+}): Promise<void> {
+    const workingDirectory = getInvokedCwd();
+    const initialState: AgentState = {
+        controlledByUser: false
+    };
+    const { session, sessionInfo } = await bootstrapSession({
+        flavor: opts.agentType,
+        startedBy: opts.startedBy ?? 'terminal',
+        workingDirectory,
+        agentState: initialState
+    });
+
+    await runAgentSessionWithDeps({
+        session,
+        sessionInfo,
+        agentType: opts.agentType,
+        workingDirectory,
+        permissionMode: opts.permissionMode,
+    });
 }

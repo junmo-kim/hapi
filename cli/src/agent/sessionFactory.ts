@@ -26,6 +26,10 @@ export type SessionBootstrapOptions = {
     modelReasoningEffort?: string
     effort?: string
     metadataOverrides?: Partial<Metadata>
+    /** Pre-existing ApiClient to reuse (e.g. from runner process) */
+    existingApi?: ApiClient
+    /** Pre-existing machineId to reuse (e.g. from runner process) */
+    existingMachineId?: string
 }
 
 export type SessionBootstrapResult = {
@@ -113,13 +117,17 @@ export async function bootstrapSession(options: SessionBootstrapOptions): Promis
     const sessionTag = options.tag ?? randomUUID()
     const agentState = options.agentState === undefined ? {} : options.agentState
 
-    const api = await ApiClient.create()
+    const api = options.existingApi ?? await ApiClient.create()
 
-    const machineId = await getMachineIdOrExit()
-    await api.getOrCreateMachine({
-        machineId,
-        metadata: buildMachineMetadata()
-    })
+    const machineId = options.existingMachineId ?? await getMachineIdOrExit()
+    if (!options.existingApi || !options.existingMachineId) {
+        // Register machine unless both ApiClient and machineId are provided
+        // (which means the caller already registered the machine).
+        await api.getOrCreateMachine({
+            machineId,
+            metadata: buildMachineMetadata()
+        })
+    }
 
     const metadata = buildSessionMetadata({
         flavor: options.flavor,
