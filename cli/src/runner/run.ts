@@ -22,6 +22,7 @@ import { createWorktree, removeWorktree, type WorktreeInfo } from './worktree';
 import { join } from 'path';
 import { buildMachineMetadata } from '@/agent/sessionFactory';
 import { hashRunnerCliApiToken } from './runnerIdentity';
+import { ensureWorker, workerCreateSession, workerStopSession, workerShutdown, isWorkerAlive } from './sessionWorkerClient';
 
 export async function startRunner(): Promise<void> {
   // We don't have cleanup function at the time of server construction
@@ -193,6 +194,27 @@ export async function startRunner(): Promise<void> {
     // Spawn a new session (sessionId reserved for future --resume functionality)
     const spawnSession = async (options: SpawnSessionOptions): Promise<SpawnSessionResult> => {
       logger.debugLargeJson('[RUNNER RUN] Spawning session', options);
+
+      // ── Worker path ─────────────────────────────────────────────
+      // For simple sessions (no worktree, no resume, no token),
+      // delegate to the Session Worker for shared-runtime memory savings.
+      if (canDelegateToWorker(options)) {
+        const workerResult = await trySpawnViaWorker(options, reportSpawnOutcomeToHub);
+        if (workerResult) {
+          // Track worker sessions so they appear in runner listing
+          if (workerResult.type === 'success') {
+            const virtualPid = -(Date.now() % 1_000_000_000);
+            pidToTrackedSession.set(virtualPid, {
+              startedBy: 'runner',
+              happySessionId: workerResult.sessionId,
+              pid: virtualPid,
+              workerManaged: true,
+            });
+          }
+          return workerResult;
+        }
+        // Worker unavailable – fall through to per-process spawn
+      }
 
       const { directory, sessionId, machineId, approvedNewDirectoryCreation = true } = options;
       const agent = options.agent ?? 'claude';
@@ -604,6 +626,15 @@ export async function startRunner(): Promise<void> {
         }
       }
 
+      // Try Worker if session not found locally
+      if (isWorkerAlive()) {
+        logger.debug(`[RUNNER RUN] Session ${sessionId} not found locally, trying worker`);
+        void workerStopSession(sessionId).then(ok => {
+          if (ok) logger.debug(`[RUNNER RUN] Worker stopped session ${sessionId}`);
+        }).catch(() => {});
+        return true;
+      }
+
       logger.debug(`[RUNNER RUN] Session ${sessionId} not found`);
       return false;
     };
@@ -742,7 +773,9 @@ export async function startRunner(): Promise<void> {
       }
 
       // Prune stale sessions
-      for (const [pid, _] of pidToTrackedSession.entries()) {
+      for (const [pid, trackedSession] of pidToTrackedSession.entries()) {
+        // Worker-managed sessions are tracked by the worker; skip PID-based pruning
+        if (trackedSession.workerManaged) continue;
         if (!isProcessAlive(pid)) {
           logger.debug(`[RUNNER RUN] Removing stale session with PID ${pid} (process no longer exists)`);
           pidToTrackedSession.delete(pid);
@@ -847,9 +880,64 @@ export async function startRunner(): Promise<void> {
 
     // Wait for shutdown request
     const shutdownRequest = await resolvesWhenShutdownRequested;
+
+    // Stop Worker if alive before shutting down
+    if (isWorkerAlive()) {
+      logger.debug('[RUNNER RUN] Stopping session worker before shutdown');
+      await workerShutdown().catch(() => {});
+    }
+
     await cleanupAndShutdown(shutdownRequest.source, shutdownRequest.errorMessage);
   } catch (error) {
     logger.debug('[RUNNER RUN][FATAL] Failed somewhere unexpectedly - exiting with code 1', error);
     process.exit(1);
   }
+}
+
+/**
+ * Check whether a session request can be delegated to the Worker.
+ * Worktree sessions, resume, and token-based auth require per-process spawn.
+ */
+export function canDelegateToWorker(options: SpawnSessionOptions): boolean {
+    if (options.sessionType === 'worktree') return false;
+    if (options.resumeSessionId) return false;
+    if (options.token) return false;
+    return true;
+}
+
+/**
+ * Try to create a session via the Worker. Returns SpawnSessionResult
+ * on success, or null if the Worker is unavailable (caller falls through
+ * to per-process spawn).
+ */
+async function trySpawnViaWorker(
+    options: SpawnSessionOptions,
+    reportSpawnOutcomeToHub: ((outcome: { type: 'success' } | { type: 'error'; details: { message: string } }) => void) | null,
+): Promise<SpawnSessionResult | null> {
+    const workerReady = await ensureWorker();
+    if (!workerReady) {
+        logger.debug('[RUNNER RUN] Worker not available, falling back to per-process spawn');
+        return null;
+    }
+
+    const result = await workerCreateSession({
+        directory: options.directory,
+        sessionId: options.sessionId,
+        approvedNewDirectoryCreation: options.approvedNewDirectoryCreation,
+        agent: options.agent,
+        model: options.model,
+        effort: options.effort,
+        modelReasoningEffort: options.modelReasoningEffort,
+        yolo: options.yolo,
+    });
+
+    if ('error' in result) {
+        logger.debug(`[RUNNER RUN] Worker session creation failed: ${result.error}`);
+        reportSpawnOutcomeToHub?.({ type: 'error', details: { message: result.error } });
+        return { type: 'error', errorMessage: result.error };
+    }
+
+    logger.debug(`[RUNNER RUN] Worker created session ${result.sessionId}`);
+    reportSpawnOutcomeToHub?.({ type: 'success' });
+    return { type: 'success', sessionId: result.sessionId };
 }

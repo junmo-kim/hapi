@@ -10,6 +10,7 @@ import { getLatestRunnerLog } from '@/ui/logger'
 import { spawnHappyCLI } from '@/utils/spawnHappyCLI'
 import { runDoctorCommand } from '@/ui/doctor'
 import { initializeToken } from '@/ui/tokenInit'
+import { startSessionWorker } from '@/runner/sessionWorker'
 import type { CommandDefinition } from './types'
 
 export const runnerCommand: CommandDefinition = {
@@ -79,6 +80,13 @@ export const runnerCommand: CommandDefinition = {
         if (runnerSubcommand === 'start-sync') {
             await initializeToken()
             await startRunner()
+            process.exit(0)
+        }
+
+        if (runnerSubcommand === 'worker-start') {
+            await initializeToken()
+            await startSessionWorker()
+            // startSessionWorker runs until shutdown
             process.exit(0)
         }
 

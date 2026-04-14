@@ -14,6 +14,8 @@ export interface TrackedSession {
   happySessionMetadataFromLocalWebhook?: Metadata;
   pid: number;
   childProcess?: ChildProcess;
+  /** Set when the session is hosted by the Session Worker process */
+  workerManaged?: boolean;
   error?: string;
   directoryCreated?: boolean;
   message?: string;
