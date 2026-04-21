@@ -1,9 +1,17 @@
 import { geminiLocal } from './geminiLocal';
 import { GeminiSession } from './session';
-import { createGeminiSessionScanner } from './utils/sessionScanner';
+import { createGeminiSessionScanner, GeminiTranscriptMessage } from './utils/sessionScanner';
 import type { PermissionMode } from './types';
 import { randomUUID } from 'node:crypto';
 import { BaseLocalLauncher } from '@/modules/common/launcher/BaseLocalLauncher';
+
+function isToolCall(message: GeminiTranscriptMessage): message is GeminiTranscriptMessage & { id: string; type: 'tool-call'; tool_name: string; tool_input: unknown } {
+    return message.type === 'tool-call' && typeof message.id === 'string' && typeof message.tool_name === 'string' && 'tool_input' in message;
+}
+
+function isToolResult(message: GeminiTranscriptMessage): message is GeminiTranscriptMessage & { id: string; type: 'tool-result'; tool_use_id: string; content: unknown; is_error: boolean } {
+    return message.type === 'tool-result' && typeof message.id === 'string' && typeof message.tool_use_id === 'string' && 'content' in message && typeof message.is_error === 'boolean';
+}
 
 type GeminiScannerHandle = Awaited<ReturnType<typeof createGeminiSessionScanner>>;
 
@@ -53,11 +61,37 @@ export async function geminiLocalLauncher(
 
     let scanner: GeminiScannerHandle | null = null;
 
-    const handleTranscriptMessage = (message: { type?: string; content?: string }) => {
+    const handleTranscriptMessage = (message: GeminiTranscriptMessage) => {
         if (message.type === 'user' && typeof message.content === 'string') {
             session.sendUserMessage(message.content);
             return;
         }
+
+        if (isToolCall(message)) {
+            session.sendAgentMessage({
+                type: 'tool-call',
+                id: message.id,
+                name: message.tool_name,
+                input: message.tool_input,
+                description: null,
+                uuid: randomUUID(),
+                parentUUID: null,
+            });
+            return;
+        }
+
+        if (isToolResult(message)) {
+            session.sendAgentMessage({
+                type: 'tool-result',
+                tool_use_id: message.tool_use_id,
+                content: message.content,
+                is_error: message.is_error,
+                uuid: randomUUID(),
+                parentUUID: null,
+            });
+            return;
+        }
+
         if (message.type === 'gemini' && typeof message.content === 'string') {
             session.sendAgentMessage({
                 type: 'message',

@@ -7,7 +7,7 @@ import {
     SessionFileScanStats
 } from '@/modules/common/session/BaseSessionScanner';
 
-type GeminiTranscriptMessage = {
+export type GeminiTranscriptMessage = {
     id?: string;
     type?: string;
     content?: string;
