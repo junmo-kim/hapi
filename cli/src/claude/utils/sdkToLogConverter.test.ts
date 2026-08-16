@@ -802,6 +802,172 @@ describe('SDKToLogConverter', () => {
         })
     })
 
+    describe('Measured context window seed (get_context_usage)', () => {
+        function makeAssistantMessage(): SDKAssistantMessage {
+            return {
+                type: 'assistant',
+                message: {
+                    role: 'assistant',
+                    content: [{ type: 'text', text: 'hi' }],
+                    usage: {
+                        input_tokens: 10,
+                        output_tokens: 20,
+                        cache_creation_input_tokens: 0,
+                        cache_read_input_tokens: 0,
+                        service_tier: 'standard'
+                    }
+                } as any
+            }
+        }
+
+        it('needsContextWindowSeed returns the cache key before any init/result for this model', () => {
+            expect(converter.needsContextWindowSeed('claude-sonnet-5')).toBe('claude-sonnet-5')
+        })
+
+        it('needsContextWindowSeed returns null once the turn-1 heuristic has seeded the key', () => {
+            converter.convert({
+                type: 'system', subtype: 'init', session_id: 's', model: 'claude-sonnet-5'
+            } as SDKSystemMessage)
+            expect(converter.needsContextWindowSeed('claude-sonnet-5')).toBeNull()
+        })
+
+        it('a measured seed overrides the 200k heuristic for a bare (non-[1m]) model before any result arrives', () => {
+            // bare sonnet heuristically seeds 200k (no [1m] suffix), but its real
+            // window is 967k -- this is exactly the under-seed the CLI catalog
+            // measurement is meant to correct.
+            const key = converter.needsContextWindowSeed('claude-sonnet-5')
+            converter.convert({
+                type: 'system', subtype: 'init', session_id: 's', model: 'claude-sonnet-5'
+            } as SDKSystemMessage)
+
+            const beforeMeasured = converter.convert(makeAssistantMessage()) as any
+            expect(beforeMeasured?.message?.usage?.context_window).toBe(200_000)
+
+            converter.seedMeasuredContextWindow(key!, 967_000)
+
+            const afterMeasured = converter.convert(makeAssistantMessage()) as any
+            expect(afterMeasured?.message?.usage?.context_window).toBe(967_000)
+        })
+
+        it('a measured seed never overwrites a value result.modelUsage already confirmed (ground truth wins regardless of arrival order)', () => {
+            const key = converter.needsContextWindowSeed('claude-sonnet-5')
+            converter.convert({
+                type: 'system', subtype: 'init', session_id: 's', model: 'claude-sonnet-5'
+            } as SDKSystemMessage)
+
+            const resultMsg: SDKResultMessage = {
+                type: 'result',
+                subtype: 'success',
+                num_turns: 1,
+                total_cost_usd: 0,
+                duration_ms: 1,
+                duration_api_ms: 1,
+                is_error: false,
+                session_id: 's',
+                modelUsage: {
+                    'claude-sonnet-5': { contextWindow: 967_000 }
+                }
+            }
+            converter.convert(resultMsg)
+
+            // A get_context_usage response resolving late (after the result already
+            // confirmed the real value) must not un-correct it, even with a
+            // different number -- this simulates a stale/slow measurement racing
+            // behind an already-authoritative result.
+            converter.seedMeasuredContextWindow(key!, 500_000)
+
+            const afterLateSeed = converter.convert(makeAssistantMessage()) as any
+            expect(afterLateSeed?.message?.usage?.context_window).toBe(967_000)
+        })
+
+        it('ignores a non-positive or non-finite measured maxTokens (no-op, not a crash)', () => {
+            const key = converter.needsContextWindowSeed('claude-sonnet-5')
+            converter.convert({
+                type: 'system', subtype: 'init', session_id: 's', model: 'claude-sonnet-5'
+            } as SDKSystemMessage)
+
+            converter.seedMeasuredContextWindow(key!, 0)
+            converter.seedMeasuredContextWindow(key!, -1)
+            converter.seedMeasuredContextWindow(key!, Number.NaN)
+
+            const stillHeuristic = converter.convert(makeAssistantMessage()) as any
+            expect(stillHeuristic?.message?.usage?.context_window).toBe(200_000)
+        })
+
+        it('respects the same fable/fable[1m] key-folding as the heuristic seed', () => {
+            converter.updateSelectedModel('fable[1m]')
+            const key = converter.needsContextWindowSeed('claude-fable-5')
+            converter.convert({
+                type: 'system', subtype: 'init', session_id: 's', model: 'claude-fable-5'
+            } as SDKSystemMessage)
+
+            // Model id arrives bare from the CLI even for the 1M preset; the
+            // measured seed call site (claudeRemote.ts) passes back the exact
+            // key needsContextWindowSeed() returned at fire time, so it
+            // resolves to the same folded "claude-fable-5[1m]" entry
+            // regardless of what selectedModel is by the time this resolves.
+            converter.seedMeasuredContextWindow(key!, 1_000_000)
+
+            const assistantLog = converter.convert({
+                type: 'assistant',
+                message: { role: 'assistant', model: 'claude-fable-5', content: [{ type: 'text', text: 'a' }], usage: { input_tokens: 10, output_tokens: 20 } }
+            } as any) as any
+            expect(assistantLog?.message?.usage?.context_window).toBe(1_000_000)
+        })
+
+        it('regression: a mid-flight model switch during the get_context_usage round trip must not land the measurement on the wrong sibling key', () => {
+            // Reproduces the exact race the fire-time key fix closes: a
+            // fable[1m] session inits with the CLI's bare "claude-fable-5"
+            // id, so the key folds in "[1m]" via selectedModel at FIRE time
+            // (computeContextWindowKey is not pure). Before the measurement
+            // resolves, the user switches to bare fable -- selectedModel now
+            // says otherwise. seedMeasuredContextWindow() must use the key
+            // captured at fire time, not recompute it from the model id
+            // (which would now resolve to bare fable's key instead).
+            converter.updateSelectedModel('fable[1m]')
+            const key = converter.needsContextWindowSeed('claude-fable-5')
+            expect(key).toBe('claude-fable-5[1m]')
+            converter.convert({
+                type: 'system', subtype: 'init', session_id: 's', model: 'claude-fable-5'
+            } as SDKSystemMessage)
+
+            // User switches to bare fable before the original request's
+            // response has resolved.
+            converter.updateSelectedModel('fable')
+            converter.convert({
+                type: 'system', subtype: 'init', session_id: 's', model: 'claude-fable-5'
+            } as SDKSystemMessage)
+            const bareFableBefore = converter.convert({
+                type: 'assistant',
+                message: { role: 'assistant', model: 'claude-fable-5', content: [{ type: 'text', text: 'a' }], usage: { input_tokens: 1, output_tokens: 1 } }
+            } as any) as any
+            expect(bareFableBefore?.message?.usage?.context_window).toBe(200_000)
+
+            // The stale response for the ORIGINAL fable[1m] request resolves
+            // now, using the key captured at fire time.
+            converter.seedMeasuredContextWindow(key!, 1_000_000)
+
+            // Bare fable's entry must be untouched by that measurement.
+            const bareFableAfter = converter.convert({
+                type: 'assistant',
+                message: { role: 'assistant', model: 'claude-fable-5', content: [{ type: 'text', text: 'b' }], usage: { input_tokens: 1, output_tokens: 1 } }
+            } as any) as any
+            expect(bareFableAfter?.message?.usage?.context_window).toBe(200_000)
+
+            // Switching back to fable[1m] must read the measurement, correctly
+            // routed to its own key throughout.
+            converter.updateSelectedModel('fable[1m]')
+            converter.convert({
+                type: 'system', subtype: 'init', session_id: 's', model: 'claude-fable-5'
+            } as SDKSystemMessage)
+            const fable1mLog = converter.convert({
+                type: 'assistant',
+                message: { role: 'assistant', model: 'claude-fable-5', content: [{ type: 'text', text: 'c' }], usage: { input_tokens: 1, output_tokens: 1 } }
+            } as any) as any
+            expect(fable1mLog?.message?.usage?.context_window).toBe(1_000_000)
+        })
+    })
+
     describe('Parent-child relationships', () => {
         it('should track parent UUIDs across messages', () => {
             const msg1: SDKUserMessage = {
