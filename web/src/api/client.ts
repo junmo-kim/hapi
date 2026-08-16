@@ -31,6 +31,7 @@ import type {
 } from '@/types/api'
 import type {
     AgyModelsResponse,
+    ClaudeModelsResponse,
     CodexModelsResponse,
     CursorMigrateOutcome,
     CursorMigrateToAcpRequest,
@@ -885,6 +886,12 @@ export class ApiClient {
     async getMachineOpencodeModelsForCwd(machineId: string, cwd: string): Promise<OpencodeModelsResponse> {
         return await this.request<OpencodeModelsResponse>(
             `/api/machines/${encodeURIComponent(machineId)}/opencode-models?cwd=${encodeURIComponent(cwd)}`
+        )
+    }
+
+    async getMachineClaudeModelsForCwd(machineId: string, cwd: string): Promise<ClaudeModelsResponse> {
+        return await this.request<ClaudeModelsResponse>(
+            `/api/machines/${encodeURIComponent(machineId)}/claude-models?cwd=${encodeURIComponent(cwd)}`
         )
     }
 

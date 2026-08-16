@@ -828,6 +828,36 @@ export type CursorModelsResponse = OpencodeModelsResponse
 
 export type ListCursorModelsResponse = CursorModelsResponse
 
+/** One row of the `claude` CLI's `list_models` control-protocol catalog. */
+export type ClaudeModelSummary = {
+    /** The `--model` wire value (e.g. `opus[1m]`, `sonnet`, `default`). */
+    value: string
+    displayName: string
+    /** The SDK model id this value resolves to (e.g. `claude-opus-5[1m]`). */
+    resolvedModel?: string
+    /**
+     * Absent/empty means the model does not support `--effort` (e.g.
+     * haiku). This per-row contract only holds once it's known the running
+     * claude CLI reports this field at all -- older CLIs omit it from every
+     * row, which looks identical to "no levels" on its own. Callers should
+     * decide whether a given row's absence means "unsupported" by checking
+     * whether *any other row in the same `models` response* carries the
+     * field (see `catalogReportsEffortLevels()` in
+     * web/src/components/AssistantChat/claudeModelOptions.ts); a catalog
+     * where nothing carries it is unconfirmed, not evidence every model has
+     * zero levels.
+     */
+    supportedEffortLevels?: string[]
+}
+
+export type ClaudeModelsResponse = {
+    success: boolean
+    models?: ClaudeModelSummary[]
+    error?: string
+}
+
+export type ListClaudeModelsResponse = ClaudeModelsResponse
+
 /** Maps thinking levels to provider-specific values. null = unsupported. */
 export type PiThinkingLevelMap = Partial<Record<string, string | null>>
 
