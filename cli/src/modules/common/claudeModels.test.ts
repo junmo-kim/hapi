@@ -84,7 +84,8 @@ describe('listClaudeModelsForCwd', () => {
             '--input-format', 'stream-json',
             '--output-format', 'stream-json',
             '--verbose',
-            '--strict-mcp-config'
+            '--strict-mcp-config',
+            '--setting-sources', 'user'
         ], expect.objectContaining({
             cwd: '/home/user/project',
             // Matches every other claude spawn in this repo (query.ts,
@@ -118,6 +119,24 @@ describe('listClaudeModelsForCwd', () => {
         // -p` invocation can spawn its own subprocesses that would otherwise
         // be orphaned.
         expect(killProcessByChildProcessMock).toHaveBeenCalledWith(child, true)
+    })
+
+    it('excludes project .claude/settings*.json from the probe so a project SessionStart hook cannot run', async () => {
+        const child = fakeChild()
+        spawnMock.mockReturnValue(child)
+
+        const resultPromise = listClaudeModelsForCwd('/home/user/project')
+
+        const [, spawnArgs] = spawnMock.mock.calls[0] as [string, string[]]
+        const flagIndex = spawnArgs.indexOf('--setting-sources')
+        expect(flagIndex).toBeGreaterThanOrEqual(0)
+        // 'user' (not '') -- the probe still needs user-level settings to
+        // resolve a catalog in auth-dependent setups; only the project
+        // scope, which an arbitrary un-trusted cwd controls, is excluded.
+        expect(spawnArgs[flagIndex + 1]).toBe('user')
+
+        child.stdout.emit('data', Buffer.from(controlResponseLine(SAMPLE_MODELS, capturedRequestId(child))))
+        await resultPromise
     })
 
     it('caches a successful response for the cwd and does not spawn again within the TTL', async () => {

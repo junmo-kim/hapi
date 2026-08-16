@@ -79,7 +79,15 @@ function runClaudeListModelsProbe(cwd: string): Promise<ListClaudeModelsForCwdRe
             // No prompt is ever sent and no MCP servers are configured for
             // this call, so there is no reason to let the workspace's own
             // .mcp.json boot project MCP servers just to answer list_models.
-            '--strict-mcp-config'
+            '--strict-mcp-config',
+            // This probe can run against an arbitrary cwd before the user
+            // ever starts a session there (e.g. NewSession re-probes on every
+            // directory change), so it must not load that directory's own
+            // .claude/settings*.json -- a project SessionStart hook would
+            // otherwise get to run arbitrary commands just from opening the
+            // model picker. 'user' (not '') keeps user-level settings so
+            // auth-dependent setups still resolve a catalog.
+            '--setting-sources', 'user'
         ], {
             cwd,
             stdio: ['pipe', 'pipe', 'pipe'],

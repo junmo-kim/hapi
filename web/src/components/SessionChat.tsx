@@ -848,6 +848,12 @@ function SessionChatInner(props: SessionChatProps) {
     // specific running process, so it reuses the same cwd-scoped RPC
     // (useClaudeModelsForCwd) NewSession uses before a session even exists,
     // rather than a dedicated session-scoped RPC like codex/opencode/grok/copilot.
+    //
+    // Excluding controlledByUser (terminal-driven) sessions here matches the
+    // codex/grok/copilot gates above: the catalog then stays empty, so
+    // resolveClaudeSupportedEffortLevels(...) below returns undefined
+    // ("unconfirmed") and the static preset list is kept deliberately -- this
+    // is the designed unconfirmed-state fallback, not a missed gate.
     const claudeModelsState = useClaudeModelsForCwd({
         api: props.api,
         machineId: props.session.metadata?.machineId ?? null,
