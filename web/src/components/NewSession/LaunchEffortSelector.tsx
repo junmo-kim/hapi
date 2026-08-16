@@ -9,6 +9,12 @@ export function LaunchEffortSelector(props: {
     isDisabled: boolean
     onEffortChange: (value: LaunchEffort) => void
     grokOptions?: Array<{ value: string; label: string }>
+    // From the live Claude model catalog's `supportedEffortLevels` for the
+    // currently selected model, always including a leading 'auto' row (see
+    // NewSession/index.tsx's claudeEffortOptions memo -- 'auto' just omits
+    // --effort, which every model accepts). undefined = catalog
+    // unavailable/loading, use the static fallback.
+    claudeOptions?: Array<{ value: string; label: string }>
 }) {
     const { t } = useTranslation()
 
@@ -18,7 +24,7 @@ export function LaunchEffortSelector(props: {
 
     const options = props.agent === 'grok'
         ? (props.grokOptions ?? GROK_EFFORT_OPTIONS)
-        : CLAUDE_EFFORT_OPTIONS
+        : (props.claudeOptions && props.claudeOptions.length > 0 ? props.claudeOptions : CLAUDE_EFFORT_OPTIONS)
 
     return (
         <div className="flex flex-col gap-1.5 px-3 py-3">

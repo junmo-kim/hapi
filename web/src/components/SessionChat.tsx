@@ -103,6 +103,9 @@ import { buildCursorEffortPickerOptionsWithDefaultFirst } from '@/lib/cursorMode
 import { useOpencodeModels } from '@/hooks/queries/useOpencodeModels'
 import { useGrokModels } from '@/hooks/queries/useGrokModels'
 import { useCopilotModels } from '@/hooks/queries/useCopilotModels'
+import { useClaudeModelsForCwd } from '@/hooks/queries/useClaudeModelsForCwd'
+import { findCatalogRowFor, getClaudeComposerModelOptions, resolveClaudeComposerWireValue, resolveClaudeSupportedEffortLevels } from '@/components/AssistantChat/claudeModelOptions'
+import { CLAUDE_EFFORT_LABELS, type ClaudeEffortLevel } from '@hapi/protocol'
 import { useGrokReasoningEffortOptions } from '@/hooks/queries/useGrokReasoningEffortOptions'
 import { usePiModels } from '@/hooks/queries/usePiModels'
 import { useOpencodeReasoningEffortOptions } from '@/hooks/queries/useOpencodeReasoningEffortOptions'
@@ -841,6 +844,71 @@ function SessionChatInner(props: SessionChatProps) {
             ]
             : undefined
     ), [agentFlavor, copilotModelsState.availableModels])
+    // Claude's catalog is account/org-scoped rather than tied to this
+    // specific running process, so it reuses the same cwd-scoped RPC
+    // (useClaudeModelsForCwd) NewSession uses before a session even exists,
+    // rather than a dedicated session-scoped RPC like codex/opencode/grok/copilot.
+    const claudeModelsState = useClaudeModelsForCwd({
+        api: props.api,
+        machineId: props.session.metadata?.machineId ?? null,
+        cwd: props.session.metadata?.path ?? null,
+        enabled: agentFlavor === 'claude' && props.session.active && !controlledByUser
+    })
+    const claudeModelOptions = useMemo(() => (
+        agentFlavor === 'claude' && claudeModelsState.availableModels.length > 0
+            // getClaudeComposerModelOptions already builds a complete,
+            // finalized list (replaces the static presets, dedupes the
+            // current model against resolvedModel, labels legacy [1m]
+            // aliases) -- getModelOptionsForFlavor's generic customOptions
+            // passthrough for claude relies on that being true.
+            ? getClaudeComposerModelOptions(props.session.model, claudeModelsState.availableModels)
+            : undefined
+    ), [agentFlavor, claudeModelsState.availableModels, props.session.model])
+    // The stored session.model can be a resolved SDK id (e.g.
+    // "claude-opus-5[1m]") that the catalog only advertises indirectly via a
+    // row's `resolvedModel` field -- claudeModelOptions above already dedupes
+    // against that when building the options *array*, but HappyComposer's
+    // `model` prop drives selection *display* (isSelected) and Ctrl/Cmd+M
+    // cycling by comparing against each row's raw `value`. Passing the raw
+    // resolved id through would match no row: nothing shows checked, and a
+    // "not found" cycle clears the pin instead of advancing it. Resolve to
+    // the catalog's own wire value (e.g. "opus[1m]") so both consumers key
+    // off a value that actually exists in the rendered list.
+    const claudeComposerModelValue = useMemo(() => (
+        agentFlavor === 'claude'
+            ? resolveClaudeComposerWireValue(props.session.model, claudeModelsState.availableModels)
+            : props.session.model
+    ), [agentFlavor, claudeModelsState.availableModels, props.session.model])
+    // Same "which catalog row is selected" lookup NewSession/index.tsx uses
+    // for its effort gating (hostile-review R3-7 unification), driven off
+    // the wire value above so it agrees with what the composer/StatusBar
+    // actually show as selected.
+    const claudeSelectedModelSummary = useMemo(
+        () => agentFlavor === 'claude'
+            ? findCatalogRowFor(claudeComposerModelValue, claudeModelsState.availableModels)
+            : undefined,
+        [agentFlavor, claudeComposerModelValue, claudeModelsState.availableModels]
+    )
+    // haiku (and any future model the catalog reports without
+    // supportedEffortLevels) has no valid --effort value at all, so this can
+    // legitimately resolve to an empty array once the catalog has loaded --
+    // that's different from "no data yet", which HappyComposer's gate must
+    // fall back from instead of rendering zero options as an empty picker
+    // (round 3). resolveClaudeSupportedEffortLevels handles the round-4
+    // correction to that: a single row's absence of the field is ambiguous
+    // by itself (haiku's real zero-support vs. an older CLI that doesn't
+    // report the field for any model), so it checks the whole catalog
+    // first and only returns a row's own levels (possibly `[]`) once some
+    // row has confirmed the CLI reports this field at all; otherwise
+    // undefined, same as "no data yet".
+    const claudeAvailableEffortOptions = useMemo(() => {
+        if (agentFlavor !== 'claude') return undefined
+        const levels = resolveClaudeSupportedEffortLevels(claudeSelectedModelSummary, claudeModelsState.availableModels)
+        return levels?.map((level) => ({
+            value: level,
+            name: CLAUDE_EFFORT_LABELS[level as ClaudeEffortLevel] ?? level
+        }))
+    }, [agentFlavor, claudeSelectedModelSummary, claudeModelsState.availableModels])
     const cursorModelsState = useCursorModels({
         api: props.api,
         sessionId: props.session.id,
@@ -1360,16 +1428,72 @@ function SessionChatInner(props: SessionChatProps) {
         }
     }, [setModelReasoningEffort, props.onRefresh, haptic])
 
-    const handleEffortChange = useCallback(async (effort: string | null) => {
+    // `silent` skips only the haptic for a reconciliation (system-initiated)
+    // reset rather than a user picking a value in the composer -- this is
+    // still a write to persisted session state, so props.onRefresh() always
+    // runs either way to keep the UI in sync with it; the thing a
+    // background correction shouldn't do is buzz the user's phone
+    // (hostile-review R4-3).
+    const handleEffortChange = useCallback(async (effort: string | null, options?: { silent?: boolean }) => {
         try {
             await setEffort(effort)
-            haptic.notification('success')
+            if (!options?.silent) {
+                haptic.notification('success')
+            }
             props.onRefresh()
         } catch (e) {
-            haptic.notification('error')
+            if (!options?.silent) {
+                haptic.notification('error')
+            }
             console.error('Failed to set effort:', e)
         }
     }, [setEffort, props.onRefresh, haptic])
+
+    // Reconcile a pinned Claude effort level once the live catalog confirms
+    // the currently selected model no longer supports it (e.g. switching to
+    // haiku, which has no supportedEffortLevels) -- mirrors NewSession's
+    // identical reconciliation effect (index.tsx) so both surfaces enforce
+    // the same rule instead of leaving the composer able to submit
+    // `effort: 'high'` alongside `--model haiku` (round 3).
+    useEffect(() => {
+        if (
+            agentFlavor !== 'claude'
+            || !props.session.active
+            || controlledByUser
+            || claudeModelsState.isLoading
+            || claudeModelsState.error
+            || !claudeSelectedModelSummary
+            || !props.session.effort
+        ) {
+            return
+        }
+        // resolveClaudeSupportedEffortLevels returns undefined when nothing
+        // in the catalog has confirmed the running claude CLI reports
+        // supportedEffortLevels at all (an older CLI predating the field --
+        // HAPI enforces no minimum claude version, see claudeRemote.ts).
+        // That's a real, ongoing case, not just a loading state, and no
+        // row's absence of the field can be trusted as "unsupported" until
+        // some row in the same catalog confirms it -- leave a stored effort
+        // alone rather than wiping it because of a CLI that hasn't
+        // confirmed anything.
+        const supportedLevels = resolveClaudeSupportedEffortLevels(claudeSelectedModelSummary, claudeModelsState.availableModels)
+        if (supportedLevels === undefined) {
+            return
+        }
+        if (!supportedLevels.includes(props.session.effort)) {
+            void handleEffortChange(null, { silent: true })
+        }
+    }, [
+        agentFlavor,
+        props.session.active,
+        controlledByUser,
+        claudeModelsState.isLoading,
+        claudeModelsState.error,
+        claudeSelectedModelSummary,
+        claudeModelsState.availableModels,
+        props.session.effort,
+        handleEffortChange
+    ])
 
     const handleServiceTierChange = useCallback(async (serviceTier: string | null) => {
         try {
@@ -1751,7 +1875,7 @@ function SessionChatInner(props: SessionChatProps) {
                         permissionMode={props.session.permissionMode}
                         collaborationMode={codexCollaborationModeSupported ? props.session.collaborationMode : undefined}
                         copilotAgentMode={agentFlavor === 'copilot' ? props.session.copilotAgentMode : undefined}
-                        model={props.session.model}
+                        model={claudeComposerModelValue}
                         modelReasoningEffort={agentFlavor === 'codex' || agentFlavor === 'opencode' ? props.session.modelReasoningEffort : undefined}
                         effort={props.session.effort}
                         agentFlavor={agentFlavor}
@@ -1772,6 +1896,8 @@ function SessionChatInner(props: SessionChatProps) {
                                             ? grokModelOptions
                                         : agentFlavor === 'copilot'
                                             ? copilotModelOptions
+                                        : agentFlavor === 'claude'
+                                            ? claudeModelOptions
                                         // Pi uses its own provider-qualified picker (piModels prop).
                                         // Feeding piModelOptions here would make the generic Ctrl/Cmd+M
                                         // cycler (getNextModelForFlavor) post a bare modelId string,
@@ -1792,7 +1918,9 @@ function SessionChatInner(props: SessionChatProps) {
                         availableEffortOptions={
                             agentFlavor === 'grok' && grokEffortState.options.length > 0
                                 ? grokEffortState.options
-                                : undefined
+                                : agentFlavor === 'claude'
+                                    ? claudeAvailableEffortOptions
+                                    : undefined
                         }
                         active={props.session.active}
                         allowSendWhenInactive

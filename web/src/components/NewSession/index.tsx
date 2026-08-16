@@ -2,7 +2,9 @@ import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, ty
 import type { ApiClient } from '@/api/client'
 import type { CodexDuplicateSessionGroup, CodexLocalSessionSummary, Machine, PiLocalSessionSummary } from '@/types/api'
 import type { CodexCollaborationMode, GrokPermissionMode, PermissionMode, CopilotAgentMode } from '@hapi/protocol'
+import { CLAUDE_EFFORT_LABELS, type ClaudeEffortLevel } from '@hapi/protocol'
 import { codexModelAdvertisesFastTier } from '@/components/AssistantChat/codexFastMode'
+import { findCatalogRowFor, getClaudeComposerModelOptions, resolveClaudeSupportedEffortLevels } from '@/components/AssistantChat/claudeModelOptions'
 import { usePlatform } from '@/hooks/usePlatform'
 import { useMachinePathsExists } from '@/hooks/useMachinePathsExists'
 import { useSpawnSession } from '@/hooks/mutations/useSpawnSession'
@@ -10,6 +12,7 @@ import { useCodexModels } from '@/hooks/queries/useCodexModels'
 import { useCursorModelsForMachine } from '@/hooks/queries/useCursorModelsForMachine'
 import { useAgyModels } from '@/hooks/queries/useAgyModels'
 import { useOpencodeModelsForCwd } from '@/hooks/queries/useOpencodeModelsForCwd'
+import { useClaudeModelsForCwd } from '@/hooks/queries/useClaudeModelsForCwd'
 import { useGrokModelsForCwd } from '@/hooks/queries/useGrokModelsForCwd'
 import { useCopilotModelsForCwd } from '@/hooks/queries/useCopilotModelsForCwd'
 import { useSessions } from '@/hooks/queries/useSessions'
@@ -547,6 +550,96 @@ export function NewSession(props: {
         cwd: deferredDirectory,
         enabled: agent === 'copilot' && deferredDirectoryExists === true
     })
+    const claudeModelsState = useClaudeModelsForCwd({
+        api: props.api,
+        machineId,
+        cwd: deferredDirectory,
+        enabled: agent === 'claude' && deferredDirectoryExists === true
+    })
+    const claudeModelOptions = useMemo(() => {
+        if (agent !== 'claude' || claudeModelsState.availableModels.length === 0) {
+            return undefined
+        }
+
+        // Delegate to the same canonical builder the composer uses instead of
+        // re-deriving the mapping here: it already does the resolvedModel-aware
+        // current-model dedup (a stored resolved SDK id like "claude-opus-5[1m]"
+        // matches the catalog's "opus[1m]" row instead of getting a second,
+        // raw-labeled row) and legacy-[1m]-alias labeling.
+        return getClaudeComposerModelOptions(
+            model === 'auto' ? null : model,
+            claudeModelsState.availableModels
+        ).map((option) => ({
+            // NewSession's ModelSelector uses the 'auto' string sentinel for
+            // "no explicit model", not null.
+            value: option.value ?? 'auto',
+            label: option.label
+        }))
+    }, [agent, claudeModelsState.availableModels, model])
+    const claudeSelectedModelSummary = useMemo(
+        // findCatalogRowFor treats 'auto' (this picker's own sentinel for "no
+        // explicit pin" -- claudeModelOptions above normalizes the catalog's
+        // `default` row onto it) the same as null/'default', so the initial/
+        // unpicked state of a new session still matches the catalog's
+        // `default` row instead of silently disabling effort gating for it
+        // (hostile-review R3-7: was a bare `.find()` here, unified now).
+        () => findCatalogRowFor(model, claudeModelsState.availableModels),
+        [claudeModelsState.availableModels, model]
+    )
+    const claudeEffortOptions = useMemo(() => {
+        if (agent !== 'claude') {
+            return undefined
+        }
+        // resolveClaudeSupportedEffortLevels returns undefined unless some
+        // row in the catalog has confirmed the running claude CLI reports
+        // supportedEffortLevels at all -- a single row's own absence of the
+        // field is ambiguous by itself (haiku's real zero-support vs. an
+        // older CLI that doesn't report the field for any model, and HAPI
+        // enforces no minimum claude version, see claudeRemote.ts).
+        // Fall back to LaunchEffortSelector's static CLAUDE_EFFORT_OPTIONS
+        // list (its own `undefined` branch) rather than asserting every
+        // model has zero support.
+        const levels = resolveClaudeSupportedEffortLevels(claudeSelectedModelSummary, claudeModelsState.availableModels)
+        if (levels === undefined) {
+            return undefined
+        }
+        // 'auto' (omit --effort entirely) is always valid regardless of what
+        // the model supports, and the effort form field defaults to 'auto' --
+        // every sibling effort list (CLAUDE_EFFORT_OPTIONS, buildGrokEffortOptions)
+        // keeps that base row unconditionally. Without it, once the catalog
+        // loads, the <select> has no option matching the current 'auto' value
+        // and silently displays a different option's label while the
+        // underlying state stays 'auto'.
+        return [
+            { value: 'auto', label: 'Auto' },
+            ...levels.map((level) => ({
+                value: level,
+                label: CLAUDE_EFFORT_LABELS[level as ClaudeEffortLevel] ?? level
+            }))
+        ]
+    }, [agent, claudeSelectedModelSummary, claudeModelsState.availableModels])
+    // Reconcile a stale non-auto effort selection when the selected model no
+    // longer supports it (e.g. switching from opus/high to haiku, which has
+    // no supportedEffortLevels) -- mirrors the Grok effort reconciliation
+    // effect below. Without this, the effort selector would silently render
+    // "Auto" (no option matches "high") while the form still submits
+    // effort: 'high' to a model that doesn't advertise it.
+    useEffect(() => {
+        if (
+            agent !== 'claude'
+            || claudeModelsState.isLoading
+            || claudeModelsState.error
+            || !claudeEffortOptions
+        ) {
+            return
+        }
+        if (
+            effort !== 'auto'
+            && !claudeEffortOptions.some((option) => option.value === effort)
+        ) {
+            setEffort('auto')
+        }
+    }, [agent, claudeEffortOptions, claudeModelsState.error, claudeModelsState.isLoading, effort])
     const copilotModelOptions = useMemo(
         () => [
             { value: 'auto', label: 'Auto' },
@@ -1639,6 +1732,8 @@ export function NewSession(props: {
                                     ? grokModelOptions
                                     : agent === 'copilot'
                                         ? copilotModelOptions
+                                        : agent === 'claude'
+                                            ? claudeModelOptions
                                 : undefined
                         }
                         isDisabled={
@@ -1649,13 +1744,19 @@ export function NewSession(props: {
                         }
                         isLoading={(agent === 'codex' && codexModelsState.isLoading)
                             || (agent === 'grok' && grokModelsState.isLoading)
-                            || (agent === 'copilot' && copilotModelsState.isLoading)}
+                            || (agent === 'copilot' && copilotModelsState.isLoading)
+                            || (agent === 'claude' && claudeModelsState.isLoading)}
                         error={agent === 'codex' && codexModelsState.error
                             ? `${t('newSession.model.loadFailed')}: ${codexModelsState.error}`
                             : agent === 'grok' && grokModelsState.error
                                 ? `${t('newSession.model.loadFailed')}: ${grokModelsState.error}`
                                 : agent === 'copilot' && copilotModelsState.error
                                     ? `${t('newSession.model.loadFailed')}: ${copilotModelsState.error}`
+                                // Claude probe failures fall back to the static
+                                // preset list (MODEL_OPTIONS.claude) instead of
+                                // disabling the picker -- quiet degrade per the
+                                // catalog's backward-compat policy, so no error
+                                // text is surfaced here.
                                 : null}
                         onModelChange={setModel}
                     />
@@ -1667,6 +1768,7 @@ export function NewSession(props: {
                 isDisabled={isFormDisabled}
                 onEffortChange={setEffort}
                 grokOptions={agent === 'grok' ? grokEffortOptions : undefined}
+                claudeOptions={agent === 'claude' ? claudeEffortOptions : undefined}
             />
             <ReasoningEffortSelector
                 agent={agent}

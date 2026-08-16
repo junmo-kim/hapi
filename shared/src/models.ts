@@ -1,14 +1,35 @@
+// Role B — recognized aliases: every Claude model id/preset the UI knows how
+// to label or classify (context-window family, subagent badge, etc.),
+// including legacy `[1m]` presets that existing sessions may still carry in
+// their stored model string even though the live CLI model catalog (role A,
+// see CLAUDE_MODEL_FALLBACK_OPTIONS below) no longer offers them as distinct
+// choices. `list_models` showed bare `sonnet`/`opus`/`fable` already carry
+// their family's real (large) context window, so the `[1m]` suffix was never
+// a second, smaller-window model — keeping these keys here (not in the offer
+// list) is what lets old sessions keep resolving correctly without
+// resurrecting the misleading picker duplicates.
 export const CLAUDE_MODEL_LABELS = {
     sonnet: 'Sonnet',
     'sonnet[1m]': 'Sonnet 1M',
     opus: 'Opus',
     'opus[1m]': 'Opus 1M',
     fable: 'Fable',
-    'fable[1m]': 'Fable 1M'
+    'fable[1m]': 'Fable 1M',
+    haiku: 'Haiku'
 } as const
 
 export type ClaudeModelPreset = keyof typeof CLAUDE_MODEL_LABELS
-export const CLAUDE_MODEL_PRESETS = Object.keys(CLAUDE_MODEL_LABELS) as ClaudeModelPreset[]
+
+// Role A — offer list: what the picker shows when the live `claude` CLI
+// model catalog can't be queried (older CLI, probe failure, offline
+// machine). Deliberately has no bare/`[1m]` pairs, mirroring the live
+// catalog's one-row-per-family shape.
+export const CLAUDE_MODEL_FALLBACK_OPTIONS: { value: ClaudeModelPreset; label: string }[] = [
+    { value: 'sonnet', label: CLAUDE_MODEL_LABELS.sonnet },
+    { value: 'opus', label: CLAUDE_MODEL_LABELS.opus },
+    { value: 'fable', label: CLAUDE_MODEL_LABELS.fable },
+    { value: 'haiku', label: CLAUDE_MODEL_LABELS.haiku }
+]
 
 export const GEMINI_MODEL_LABELS = {
     'gemini-3.1-pro-preview': 'Gemini 3.1 Pro Preview',

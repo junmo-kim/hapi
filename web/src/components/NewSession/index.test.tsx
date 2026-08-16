@@ -130,6 +130,14 @@ vi.mock('@/hooks/queries/useCopilotModelsForCwd', () => ({
         error: null
     })
 }))
+vi.mock('@/hooks/queries/useClaudeModelsForCwd', () => ({
+    useClaudeModelsForCwd: () => ({
+        availableModels: [],
+        isLoading: false,
+        error: null,
+        refetch: vi.fn()
+    })
+}))
 vi.mock('../../utils/formatRunnerSpawnError', () => ({
     formatRunnerSpawnError: () => null
 }))
