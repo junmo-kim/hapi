@@ -597,8 +597,12 @@ export function NewSession(props: {
         // enforces no minimum claude version, see claudeRemote.ts).
         // Fall back to LaunchEffortSelector's static CLAUDE_EFFORT_OPTIONS
         // list (its own `undefined` branch) rather than asserting every
-        // model has zero support.
-        const levels = resolveClaudeSupportedEffortLevels(claudeSelectedModelSummary, claudeModelsState.availableModels)
+        // model has zero support. Passing `model` (the raw picker value,
+        // e.g. "haiku") lets the resolver consult the static
+        // CLAUDE_MODEL_FALLBACK_OPTIONS list when no live catalog is
+        // loaded -- claudeSelectedModelSummary is always undefined in that
+        // case (findCatalogRowFor has no rows to search).
+        const levels = resolveClaudeSupportedEffortLevels(claudeSelectedModelSummary, claudeModelsState.availableModels, model)
         if (levels === undefined) {
             return undefined
         }
@@ -616,7 +620,7 @@ export function NewSession(props: {
                 label: CLAUDE_EFFORT_LABELS[level as ClaudeEffortLevel] ?? level
             }))
         ]
-    }, [agent, claudeSelectedModelSummary, claudeModelsState.availableModels])
+    }, [agent, claudeSelectedModelSummary, claudeModelsState.availableModels, model])
     // Reconcile a stale non-auto effort selection when the selected model no
     // longer supports it (e.g. switching from opus/high to haiku, which has
     // no supportedEffortLevels) -- mirrors the Grok effort reconciliation

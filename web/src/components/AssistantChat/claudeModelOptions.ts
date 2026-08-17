@@ -69,25 +69,74 @@ export function catalogReportsEffortLevels(availableModels: ClaudeModelSummary[]
     return availableModels.some((entry) => entry.supportedEffortLevels !== undefined)
 }
 
+// Strips a trailing "[1m]" suffix so a legacy alias or resolved SDK id
+// (e.g. "sonnet[1m]") matches CLAUDE_MODEL_FALLBACK_OPTIONS' bare family
+// keys ("sonnet"). Mirrors web/src/chat/modelConfig.ts's private
+// stripClaude1mSuffix -- same operation, kept local here since that
+// helper isn't exported and belongs to an unrelated concern (context-window
+// budgeting, not effort capability).
+function stripClaude1mSuffixForFallbackMatch(model: string): string {
+    return model.endsWith('[1m]') ? model.slice(0, -'[1m]'.length) : model
+}
+
+// Looks up a model's effort capability in the static, hand-maintained
+// CLAUDE_MODEL_FALLBACK_OPTIONS list (shared/src/models.ts) -- used when the
+// live catalog can't confirm capability itself (no catalog at all, or a
+// catalog present but with no row for this model). Unlike the live
+// catalog's field, whose absence is ambiguous until another row confirms
+// the CLI reports it, this list's `supportedEffortLevels` is never
+// ambiguous: we wrote it, so a matching entry's value (including a
+// confirmed-empty `[]` for haiku) is always a real answer. Returns
+// `undefined` only when the model isn't in this list at all (unselected,
+// or an id we don't recognize, e.g. a resolved SDK id) -- callers then fall
+// back further to the fully static effort list.
+function resolveClaudeFallbackSupportedEffortLevels(modelValue: string | null | undefined): string[] | undefined {
+    if (!modelValue) {
+        return undefined
+    }
+    const normalized = stripClaude1mSuffixForFallbackMatch(modelValue)
+    return CLAUDE_MODEL_FALLBACK_OPTIONS.find((option) => option.value === normalized)?.supportedEffortLevels
+}
+
 /**
- * Resolve the effort levels `selectedModel` supports, or `undefined` if
- * nothing in `availableModels` has confirmed the running claude CLI reports
- * `supportedEffortLevels` at all (see catalogReportsEffortLevels above).
- * Once confirmed, always returns an array -- possibly empty, e.g. haiku's
- * real zero-support. Centralizes the "is this row's absence a real signal,
- * or just an unconfirmed/old CLI" judgment in one place so every caller
- * that gates or reconciles an effort selection off it (SessionChat.tsx's
- * composer wiring, NewSession/index.tsx's launch form) agrees, instead of
- * each re-deriving the same two-step check inline.
+ * Resolve the effort levels `selectedModel` supports.
+ *
+ * Priority:
+ *   1. The live catalog has confirmed `supportedEffortLevels` (some row in
+ *      `availableModels` carries the field, see catalogReportsEffortLevels
+ *      above) and `selectedModel` is one of its rows -- return that row's
+ *      levels, possibly empty (e.g. haiku's real zero-support).
+ *   2. No live catalog is loaded at all (`availableModels` is empty --
+ *      probe failure, still loading, or an older CLI without list_models)
+ *      -- look `selectedModelValue` up in the static, hand-maintained
+ *      CLAUDE_MODEL_FALLBACK_OPTIONS list instead. That list is ours, so
+ *      its capability is exactly as known as its identity.
+ *   3. Anything else (a live catalog is present but didn't confirm this
+ *      selection, or the model matches nothing in the fallback list
+ *      either -- e.g. a legacy resolved SDK id) -- `undefined`, telling
+ *      callers to fall back to the fully static effort list rather than
+ *      asserting a capability we don't actually know.
+ *
+ * Centralizes this judgment in one place so every caller that gates or
+ * reconciles an effort selection off it (SessionChat.tsx's composer wiring,
+ * NewSession/index.tsx's launch form) agrees, instead of each re-deriving
+ * the same checks inline.
  */
 export function resolveClaudeSupportedEffortLevels(
     selectedModel: ClaudeModelSummary | undefined,
-    availableModels: ClaudeModelSummary[]
+    availableModels: ClaudeModelSummary[],
+    selectedModelValue?: string | null
 ): string[] | undefined {
-    if (!selectedModel || !catalogReportsEffortLevels(availableModels)) {
+    if (selectedModel && catalogReportsEffortLevels(availableModels)) {
+        return selectedModel.supportedEffortLevels ?? []
+    }
+    if (availableModels.length > 0) {
+        // A live catalog is loaded but didn't confirm this selection --
+        // stay unconfirmed rather than silently switching sources
+        // mid-catalog.
         return undefined
     }
-    return selectedModel.supportedEffortLevels ?? []
+    return resolveClaudeFallbackSupportedEffortLevels(selectedModel?.value ?? selectedModelValue)
 }
 
 /**
@@ -238,7 +287,11 @@ export function getClaudeComposerModelOptions(
         })
     }
 
-    options.push(...CLAUDE_MODEL_FALLBACK_OPTIONS)
+    // Project down to {value, label} -- CLAUDE_MODEL_FALLBACK_OPTIONS' rows
+    // now also carry `supportedEffortLevels` (for resolveClaudeSupportedEffortLevels'
+    // fallback lookup below), which isn't part of ClaudeComposerModelOption
+    // and must not leak into the picker's option objects.
+    options.push(...CLAUDE_MODEL_FALLBACK_OPTIONS.map((option) => ({ value: option.value, label: option.label })))
 
     return options
 }

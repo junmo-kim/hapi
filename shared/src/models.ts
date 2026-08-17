@@ -1,3 +1,5 @@
+import { CLAUDE_EFFORT_LEVELS } from './effort'
+
 // Role B — recognized aliases: every Claude model id/preset the UI knows how
 // to label or classify (context-window family, subagent badge, etc.),
 // including legacy `[1m]` presets that existing sessions may still carry in
@@ -24,11 +26,23 @@ export type ClaudeModelPreset = keyof typeof CLAUDE_MODEL_LABELS
 // model catalog can't be queried (older CLI, probe failure, offline
 // machine). Deliberately has no bare/`[1m]` pairs, mirroring the live
 // catalog's one-row-per-family shape.
-export const CLAUDE_MODEL_FALLBACK_OPTIONS: { value: ClaudeModelPreset; label: string }[] = [
-    { value: 'sonnet', label: CLAUDE_MODEL_LABELS.sonnet },
-    { value: 'opus', label: CLAUDE_MODEL_LABELS.opus },
-    { value: 'fable', label: CLAUDE_MODEL_LABELS.fable },
-    { value: 'haiku', label: CLAUDE_MODEL_LABELS.haiku }
+//
+// `supportedEffortLevels` mirrors the field of the same name on
+// `ClaudeModelSummary` (shared/src/apiTypes.ts) on purpose -- this list is
+// itself hand-maintained (we picked these four models, we wrote their
+// labels), so unlike the live catalog's field, whose *absence* is
+// ambiguous until another row confirms the CLI reports it at all, our own
+// absence/presence here is never ambiguous: we know exactly which models we
+// hardcoded support for `--effort` and which don't. Leaving capability out
+// while hardcoding identity would be the same self-contradiction this PR
+// otherwise fixes for the live catalog. haiku's `[]` (not `undefined`) is
+// a confirmed zero, measured against claude 2.1.233 on 2026-08-16 -- same
+// contract as a live catalog row that reports the field.
+export const CLAUDE_MODEL_FALLBACK_OPTIONS: { value: ClaudeModelPreset; label: string; supportedEffortLevels?: string[] }[] = [
+    { value: 'sonnet', label: CLAUDE_MODEL_LABELS.sonnet, supportedEffortLevels: [...CLAUDE_EFFORT_LEVELS] },
+    { value: 'opus', label: CLAUDE_MODEL_LABELS.opus, supportedEffortLevels: [...CLAUDE_EFFORT_LEVELS] },
+    { value: 'fable', label: CLAUDE_MODEL_LABELS.fable, supportedEffortLevels: [...CLAUDE_EFFORT_LEVELS] },
+    { value: 'haiku', label: CLAUDE_MODEL_LABELS.haiku, supportedEffortLevels: [] }
 ]
 
 export const GEMINI_MODEL_LABELS = {

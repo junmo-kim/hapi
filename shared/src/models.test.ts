@@ -71,6 +71,22 @@ describe('CLAUDE_MODEL_FALLBACK_OPTIONS', () => {
     test('includes haiku', () => {
         expect(CLAUDE_MODEL_FALLBACK_OPTIONS.map((option) => option.value)).toContain('haiku')
     })
+
+    test('sonnet/opus/fable carry the full effort level list', () => {
+        for (const value of ['sonnet', 'opus', 'fable'] as const) {
+            const option = CLAUDE_MODEL_FALLBACK_OPTIONS.find((entry) => entry.value === value)
+            expect(option?.supportedEffortLevels).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
+        }
+    })
+
+    // haiku must be a confirmed-empty array, not undefined -- undefined
+    // would mean "unknown", but we know (and hardcoded) that haiku doesn't
+    // support --effort.
+    test('haiku carries a confirmed-empty (not undefined) effort level list', () => {
+        const haiku = CLAUDE_MODEL_FALLBACK_OPTIONS.find((entry) => entry.value === 'haiku')
+        expect(haiku?.supportedEffortLevels).toEqual([])
+        expect(haiku?.supportedEffortLevels).not.toBeUndefined()
+    })
 })
 
 describe('model constants consistency', () => {

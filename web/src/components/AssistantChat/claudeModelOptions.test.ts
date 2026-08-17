@@ -275,6 +275,36 @@ describe('resolveClaudeSupportedEffortLevels', () => {
     it('resolves undefined when there is no selected model row', () => {
         expect(resolveClaudeSupportedEffortLevels(undefined, LIVE_CATALOG)).toBeUndefined()
     })
+
+    // No live catalog at all (loading/probe failure/older CLI without
+    // list_models) -- availableModels is empty, so there is no row to ask.
+    // The static CLAUDE_MODEL_FALLBACK_OPTIONS list is itself hand-
+    // maintained (shared/src/models.ts), so its capability is just as known
+    // as its identity: haiku must gate to Auto-only here too, not silently
+    // regress to the full static effort list just because the live catalog
+    // hasn't loaded.
+    describe('no live catalog (static fallback)', () => {
+        it('resolves haiku to a confirmed-empty array from the static fallback list', () => {
+            expect(resolveClaudeSupportedEffortLevels(undefined, [], 'haiku')).toEqual([])
+        })
+
+        it('resolves sonnet to the full effort level list from the static fallback list', () => {
+            expect(resolveClaudeSupportedEffortLevels(undefined, [], 'sonnet')).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
+        })
+
+        it('normalizes a legacy [1m] alias to its bare family before matching the fallback list', () => {
+            expect(resolveClaudeSupportedEffortLevels(undefined, [], 'sonnet[1m]')).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
+        })
+
+        it('resolves undefined for a model the fallback list does not recognize (e.g. a resolved SDK id)', () => {
+            expect(resolveClaudeSupportedEffortLevels(undefined, [], 'claude-opus-5[1m]')).toBeUndefined()
+        })
+
+        it('resolves undefined when nothing is selected (auto/null)', () => {
+            expect(resolveClaudeSupportedEffortLevels(undefined, [], null)).toBeUndefined()
+            expect(resolveClaudeSupportedEffortLevels(undefined, [], 'auto')).toBeUndefined()
+        })
+    })
 })
 
 describe('resolveClaudeModelChangeEffortClear', () => {

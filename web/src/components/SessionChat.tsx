@@ -1061,12 +1061,17 @@ function SessionChatInner(props: SessionChatProps) {
     // undefined, same as "no data yet".
     const claudeAvailableEffortOptions = useMemo(() => {
         if (agentFlavor !== 'claude') return undefined
-        const levels = resolveClaudeSupportedEffortLevels(claudeSelectedModelSummary, claudeModelsState.availableModels)
+        // Passing claudeComposerModelValue (the raw wire value, e.g.
+        // "haiku") lets the resolver consult the static
+        // CLAUDE_MODEL_FALLBACK_OPTIONS list when no live catalog is
+        // loaded -- claudeSelectedModelSummary is always undefined in that
+        // case (findCatalogRowFor has no rows to search).
+        const levels = resolveClaudeSupportedEffortLevels(claudeSelectedModelSummary, claudeModelsState.availableModels, claudeComposerModelValue)
         return levels?.map((level) => ({
             value: level,
             name: CLAUDE_EFFORT_LABELS[level as ClaudeEffortLevel] ?? level
         }))
-    }, [agentFlavor, claudeSelectedModelSummary, claudeModelsState.availableModels])
+    }, [agentFlavor, claudeSelectedModelSummary, claudeModelsState.availableModels, claudeComposerModelValue])
     const cursorModelsState = useCursorModels({
         api: props.api,
         sessionId: props.session.id,
