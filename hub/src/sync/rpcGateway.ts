@@ -31,6 +31,7 @@ import type {
     OpencodeModelSummary,
     OpencodeReasoningEffortResponse,
     PathExistsResponse,
+    PiModelsResponse,
     SlashCommandsResponse,
     StatFilesResponse,
     UploadFileResponse
@@ -63,6 +64,10 @@ export class RpcTargetMissingError extends Error {
 }
 
 export type RpcCommandResponse = CommandResponse
+export type FileSearchOptions = {
+    query: string
+    limit: number
+}
 export type RpcReadFileResponse = FileReadResponse
 export type RpcGeneratedImageResponse = GeneratedImageResponse
 export type RpcUploadFileResponse = UploadFileResponse
@@ -88,6 +93,7 @@ export type RpcListOpencodeReasoningEffortOptionsResponse = OpencodeReasoningEff
 export type RpcListAgyModelsResponse = AgyModelsResponse
 export type RpcClaudeModel = ClaudeModelSummary
 export type RpcListClaudeModelsResponse = ClaudeModelsResponse
+export type RpcListPiModelsResponse = PiModelsResponse
 
 export class RpcGateway {
     constructor(
@@ -323,8 +329,8 @@ export class RpcGateway {
         return await this.sessionRpc(sessionId, RPC_METHODS.DeleteUpload, { sessionId, path }) as RpcDeleteUploadResponse
     }
 
-    async runRipgrep(sessionId: string, args: string[], cwd?: string): Promise<RpcCommandResponse> {
-        return await this.sessionRpc(sessionId, RPC_METHODS.Ripgrep, { args, cwd }) as RpcCommandResponse
+    async runRipgrep(sessionId: string, args: string[], cwd?: string, fileSearch?: FileSearchOptions): Promise<RpcCommandResponse> {
+        return await this.sessionRpc(sessionId, RPC_METHODS.Ripgrep, { args, cwd, fileSearch }) as RpcCommandResponse
     }
 
     async listSlashCommands(sessionId: string, agent: string): Promise<SlashCommandsResponse> {
@@ -476,6 +482,10 @@ export class RpcGateway {
 
     async listAgyModelsForMachine(machineId: string): Promise<RpcListAgyModelsResponse> {
         return await this.machineRpc(machineId, RPC_METHODS.ListAgyModels, {}, MODEL_LIST_RPC_TIMEOUT_MS) as RpcListAgyModelsResponse
+    }
+
+    async listPiModelsForMachine(machineId: string): Promise<RpcListPiModelsResponse> {
+        return await this.machineRpc(machineId, RPC_METHODS.ListPiModelsForMachine, {}, MODEL_LIST_RPC_TIMEOUT_MS) as RpcListPiModelsResponse
     }
 
     private async sessionRpc(
