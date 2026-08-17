@@ -25,7 +25,9 @@ export type ClaudeModelPreset = keyof typeof CLAUDE_MODEL_LABELS
 // Role A — offer list: what the picker shows when the live `claude` CLI
 // model catalog can't be queried (older CLI, probe failure, offline
 // machine). Deliberately has no bare/`[1m]` pairs, mirroring the live
-// catalog's one-row-per-family shape.
+// catalog's one-row-per-family shape, and listed in the same order the
+// live catalog returns (opus, fable, sonnet, haiku) so the picker doesn't
+// reshuffle when discovery drops in or out.
 //
 // `supportedEffortLevels` mirrors the field of the same name on
 // `ClaudeModelSummary` (shared/src/apiTypes.ts) on purpose -- this list is
@@ -39,9 +41,9 @@ export type ClaudeModelPreset = keyof typeof CLAUDE_MODEL_LABELS
 // a confirmed zero, measured against claude 2.1.233 on 2026-08-16 -- same
 // contract as a live catalog row that reports the field.
 export const CLAUDE_MODEL_FALLBACK_OPTIONS: { value: ClaudeModelPreset; label: string; supportedEffortLevels?: string[] }[] = [
-    { value: 'sonnet', label: CLAUDE_MODEL_LABELS.sonnet, supportedEffortLevels: [...CLAUDE_EFFORT_LEVELS] },
     { value: 'opus', label: CLAUDE_MODEL_LABELS.opus, supportedEffortLevels: [...CLAUDE_EFFORT_LEVELS] },
     { value: 'fable', label: CLAUDE_MODEL_LABELS.fable, supportedEffortLevels: [...CLAUDE_EFFORT_LEVELS] },
+    { value: 'sonnet', label: CLAUDE_MODEL_LABELS.sonnet, supportedEffortLevels: [...CLAUDE_EFFORT_LEVELS] },
     { value: 'haiku', label: CLAUDE_MODEL_LABELS.haiku, supportedEffortLevels: [] }
 ]
 

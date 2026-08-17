@@ -15,7 +15,7 @@ describe('Claude model options', () => {
             expect(option.value.endsWith('[1m]')).toBe(false)
         }
         expect(CLAUDE_MODEL_FALLBACK_OPTIONS.map((option) => option.value)).toEqual(
-            ['sonnet', 'opus', 'fable', 'haiku']
+            ['opus', 'fable', 'sonnet', 'haiku']
         )
     })
 

@@ -41,9 +41,9 @@ describe('getClaudeComposerModelOptions (fallback, no live catalog)', () => {
         expect(getClaudeComposerModelOptions('claude-opus-4-1-20250805')).toEqual([
             { value: null, label: 'Default' },
             { value: 'claude-opus-4-1-20250805', label: 'claude-opus-4-1-20250805' },
-            { value: 'sonnet', label: 'Sonnet' },
             { value: 'opus', label: 'Opus' },
             { value: 'fable', label: 'Fable' },
+            { value: 'sonnet', label: 'Sonnet' },
             { value: 'haiku', label: 'Haiku' },
         ])
     })
@@ -51,9 +51,9 @@ describe('getClaudeComposerModelOptions (fallback, no live catalog)', () => {
     it('does not duplicate preset Claude models', () => {
         expect(getClaudeComposerModelOptions('opus')).toEqual([
             { value: null, label: 'Default' },
-            { value: 'sonnet', label: 'Sonnet' },
             { value: 'opus', label: 'Opus' },
             { value: 'fable', label: 'Fable' },
+            { value: 'sonnet', label: 'Sonnet' },
             { value: 'haiku', label: 'Haiku' },
         ])
     })
@@ -72,9 +72,9 @@ describe('getClaudeComposerModelOptions (fallback, no live catalog)', () => {
         expect(getClaudeComposerModelOptions('sonnet[1m]')).toEqual([
             { value: null, label: 'Default' },
             { value: 'sonnet[1m]', label: 'Sonnet 1M' },
-            { value: 'sonnet', label: 'Sonnet' },
             { value: 'opus', label: 'Opus' },
             { value: 'fable', label: 'Fable' },
+            { value: 'sonnet', label: 'Sonnet' },
             { value: 'haiku', label: 'Haiku' },
         ])
     })
@@ -225,7 +225,7 @@ describe('getNextClaudeComposerModel', () => {
     // ever has the flattened ModelOption[] shape, not the rich
     // ClaudeModelSummary[] this function's fallback path needs).
     it('cycles from a non-preset Claude model to the next selectable model instead of auto', () => {
-        expect(getNextClaudeComposerModel('claude-opus-4-1-20250805')).toBe('sonnet')
+        expect(getNextClaudeComposerModel('claude-opus-4-1-20250805')).toBe('opus')
     })
 })
 

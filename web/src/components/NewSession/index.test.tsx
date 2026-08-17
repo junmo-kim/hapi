@@ -947,7 +947,7 @@ describe('NewSession launch preferences', () => {
         await waitFor(() => {
             expect(screen.getByTestId('model')).toHaveTextContent('opus[1m]')
             expect(screen.getByTestId('model-options')).toHaveTextContent(
-                'Default,Opus 1M,Sonnet,Opus,Fable,Haiku'
+                'Default,Opus 1M,Opus,Fable,Sonnet,Haiku'
             )
         })
     })
@@ -970,7 +970,7 @@ describe('NewSession launch preferences', () => {
         await waitFor(() => {
             expect(screen.getByTestId('model')).toHaveTextContent('auto')
             expect(screen.getByTestId('model-options')).toHaveTextContent(
-                'Default,Sonnet,Opus,Fable,Haiku'
+                'Default,Opus,Fable,Sonnet,Haiku'
             )
         })
     })
@@ -1009,7 +1009,7 @@ describe('NewSession launch preferences', () => {
             expect(screen.getByTestId('model')).toHaveTextContent('sonnet')
             const options = screen.getByTestId('model-options').textContent?.split(',') ?? []
             expect(options.filter((label) => label === 'Sonnet')).toHaveLength(1)
-            expect(options).toEqual(['Default', 'Sonnet', 'Opus', 'Fable', 'Haiku'])
+            expect(options).toEqual(['Default', 'Opus', 'Fable', 'Sonnet', 'Haiku'])
         })
     })
 
