@@ -26,6 +26,7 @@ const mocks = vi.hoisted(() => ({
     piDialogSelection: ['pi-native-1'] as string[],
     piModels: [] as Array<{ provider: string; modelId: string; name?: string; reasoning?: boolean }>,
     piModelsLoading: false,
+    claudeModels: [] as Array<{ value: string; displayName: string; resolvedModel?: string; supportedEffortLevels?: string[] }>,
     nextModelValue: 'gpt-5.6-terra',
     refetchSessions: vi.fn(),
     addToast: vi.fn()
@@ -137,7 +138,7 @@ vi.mock('@/hooks/queries/useCopilotModelsForCwd', () => ({
 }))
 vi.mock('@/hooks/queries/useClaudeModelsForCwd', () => ({
     useClaudeModelsForCwd: () => ({
-        availableModels: [],
+        availableModels: mocks.claudeModels,
         isLoading: false,
         error: null,
         refetch: vi.fn()
@@ -271,6 +272,7 @@ describe('NewSession launch preferences', () => {
         mocks.piDialogSelection = ['pi-native-1']
         mocks.piModels = []
         mocks.piModelsLoading = false
+        mocks.claudeModels = []
         mocks.nextModelValue = 'gpt-5.6-terra'
         mocks.refetchSessions.mockReset()
         mocks.refetchSessions.mockResolvedValue(undefined)
@@ -910,5 +912,129 @@ describe('NewSession launch preferences', () => {
             agent: 'pi',
             model: 'opencode-go/deepseek-v4-pro',
         }))
+    })
+
+    it('keeps a catalog-only Claude selection visible when catalog discovery falls back', async () => {
+        mocks.claudeModels = []
+        saveNewSessionFormDraft({
+            agent: 'claude',
+            model: 'opus[1m]',
+            cursorSelectedBase: 'auto',
+            machineId: 'machine-1',
+            effort: 'auto',
+            modelReasoningEffort: 'default',
+            serviceTier: 'standard',
+            collaborationMode: 'default',
+            copilotAgentMode: 'interactive',
+            yoloMode: false,
+            codexFamilyPermissionMode: 'default',
+            grokPermissionMode: 'default',
+            sessionType: 'simple',
+            worktreeName: ''
+        })
+
+        render(
+            <NewSession
+                api={api}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory="C:\\repo"
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        await waitFor(() => {
+            expect(screen.getByTestId('model')).toHaveTextContent('opus[1m]')
+            expect(screen.getByTestId('model-options')).toHaveTextContent(
+                'Default,Opus 1M,Sonnet,Opus,Fable,Haiku'
+            )
+        })
+    })
+
+    it('shows Default plus the static fallback list when Claude catalog discovery falls back with no pin', async () => {
+        mocks.claudeModels = []
+        savePreferredAgent('claude')
+
+        render(
+            <NewSession
+                api={api}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory="C:\\repo"
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        await waitFor(() => {
+            expect(screen.getByTestId('model')).toHaveTextContent('auto')
+            expect(screen.getByTestId('model-options')).toHaveTextContent(
+                'Default,Sonnet,Opus,Fable,Haiku'
+            )
+        })
+    })
+
+    it('does not duplicate a Claude selection that already matches a static fallback option', async () => {
+        mocks.claudeModels = []
+        saveNewSessionFormDraft({
+            agent: 'claude',
+            model: 'sonnet',
+            cursorSelectedBase: 'auto',
+            machineId: 'machine-1',
+            effort: 'auto',
+            modelReasoningEffort: 'default',
+            serviceTier: 'standard',
+            collaborationMode: 'default',
+            copilotAgentMode: 'interactive',
+            yoloMode: false,
+            codexFamilyPermissionMode: 'default',
+            grokPermissionMode: 'default',
+            sessionType: 'simple',
+            worktreeName: ''
+        })
+
+        render(
+            <NewSession
+                api={api}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory="C:\\repo"
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        await waitFor(() => {
+            expect(screen.getByTestId('model')).toHaveTextContent('sonnet')
+            const options = screen.getByTestId('model-options').textContent?.split(',') ?? []
+            expect(options.filter((label) => label === 'Sonnet')).toHaveLength(1)
+            expect(options).toEqual(['Default', 'Sonnet', 'Opus', 'Fable', 'Haiku'])
+        })
+    })
+
+    it('keeps rendering the live Claude catalog when it is available (regression)', async () => {
+        mocks.claudeModels = [
+            { value: 'default', displayName: 'Default' },
+            { value: 'opus[1m]', displayName: 'Opus 1M', resolvedModel: 'claude-opus-5[1m]' },
+            { value: 'sonnet', displayName: 'Sonnet', resolvedModel: 'claude-sonnet-5' }
+        ]
+        savePreferredAgent('claude')
+
+        render(
+            <NewSession
+                api={api}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory="C:\\repo"
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        await waitFor(() => {
+            expect(screen.getByTestId('model')).toHaveTextContent('auto')
+            expect(screen.getByTestId('model-options')).toHaveTextContent('Default,Opus 1M,Sonnet')
+        })
     })
 })

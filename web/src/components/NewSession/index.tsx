@@ -556,15 +556,24 @@ export function NewSession(props: {
         enabled: agent === 'claude' && deferredDirectoryExists === true
     })
     const claudeModelOptions = useMemo(() => {
-        if (agent !== 'claude' || claudeModelsState.availableModels.length === 0) {
+        if (agent !== 'claude') {
             return undefined
         }
 
         // Delegate to the same canonical builder the composer uses instead of
-        // re-deriving the mapping here: it already does the resolvedModel-aware
-        // current-model dedup (a stored resolved SDK id like "claude-opus-5[1m]"
-        // matches the catalog's "opus[1m]" row instead of getting a second,
-        // raw-labeled row) and legacy-[1m]-alias labeling.
+        // re-deriving the mapping here, regardless of whether the catalog has
+        // loaded: it already does the resolvedModel-aware current-model dedup
+        // (a stored resolved SDK id like "claude-opus-5[1m]" matches the
+        // catalog's "opus[1m]" row instead of getting a second, raw-labeled
+        // row) and legacy-[1m]-alias labeling, and -- critically -- falls
+        // back to its own static branch when availableModels is empty, which
+        // still folds the current selection in as an explicit row if it's
+        // not one of the static options. Calling it unconditionally keeps
+        // "the rendered options always include the current selection" true
+        // in both modes, so a model picked while the catalog was loaded
+        // (e.g. a catalog-only value or legacy alias) doesn't silently
+        // desync from what Create actually submits once discovery falls
+        // back (empty catalog, probe failure, cwd change, etc.).
         return getClaudeComposerModelOptions(
             model === 'auto' ? null : model,
             claudeModelsState.availableModels
