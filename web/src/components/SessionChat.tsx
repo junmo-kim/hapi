@@ -1062,16 +1062,16 @@ function SessionChatInner(props: SessionChatProps) {
     const claudeAvailableEffortOptions = useMemo(() => {
         if (agentFlavor !== 'claude') return undefined
         // Passing claudeComposerModelValue (the raw wire value, e.g.
-        // "haiku") lets the resolver consult the static
-        // CLAUDE_MODEL_FALLBACK_OPTIONS list when no live catalog is
-        // loaded -- claudeSelectedModelSummary is always undefined in that
-        // case (findCatalogRowFor has no rows to search).
-        const levels = resolveClaudeSupportedEffortLevels(claudeSelectedModelSummary, claudeModelsState.availableModels, claudeComposerModelValue)
+        // "haiku") -- resolveClaudeSupportedEffortLevels resolves the
+        // catalog row itself (or, with no live catalog loaded, consults the
+        // static CLAUDE_MODEL_FALLBACK_OPTIONS list) from that identifier
+        // alone.
+        const levels = resolveClaudeSupportedEffortLevels(claudeComposerModelValue, claudeModelsState.availableModels)
         return levels?.map((level) => ({
             value: level,
             name: CLAUDE_EFFORT_LABELS[level as ClaudeEffortLevel] ?? level
         }))
-    }, [agentFlavor, claudeSelectedModelSummary, claudeModelsState.availableModels, claudeComposerModelValue])
+    }, [agentFlavor, claudeModelsState.availableModels, claudeComposerModelValue])
     const cursorModelsState = useCursorModels({
         api: props.api,
         sessionId: props.session.id,
@@ -1550,10 +1550,7 @@ function SessionChatInner(props: SessionChatProps) {
         const claudeEffortClear = agentFlavor === 'claude'
             ? resolveClaudeModelChangeEffortClear({
                 currentEffort: props.session.effort,
-                nextModelSummary: findCatalogRowFor(
-                    typeof model === 'string' || model === null ? model : null,
-                    claudeModelsState.availableModels
-                ),
+                nextModelValue: typeof model === 'string' || model === null ? model : null,
                 availableModels: claudeModelsState.availableModels
             })
             : undefined
@@ -1694,8 +1691,11 @@ function SessionChatInner(props: SessionChatProps) {
         // row's absence of the field can be trusted as "unsupported" until
         // some row in the same catalog confirms it -- leave a stored effort
         // alone rather than wiping it because of a CLI that hasn't
-        // confirmed anything.
-        const supportedLevels = resolveClaudeSupportedEffortLevels(claudeSelectedModelSummary, claudeModelsState.availableModels)
+        // confirmed anything. shouldReconcileClaudeEffort above already
+        // guarantees claudeSelectedModelSummary is set (a live catalog row
+        // was found), so claudeComposerModelValue -- the wire value that
+        // row was found for -- resolves back to the very same row here.
+        const supportedLevels = resolveClaudeSupportedEffortLevels(claudeComposerModelValue, claudeModelsState.availableModels)
         if (supportedLevels === undefined) {
             return
         }
@@ -1709,6 +1709,7 @@ function SessionChatInner(props: SessionChatProps) {
         claudeModelsState.error,
         claudeSelectedModelSummary,
         claudeModelsState.availableModels,
+        claudeComposerModelValue,
         props.session.effort,
         handleEffortChange
     ])

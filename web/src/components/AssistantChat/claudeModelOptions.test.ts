@@ -250,13 +250,11 @@ describe('resolveClaudeSupportedEffortLevels', () => {
     // field, so haiku's absence is a real "zero levels" signal and the
     // composer/NewSession effort selector must gate to Auto-only for it.
     it('resolves haiku to an empty array (confirmed unsupported) when sibling rows in the same catalog report the field', () => {
-        const haikuRow = LIVE_CATALOG.find((entry) => entry.value === 'haiku')
-        expect(resolveClaudeSupportedEffortLevels(haikuRow, LIVE_CATALOG)).toEqual([])
+        expect(resolveClaudeSupportedEffortLevels('haiku', LIVE_CATALOG)).toEqual([])
     })
 
     it('resolves a row with levels to those levels when the catalog confirms the field', () => {
-        const sonnetRow = LIVE_CATALOG.find((entry) => entry.value === 'sonnet')
-        expect(resolveClaudeSupportedEffortLevels(sonnetRow, LIVE_CATALOG)).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
+        expect(resolveClaudeSupportedEffortLevels('sonnet', LIVE_CATALOG)).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
     })
 
     // The regression a hostile review round's own R4-4 instruction caused:
@@ -268,12 +266,12 @@ describe('resolveClaudeSupportedEffortLevels', () => {
     // alone instead of wiping it.
     it('resolves undefined (unconfirmed) for every row when nothing in the catalog reports the field', () => {
         for (const row of NO_EFFORT_FIELD_CATALOG) {
-            expect(resolveClaudeSupportedEffortLevels(row, NO_EFFORT_FIELD_CATALOG)).toBeUndefined()
+            expect(resolveClaudeSupportedEffortLevels(row.value, NO_EFFORT_FIELD_CATALOG)).toBeUndefined()
         }
     })
 
-    it('resolves undefined when there is no selected model row', () => {
-        expect(resolveClaudeSupportedEffortLevels(undefined, LIVE_CATALOG)).toBeUndefined()
+    it('resolves undefined when the model value matches no row in the catalog', () => {
+        expect(resolveClaudeSupportedEffortLevels('unrecognized-model-id', LIVE_CATALOG)).toBeUndefined()
     })
 
     // No live catalog at all (loading/probe failure/older CLI without
@@ -285,24 +283,24 @@ describe('resolveClaudeSupportedEffortLevels', () => {
     // hasn't loaded.
     describe('no live catalog (static fallback)', () => {
         it('resolves haiku to a confirmed-empty array from the static fallback list', () => {
-            expect(resolveClaudeSupportedEffortLevels(undefined, [], 'haiku')).toEqual([])
+            expect(resolveClaudeSupportedEffortLevels('haiku', [])).toEqual([])
         })
 
         it('resolves sonnet to the full effort level list from the static fallback list', () => {
-            expect(resolveClaudeSupportedEffortLevels(undefined, [], 'sonnet')).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
+            expect(resolveClaudeSupportedEffortLevels('sonnet', [])).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
         })
 
         it('normalizes a legacy [1m] alias to its bare family before matching the fallback list', () => {
-            expect(resolveClaudeSupportedEffortLevels(undefined, [], 'sonnet[1m]')).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
+            expect(resolveClaudeSupportedEffortLevels('sonnet[1m]', [])).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
         })
 
         it('resolves undefined for a model the fallback list does not recognize (e.g. a resolved SDK id)', () => {
-            expect(resolveClaudeSupportedEffortLevels(undefined, [], 'claude-opus-5[1m]')).toBeUndefined()
+            expect(resolveClaudeSupportedEffortLevels('claude-opus-5[1m]', [])).toBeUndefined()
         })
 
         it('resolves undefined when nothing is selected (auto/null)', () => {
-            expect(resolveClaudeSupportedEffortLevels(undefined, [], null)).toBeUndefined()
-            expect(resolveClaudeSupportedEffortLevels(undefined, [], 'auto')).toBeUndefined()
+            expect(resolveClaudeSupportedEffortLevels(null, [])).toBeUndefined()
+            expect(resolveClaudeSupportedEffortLevels('auto', [])).toBeUndefined()
         })
     })
 })
@@ -316,37 +314,33 @@ describe('resolveClaudeModelChangeEffortClear', () => {
     // the stale effort in place. This resolves what to send in the SAME
     // request as the model change instead.
     it('returns null (clear it) when the target model does not support the currently pinned effort', () => {
-        const haikuRow = LIVE_CATALOG.find((entry) => entry.value === 'haiku')
         expect(resolveClaudeModelChangeEffortClear({
             currentEffort: 'high',
-            nextModelSummary: haikuRow,
+            nextModelValue: 'haiku',
             availableModels: LIVE_CATALOG
         })).toBeNull()
     })
 
     it('returns undefined (send nothing) when the target model supports the currently pinned effort', () => {
-        const sonnetRow = LIVE_CATALOG.find((entry) => entry.value === 'sonnet')
         expect(resolveClaudeModelChangeEffortClear({
             currentEffort: 'high',
-            nextModelSummary: sonnetRow,
+            nextModelValue: 'sonnet',
             availableModels: LIVE_CATALOG
         })).toBeUndefined()
     })
 
     it('returns undefined (send nothing) when the catalog has not confirmed support either way', () => {
-        const row = NO_EFFORT_FIELD_CATALOG.find((entry) => entry.value === 'haiku')
         expect(resolveClaudeModelChangeEffortClear({
             currentEffort: 'high',
-            nextModelSummary: row,
+            nextModelValue: 'haiku',
             availableModels: NO_EFFORT_FIELD_CATALOG
         })).toBeUndefined()
     })
 
     it('returns undefined (send nothing) when the session has no effort pinned to begin with', () => {
-        const haikuRow = LIVE_CATALOG.find((entry) => entry.value === 'haiku')
         expect(resolveClaudeModelChangeEffortClear({
             currentEffort: null,
-            nextModelSummary: haikuRow,
+            nextModelValue: 'haiku',
             availableModels: LIVE_CATALOG
         })).toBeUndefined()
     })
@@ -354,8 +348,23 @@ describe('resolveClaudeModelChangeEffortClear', () => {
     it('returns undefined (send nothing) when the target model row cannot be resolved from the catalog', () => {
         expect(resolveClaudeModelChangeEffortClear({
             currentEffort: 'high',
-            nextModelSummary: undefined,
+            nextModelValue: 'unrecognized-model-id',
             availableModels: LIVE_CATALOG
         })).toBeUndefined()
+    })
+
+    // The bug this whole signature change closes off: the fallback
+    // (no-live-catalog) path used to be reachable only through an OPTIONAL
+    // third parameter callers could forget -- and one call site
+    // (SessionChat.tsx's handleModelChange) did, silently disabling the
+    // atomic effort clear whenever no catalog was loaded. `nextModelValue`
+    // is now the only way to identify the target model, so the fallback
+    // lookup always has what it needs.
+    it('returns null (clear it) in fallback mode -- no live catalog loaded -- when the target model does not support the currently pinned effort', () => {
+        expect(resolveClaudeModelChangeEffortClear({
+            currentEffort: 'high',
+            nextModelValue: 'haiku',
+            availableModels: []
+        })).toBeNull()
     })
 })

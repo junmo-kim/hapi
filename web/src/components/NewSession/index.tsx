@@ -4,7 +4,7 @@ import type { CodexDuplicateSessionGroup, CodexLocalSessionSummary, Machine, PiL
 import type { CodexCollaborationMode, GrokPermissionMode, PermissionMode, CopilotAgentMode } from '@hapi/protocol'
 import { CLAUDE_EFFORT_LABELS, type ClaudeEffortLevel } from '@hapi/protocol'
 import { codexModelAdvertisesFastTier } from '@/components/AssistantChat/codexFastMode'
-import { findCatalogRowFor, getClaudeComposerModelOptions, resolveClaudeSupportedEffortLevels } from '@/components/AssistantChat/claudeModelOptions'
+import { getClaudeComposerModelOptions, resolveClaudeSupportedEffortLevels } from '@/components/AssistantChat/claudeModelOptions'
 import { usePlatform } from '@/hooks/usePlatform'
 import { useMachinePathsExists } from '@/hooks/useMachinePathsExists'
 import { useSpawnSession } from '@/hooks/mutations/useSpawnSession'
@@ -575,16 +575,6 @@ export function NewSession(props: {
             label: option.label
         }))
     }, [agent, claudeModelsState.availableModels, model])
-    const claudeSelectedModelSummary = useMemo(
-        // findCatalogRowFor treats 'auto' (this picker's own sentinel for "no
-        // explicit pin" -- claudeModelOptions above normalizes the catalog's
-        // `default` row onto it) the same as null/'default', so the initial/
-        // unpicked state of a new session still matches the catalog's
-        // `default` row instead of silently disabling effort gating for it
-        // (hostile-review R3-7: was a bare `.find()` here, unified now).
-        () => findCatalogRowFor(model, claudeModelsState.availableModels),
-        [claudeModelsState.availableModels, model]
-    )
     const claudeEffortOptions = useMemo(() => {
         if (agent !== 'claude') {
             return undefined
@@ -598,11 +588,11 @@ export function NewSession(props: {
         // Fall back to LaunchEffortSelector's static CLAUDE_EFFORT_OPTIONS
         // list (its own `undefined` branch) rather than asserting every
         // model has zero support. Passing `model` (the raw picker value,
-        // e.g. "haiku") lets the resolver consult the static
-        // CLAUDE_MODEL_FALLBACK_OPTIONS list when no live catalog is
-        // loaded -- claudeSelectedModelSummary is always undefined in that
-        // case (findCatalogRowFor has no rows to search).
-        const levels = resolveClaudeSupportedEffortLevels(claudeSelectedModelSummary, claudeModelsState.availableModels, model)
+        // e.g. "haiku") -- resolveClaudeSupportedEffortLevels resolves the
+        // catalog row itself (or, with no live catalog loaded, consults the
+        // static CLAUDE_MODEL_FALLBACK_OPTIONS list) from that identifier
+        // alone.
+        const levels = resolveClaudeSupportedEffortLevels(model, claudeModelsState.availableModels)
         if (levels === undefined) {
             return undefined
         }
@@ -620,7 +610,7 @@ export function NewSession(props: {
                 label: CLAUDE_EFFORT_LABELS[level as ClaudeEffortLevel] ?? level
             }))
         ]
-    }, [agent, claudeSelectedModelSummary, claudeModelsState.availableModels, model])
+    }, [agent, claudeModelsState.availableModels, model])
     // Reconcile a stale non-auto effort selection when the selected model no
     // longer supports it (e.g. switching from opus/high to haiku, which has
     // no supportedEffortLevels) -- mirrors the Grok effort reconciliation

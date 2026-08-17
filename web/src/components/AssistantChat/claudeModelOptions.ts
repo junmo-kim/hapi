@@ -99,20 +99,34 @@ function resolveClaudeFallbackSupportedEffortLevels(modelValue: string | null | 
 }
 
 /**
- * Resolve the effort levels `selectedModel` supports.
+ * Resolve the effort levels `modelValue` supports.
+ *
+ * `modelValue` is the model's identifier (a catalog wire value, a resolved
+ * SDK id, or the null/`'auto'`/`'default'` "no explicit pin" sentinels) --
+ * this function derives which catalog row it refers to itself via
+ * `findCatalogRowFor`, rather than trusting a caller to have already
+ * resolved and passed the row. That closes off a real bug class: a
+ * `selectedModel: ClaudeModelSummary | undefined` parameter is optional
+ * information a call site can (and once did) forget to pass, silently
+ * degrading to the fallback branch below even when a live catalog is
+ * loaded. Requiring only the identifier -- which every caller always has --
+ * makes "resolve capability with less information than is available"
+ * impossible to express.
  *
  * Priority:
- *   1. The live catalog has confirmed `supportedEffortLevels` (some row in
- *      `availableModels` carries the field, see catalogReportsEffortLevels
- *      above) and `selectedModel` is one of its rows -- return that row's
- *      levels, possibly empty (e.g. haiku's real zero-support).
+ *   1. A live catalog is loaded (`availableModels` is non-empty) and has
+ *      confirmed `supportedEffortLevels` (some row carries the field, see
+ *      catalogReportsEffortLevels above) -- if `modelValue` resolves to one
+ *      of its rows, return that row's levels, possibly empty (e.g. haiku's
+ *      real zero-support). If it resolves to no row, or the catalog hasn't
+ *      confirmed the field at all, `undefined` -- stay unconfirmed rather
+ *      than silently switching sources mid-catalog.
  *   2. No live catalog is loaded at all (`availableModels` is empty --
  *      probe failure, still loading, or an older CLI without list_models)
- *      -- look `selectedModelValue` up in the static, hand-maintained
+ *      -- look `modelValue` up in the static, hand-maintained
  *      CLAUDE_MODEL_FALLBACK_OPTIONS list instead. That list is ours, so
  *      its capability is exactly as known as its identity.
- *   3. Anything else (a live catalog is present but didn't confirm this
- *      selection, or the model matches nothing in the fallback list
+ *   3. Anything else (the model matches nothing in the fallback list
  *      either -- e.g. a legacy resolved SDK id) -- `undefined`, telling
  *      callers to fall back to the fully static effort list rather than
  *      asserting a capability we don't actually know.
@@ -123,20 +137,16 @@ function resolveClaudeFallbackSupportedEffortLevels(modelValue: string | null | 
  * the same checks inline.
  */
 export function resolveClaudeSupportedEffortLevels(
-    selectedModel: ClaudeModelSummary | undefined,
-    availableModels: ClaudeModelSummary[],
-    selectedModelValue?: string | null
+    modelValue: string | null | undefined,
+    availableModels: ClaudeModelSummary[]
 ): string[] | undefined {
-    if (selectedModel && catalogReportsEffortLevels(availableModels)) {
-        return selectedModel.supportedEffortLevels ?? []
-    }
     if (availableModels.length > 0) {
-        // A live catalog is loaded but didn't confirm this selection --
-        // stay unconfirmed rather than silently switching sources
-        // mid-catalog.
-        return undefined
+        if (!catalogReportsEffortLevels(availableModels)) return undefined
+        const row = findCatalogRowFor(modelValue, availableModels)
+        if (!row) return undefined
+        return row.supportedEffortLevels ?? []
     }
-    return resolveClaudeFallbackSupportedEffortLevels(selectedModel?.value ?? selectedModelValue)
+    return resolveClaudeFallbackSupportedEffortLevels(modelValue)
 }
 
 /**
@@ -157,13 +167,13 @@ export function resolveClaudeSupportedEffortLevels(
  */
 export function resolveClaudeModelChangeEffortClear(args: {
     currentEffort: string | null | undefined
-    nextModelSummary: ClaudeModelSummary | undefined
+    nextModelValue: string | null | undefined
     availableModels: ClaudeModelSummary[]
 }): null | undefined {
     if (!args.currentEffort) {
         return undefined
     }
-    const nextSupportedLevels = resolveClaudeSupportedEffortLevels(args.nextModelSummary, args.availableModels)
+    const nextSupportedLevels = resolveClaudeSupportedEffortLevels(args.nextModelValue, args.availableModels)
     if (nextSupportedLevels === undefined) {
         return undefined
     }

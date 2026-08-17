@@ -800,6 +800,56 @@ describe('sessions routes', () => {
         ])
     })
 
+    it('rejects a model change that also carries effort for a flavor that does not support effort (matches /effort\'s 400)', async () => {
+        // 'codex' supports model change but not effort (shared/src/flavors.ts
+        // FLAVOR_CAPS) -- a payload folding an effort into /model must be
+        // rejected the same way a bare /effort request would be, not
+        // silently accepted just because the model field alone is valid.
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'codex' }
+        })
+        const { app, applySessionConfigCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/model', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'gpt-5.5', effort: 'high' })
+        })
+
+        expect(response.status).toBe(400)
+        expect(await response.json()).toEqual({
+            error: 'Effort selection is not supported for this session type'
+        })
+        expect(applySessionConfigCalls).toEqual([])
+    })
+
+    it('rejects a model+effort change for a locally-controlled Grok session with 409', async () => {
+        // /model's own pre-existing per-flavor controlledByUser block (above)
+        // already rejects any local-Grok model change before the shared
+        // effort guard's own grok branch is reached, so this fires with
+        // /model's message rather than /effort's -- the requirement is the
+        // 409 status: a locally-controlled Grok session can never have its
+        // model or effort changed through this route, with or without an
+        // effort in the payload.
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'grok' },
+            agentState: { controlledByUser: true, requests: {}, completedRequests: {} }
+        })
+        const { app, applySessionConfigCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/model', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'grok-4.5', effort: 'low' })
+        })
+
+        expect(response.status).toBe(409)
+        expect(await response.json()).toEqual({
+            error: 'Model selection can only be changed for remote Grok sessions'
+        })
+        expect(applySessionConfigCalls).toEqual([])
+    })
+
     it('rejects effort changes for non-Claude sessions', async () => {
         const { app, applySessionConfigCalls } = createApp(createSession())
 
