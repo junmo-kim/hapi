@@ -43,6 +43,18 @@ function withCurrentModelOption(options: ModelOption[], currentModel?: string | 
     return nextOptions
 }
 
+/**
+ * Every Claude options list must carry the null "use the session default" row:
+ * HappyComposer renders it as the Default entry and it is the only way to unpin
+ * a model. getClaudeComposerModelOptions guarantees it, but a caller passing a
+ * raw catalog array (or a test fixture) may not.
+ */
+function withClaudeDefaultRow(options: ModelOption[]): ModelOption[] {
+    return options.some((option) => option.value === null)
+        ? options
+        : [{ value: null, label: 'Default' }, ...options]
+}
+
 function getAgyModelOptions(currentModel?: string | null): ModelOption[] {
     const options = MODEL_OPTIONS.agy.filter((m) => m.value !== 'auto').map((m) => ({
         value: m.value,
@@ -87,9 +99,11 @@ export function getModelOptionsForFlavor(
     // itself), so re-running it through withCurrentModelOption here would
     // silently undo that.
     if (flavor === 'claude') {
-        return customOptions && customOptions.length > 0
-            ? customOptions
-            : getClaudeComposerModelOptions(currentModel)
+        return withClaudeDefaultRow(
+            customOptions && customOptions.length > 0
+                ? customOptions
+                : getClaudeComposerModelOptions(currentModel)
+        )
     }
     if (customOptions && customOptions.length > 0) {
         if (flavor === 'cursor') {
@@ -158,9 +172,11 @@ export function getNextModelForFlavor(
     // getModelOptionsForFlavor -> withCurrentModelOption and reintroduce the
     // duplicate-row bug described there.
     if (flavor === 'claude') {
-        const options = customOptions && customOptions.length > 0
-            ? customOptions
-            : getClaudeComposerModelOptions(currentModel)
+        const options = withClaudeDefaultRow(
+            customOptions && customOptions.length > 0
+                ? customOptions
+                : getClaudeComposerModelOptions(currentModel)
+        )
         const currentIndex = options.findIndex((option) => option.value === (normalizeCurrentModel(currentModel) ?? null))
         if (currentIndex === -1) {
             // Matches agy/the generic customOptions branch below: land on the

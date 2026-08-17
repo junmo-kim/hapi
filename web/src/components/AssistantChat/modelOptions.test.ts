@@ -297,14 +297,16 @@ describe('getNextModelForFlavor', () => {
         expect(next).not.toBeNull()
     })
 
-    it('cycles through a supplied Claude catalog by replacing (not merging onto) the static presets', () => {
+    it('cycles through a supplied Claude catalog by replacing (not merging onto) the static presets, wrapping through the guaranteed Default row', () => {
         const next = getNextModelForFlavor('claude', 'sonnet[1m]', [
             { value: 'sonnet', label: 'Sonnet' },
             { value: 'sonnet[1m]', label: 'Sonnet 1M' }
         ])
         // The catalog IS the full options list (already contains the current
-        // model) -- cycling wraps from index 1 back to index 0.
-        expect(next).toBe('sonnet')
+        // model), but the null "Default" row is always guaranteed even when
+        // the supplied catalog omits it -- cycling from the last row wraps
+        // to Default, not back to the first supplied row.
+        expect(next).toBeNull()
     })
 
     it('Ctrl/Cmd+M cycling never posts a value the supplied Claude catalog would reject (plain wire strings only)', () => {
