@@ -281,6 +281,12 @@ export const SessionCopilotAgentModeRequestSchema = z.object({
 
 export type SessionCopilotAgentModeRequest = z.infer<typeof SessionCopilotAgentModeRequestSchema>
 
+export const SessionEffortRequestSchema = z.object({
+    effort: z.string().trim().min(1).nullable()
+})
+
+export type SessionEffortRequest = z.infer<typeof SessionEffortRequestSchema>
+
 export const SessionModelRequestSchema = z.object({
     model: z.union([
         z.string().trim().min(1),
@@ -288,7 +294,14 @@ export const SessionModelRequestSchema = z.object({
             provider: z.string().trim().min(1),
             modelId: z.string().trim().min(1),
         }),
-    ]).nullable()
+    ]).nullable(),
+    // Optional so a model change can atomically clear an effort the new
+    // model no longer supports in the SAME request (see SessionChat.tsx's
+    // handleModelChange) instead of relying on a second, separate effort
+    // RPC that a prompt could race between. Reuses SessionEffortRequestSchema's
+    // own `effort` field rather than redefining the same nullable-string
+    // shape twice.
+    effort: SessionEffortRequestSchema.shape.effort.optional()
 })
 
 export type SessionModelRequest = z.infer<typeof SessionModelRequestSchema>
@@ -298,12 +311,6 @@ export const SessionModelReasoningEffortRequestSchema = z.object({
 })
 
 export type SessionModelReasoningEffortRequest = z.infer<typeof SessionModelReasoningEffortRequestSchema>
-
-export const SessionEffortRequestSchema = z.object({
-    effort: z.string().trim().min(1).nullable()
-})
-
-export type SessionEffortRequest = z.infer<typeof SessionEffortRequestSchema>
 
 // Fast mode is an explicit two-way choice. `'standard'` (not `null`) is the
 // stored sentinel for an explicit Fast-off so it stays distinct from

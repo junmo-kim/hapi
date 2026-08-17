@@ -105,7 +105,7 @@ import { useOpencodeModels } from '@/hooks/queries/useOpencodeModels'
 import { useGrokModels } from '@/hooks/queries/useGrokModels'
 import { useCopilotModels } from '@/hooks/queries/useCopilotModels'
 import { useClaudeModelsForCwd } from '@/hooks/queries/useClaudeModelsForCwd'
-import { findCatalogRowFor, getClaudeComposerModelOptions, resolveClaudeComposerWireValue, resolveClaudeSupportedEffortLevels } from '@/components/AssistantChat/claudeModelOptions'
+import { findCatalogRowFor, getClaudeComposerModelOptions, resolveClaudeComposerWireValue, resolveClaudeModelChangeEffortClear, resolveClaudeSupportedEffortLevels } from '@/components/AssistantChat/claudeModelOptions'
 import { CLAUDE_EFFORT_LABELS, type ClaudeEffortLevel } from '@hapi/protocol'
 import { useGrokReasoningEffortOptions } from '@/hooks/queries/useGrokReasoningEffortOptions'
 import { usePiModels } from '@/hooks/queries/usePiModels'
@@ -130,6 +130,51 @@ export function resolvePiContextWindow(
         : models?.find((candidate) => candidate.modelId === legacyModelId)
 
     return model?.contextWindow
+}
+
+/**
+ * Whether the Claude model catalog query (useClaudeModelsForCwd) and its
+ * downstream effort reconciliation should run for this session's composer.
+ *
+ * Unlike codex/cursor/grok, the hub's `/model` and `/effort` routes for
+ * Claude sessions do not gate on `controlledByUser` (hub/src/web/routes/
+ * sessions.ts) -- only codex/cursor/grok's model route and grok's effort
+ * route 409 for a locally-controlled session; Claude's routes accept the
+ * change either way. So the catalog that drives the picker's option list,
+ * and the reconciliation effect that clears a now-unsupported effort, both
+ * have to cover the same session set those routes actually accept changes
+ * for -- every active Claude session, not just remote-controlled ones.
+ * Gating this on controlledByUser would leave locally-controlled sessions
+ * stuck on the static preset list with no reconciliation, free to submit
+ * model/effort combinations the route would otherwise keep consistent.
+ */
+export function shouldDriveClaudeCatalog(agentFlavor: string | null, sessionActive: boolean): boolean {
+    return agentFlavor === 'claude' && sessionActive
+}
+
+/**
+ * Guard for the effect that reconciles a pinned Claude effort level once
+ * the live catalog confirms the currently selected model no longer
+ * supports it (e.g. switching to haiku, which has no
+ * supportedEffortLevels). Shares shouldDriveClaudeCatalog's session gate
+ * (see its doc comment for why controlledByUser plays no part here) plus
+ * the catalog-readiness checks: still loading, errored, no resolvable
+ * catalog row for the current model, or no effort pinned at all mean
+ * there's nothing to reconcile yet.
+ */
+export function shouldReconcileClaudeEffort(args: {
+    agentFlavor: string | null
+    sessionActive: boolean
+    isLoading: boolean
+    hasError: boolean
+    hasSelectedModelSummary: boolean
+    sessionEffort: string | null | undefined
+}): boolean {
+    return shouldDriveClaudeCatalog(args.agentFlavor, args.sessionActive)
+        && !args.isLoading
+        && !args.hasError
+        && args.hasSelectedModelSummary
+        && Boolean(args.sessionEffort)
 }
 
 export async function applyModelChangeWithReasoningRollback(args: {
@@ -956,16 +1001,16 @@ function SessionChatInner(props: SessionChatProps) {
     // (useClaudeModelsForCwd) NewSession uses before a session even exists,
     // rather than a dedicated session-scoped RPC like codex/opencode/grok/copilot.
     //
-    // Excluding controlledByUser (terminal-driven) sessions here matches the
-    // codex/grok/copilot gates above: the catalog then stays empty, so
-    // resolveClaudeSupportedEffortLevels(...) below returns undefined
-    // ("unconfirmed") and the static preset list is kept deliberately -- this
-    // is the designed unconfirmed-state fallback, not a missed gate.
+    // Unlike the codex/grok/copilot gates above, this does NOT exclude
+    // controlledByUser -- see shouldDriveClaudeCatalog's doc comment: the
+    // hub's Claude model/effort routes accept locally-controlled sessions
+    // too, so the catalog has to cover the same set of sessions those
+    // routes actually let through.
     const claudeModelsState = useClaudeModelsForCwd({
         api: props.api,
         machineId: props.session.metadata?.machineId ?? null,
         cwd: props.session.metadata?.path ?? null,
-        enabled: agentFlavor === 'claude' && props.session.active && !controlledByUser
+        enabled: shouldDriveClaudeCatalog(agentFlavor, props.session.active)
     })
     const claudeModelOptions = useMemo(() => (
         agentFlavor === 'claude' && claudeModelsState.availableModels.length > 0
@@ -1486,12 +1531,34 @@ function SessionChatInner(props: SessionChatProps) {
                 previousModelReasoningEffort
             ) === false
 
+        // Fold an effort clear into the SAME model request when the target
+        // model doesn't support the effort this session currently has
+        // pinned, instead of leaving that to the separate reconciliation
+        // effect above: that effect only fires after the model RPC has
+        // already landed and the store has refreshed, so a prompt sent in
+        // that window could reach the CLI with the old effort attached to
+        // the new model, and a failed second (effort-clear) request would
+        // leave it stranded. resolveClaudeModelChangeEffortClear returns
+        // undefined (send nothing) when the catalog hasn't confirmed
+        // support either way -- the reconciliation effect still covers
+        // that case once it does.
+        const claudeEffortClear = agentFlavor === 'claude'
+            ? resolveClaudeModelChangeEffortClear({
+                currentEffort: props.session.effort,
+                nextModelSummary: findCatalogRowFor(
+                    typeof model === 'string' || model === null ? model : null,
+                    claudeModelsState.availableModels
+                ),
+                availableModels: claudeModelsState.availableModels
+            })
+            : undefined
+
         try {
             await applyModelChangeWithReasoningRollback({
                 model,
                 previousModelReasoningEffort,
                 shouldClearReasoningEffort,
-                setModel,
+                setModel: (m) => setModel(m, claudeEffortClear),
                 setModelReasoningEffort
             })
             haptic.notification('success')
@@ -1504,6 +1571,8 @@ function SessionChatInner(props: SessionChatProps) {
         agentFlavor,
         codexModelsState.models,
         props.session.modelReasoningEffort,
+        props.session.effort,
+        claudeModelsState.availableModels,
         setModelReasoningEffort,
         setModel,
         props.onRefresh,
@@ -1588,17 +1657,28 @@ function SessionChatInner(props: SessionChatProps) {
     // haiku, which has no supportedEffortLevels) -- mirrors NewSession's
     // identical reconciliation effect (index.tsx) so both surfaces enforce
     // the same rule instead of leaving the composer able to submit
-    // `effort: 'high'` alongside `--model haiku` (round 3).
+    // `effort: 'high'` alongside `--model haiku` (round 3). Runs for
+    // locally-controlled sessions too -- see shouldReconcileClaudeEffort /
+    // shouldDriveClaudeCatalog above for why controlledByUser isn't part of
+    // this gate.
     useEffect(() => {
-        if (
-            agentFlavor !== 'claude'
-            || !props.session.active
-            || controlledByUser
-            || claudeModelsState.isLoading
-            || claudeModelsState.error
-            || !claudeSelectedModelSummary
-            || !props.session.effort
-        ) {
+        if (!shouldReconcileClaudeEffort({
+            agentFlavor,
+            sessionActive: props.session.active,
+            isLoading: claudeModelsState.isLoading,
+            hasError: Boolean(claudeModelsState.error),
+            hasSelectedModelSummary: Boolean(claudeSelectedModelSummary),
+            sessionEffort: props.session.effort
+        })) {
+            return
+        }
+        // shouldReconcileClaudeEffort already confirmed session.effort is
+        // truthy, but that check happened behind a function call, which
+        // (unlike an inline guard) doesn't narrow the type for TS below --
+        // re-check here so `supportedLevels.includes(...)` sees `string`,
+        // not `string | null`.
+        const sessionEffort = props.session.effort
+        if (!sessionEffort) {
             return
         }
         // resolveClaudeSupportedEffortLevels returns undefined when nothing
@@ -1614,13 +1694,12 @@ function SessionChatInner(props: SessionChatProps) {
         if (supportedLevels === undefined) {
             return
         }
-        if (!supportedLevels.includes(props.session.effort)) {
+        if (!supportedLevels.includes(sessionEffort)) {
             void handleEffortChange(null, { silent: true })
         }
     }, [
         agentFlavor,
         props.session.active,
-        controlledByUser,
         claudeModelsState.isLoading,
         claudeModelsState.error,
         claudeSelectedModelSummary,

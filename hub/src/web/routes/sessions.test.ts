@@ -762,6 +762,44 @@ describe('sessions routes', () => {
         expect(applySessionConfigCalls).toEqual([])
     })
 
+    it('applies model and effort together in a single request when the payload carries both', async () => {
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'claude' }
+        })
+        const { app, applySessionConfigCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/model', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'haiku', effort: null })
+        })
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({ ok: true })
+        expect(applySessionConfigCalls).toEqual([
+            ['session-1', { model: 'haiku', effort: null }]
+        ])
+    })
+
+    it('applies a model change with effort together for a locally-controlled Claude session (unlike codex/cursor/grok)', async () => {
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'claude' },
+            agentState: { controlledByUser: true, requests: {}, completedRequests: {} }
+        })
+        const { app, applySessionConfigCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/model', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'haiku', effort: null })
+        })
+
+        expect(response.status).toBe(200)
+        expect(applySessionConfigCalls).toEqual([
+            ['session-1', { model: 'haiku', effort: null }]
+        ])
+    })
+
     it('rejects effort changes for non-Claude sessions', async () => {
         const { app, applySessionConfigCalls } = createApp(createSession())
 

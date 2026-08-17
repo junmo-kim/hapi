@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { catalogReportsEffortLevels, findCatalogRowFor, getClaudeComposerModelOptions, getNextClaudeComposerModel, resolveClaudeComposerWireValue, resolveClaudeSupportedEffortLevels } from './claudeModelOptions'
+import { catalogReportsEffortLevels, findCatalogRowFor, getClaudeComposerModelOptions, getNextClaudeComposerModel, resolveClaudeComposerWireValue, resolveClaudeModelChangeEffortClear, resolveClaudeSupportedEffortLevels } from './claudeModelOptions'
 
 const LIVE_CATALOG = [
     { value: 'default', displayName: 'Default (recommended)', resolvedModel: 'claude-opus-5[1m]', supportsFastMode: true, supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'] },
@@ -274,5 +274,58 @@ describe('resolveClaudeSupportedEffortLevels', () => {
 
     it('resolves undefined when there is no selected model row', () => {
         expect(resolveClaudeSupportedEffortLevels(undefined, LIVE_CATALOG)).toBeUndefined()
+    })
+})
+
+describe('resolveClaudeModelChangeEffortClear', () => {
+    // The gap this closes: handleModelChange previously applied the new
+    // model, then a separate reconciliation effect cleared an
+    // incompatible effort in a SECOND request later. A prompt sent
+    // between the two requests could reach the CLI with the old model's
+    // effort attached to the new model, and a failed second request left
+    // the stale effort in place. This resolves what to send in the SAME
+    // request as the model change instead.
+    it('returns null (clear it) when the target model does not support the currently pinned effort', () => {
+        const haikuRow = LIVE_CATALOG.find((entry) => entry.value === 'haiku')
+        expect(resolveClaudeModelChangeEffortClear({
+            currentEffort: 'high',
+            nextModelSummary: haikuRow,
+            availableModels: LIVE_CATALOG
+        })).toBeNull()
+    })
+
+    it('returns undefined (send nothing) when the target model supports the currently pinned effort', () => {
+        const sonnetRow = LIVE_CATALOG.find((entry) => entry.value === 'sonnet')
+        expect(resolveClaudeModelChangeEffortClear({
+            currentEffort: 'high',
+            nextModelSummary: sonnetRow,
+            availableModels: LIVE_CATALOG
+        })).toBeUndefined()
+    })
+
+    it('returns undefined (send nothing) when the catalog has not confirmed support either way', () => {
+        const row = NO_EFFORT_FIELD_CATALOG.find((entry) => entry.value === 'haiku')
+        expect(resolveClaudeModelChangeEffortClear({
+            currentEffort: 'high',
+            nextModelSummary: row,
+            availableModels: NO_EFFORT_FIELD_CATALOG
+        })).toBeUndefined()
+    })
+
+    it('returns undefined (send nothing) when the session has no effort pinned to begin with', () => {
+        const haikuRow = LIVE_CATALOG.find((entry) => entry.value === 'haiku')
+        expect(resolveClaudeModelChangeEffortClear({
+            currentEffort: null,
+            nextModelSummary: haikuRow,
+            availableModels: LIVE_CATALOG
+        })).toBeUndefined()
+    })
+
+    it('returns undefined (send nothing) when the target model row cannot be resolved from the catalog', () => {
+        expect(resolveClaudeModelChangeEffortClear({
+            currentEffort: 'high',
+            nextModelSummary: undefined,
+            availableModels: LIVE_CATALOG
+        })).toBeUndefined()
     })
 })

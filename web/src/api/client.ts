@@ -666,10 +666,18 @@ export class ApiClient {
         })
     }
 
-    async setModel(sessionId: string, model: { provider: string; modelId: string } | string | null): Promise<void> {
+    async setModel(
+        sessionId: string,
+        model: { provider: string; modelId: string } | string | null,
+        effort?: string | null
+    ): Promise<void> {
+        // effort is only included in the body when the caller explicitly
+        // passed one (even `null`, to clear it) -- omitting the argument
+        // entirely keeps the existing model-only request shape.
+        const body = effort !== undefined ? { model, effort } : { model }
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/model`, {
             method: 'POST',
-            body: JSON.stringify({ model })
+            body: JSON.stringify(body)
         })
     }
 

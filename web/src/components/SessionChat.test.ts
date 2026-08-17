@@ -9,6 +9,8 @@ import {
     resolvePiContextWindow,
     resolveLatestCompletedBoundaryIdForView,
     shouldAutoClearPendingSchedule,
+    shouldDriveClaudeCatalog,
+    shouldReconcileClaudeEffort,
     shouldRouteToScratchlist,
 } from './SessionChat'
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
@@ -47,6 +49,72 @@ describe('applyModelChangeWithReasoningRollback', () => {
         expect(setModelReasoningEffort).toHaveBeenCalledOnce()
         expect(setModelReasoningEffort).toHaveBeenCalledWith(null)
         expect(setModel).toHaveBeenCalledWith('gpt-next')
+    })
+})
+
+describe('shouldDriveClaudeCatalog', () => {
+    // Unlike codex/cursor/grok, the hub's model and effort routes for
+    // Claude sessions do not gate on controlledByUser (hub/src/web/routes/
+    // sessions.ts) -- only codex/cursor/grok's model route and grok's
+    // effort route 409 for a locally-controlled session. So the catalog
+    // query has to cover every active Claude session, controlled or not,
+    // to match what the route actually accepts.
+    it('is true for an active, locally-controlled Claude session (the fixed gap)', () => {
+        expect(shouldDriveClaudeCatalog('claude', true)).toBe(true)
+    })
+
+    it('is true for an active, remote Claude session', () => {
+        expect(shouldDriveClaudeCatalog('claude', true)).toBe(true)
+    })
+
+    it('is false for an inactive Claude session', () => {
+        expect(shouldDriveClaudeCatalog('claude', false)).toBe(false)
+    })
+
+    it('is false for a non-Claude flavor', () => {
+        expect(shouldDriveClaudeCatalog('codex', true)).toBe(false)
+    })
+})
+
+describe('shouldReconcileClaudeEffort', () => {
+    const baseArgs = {
+        agentFlavor: 'claude',
+        sessionActive: true,
+        isLoading: false,
+        hasError: false,
+        hasSelectedModelSummary: true,
+        sessionEffort: 'high' as string | null | undefined
+    }
+
+    it('runs for a locally-controlled session once the catalog has loaded (the fixed gap)', () => {
+        // controlledByUser is intentionally absent from the args shape --
+        // the whole point of the fix is that reconciliation no longer
+        // branches on it.
+        expect(shouldReconcileClaudeEffort(baseArgs)).toBe(true)
+    })
+
+    it('does not run while the catalog is still loading', () => {
+        expect(shouldReconcileClaudeEffort({ ...baseArgs, isLoading: true })).toBe(false)
+    })
+
+    it('does not run when the catalog query errored', () => {
+        expect(shouldReconcileClaudeEffort({ ...baseArgs, hasError: true })).toBe(false)
+    })
+
+    it('does not run when the current model has no resolvable catalog row', () => {
+        expect(shouldReconcileClaudeEffort({ ...baseArgs, hasSelectedModelSummary: false })).toBe(false)
+    })
+
+    it('does not run when the session has no effort pinned', () => {
+        expect(shouldReconcileClaudeEffort({ ...baseArgs, sessionEffort: null })).toBe(false)
+    })
+
+    it('does not run for an inactive session', () => {
+        expect(shouldReconcileClaudeEffort({ ...baseArgs, sessionActive: false })).toBe(false)
+    })
+
+    it('does not run for a non-Claude flavor', () => {
+        expect(shouldReconcileClaudeEffort({ ...baseArgs, agentFlavor: 'codex' })).toBe(false)
     })
 })
 

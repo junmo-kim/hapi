@@ -655,7 +655,15 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         try {
-            await engine.applySessionConfig(sessionResult.sessionId, { model: parsed.data.model })
+            // Fold an optional `effort` into the same applySessionConfig call
+            // when the payload carries one, so a model switch that drops
+            // support for the currently pinned effort clears it atomically
+            // instead of relying on a second, separate effort RPC that a
+            // prompt sent in between could race.
+            const config = parsed.data.effort !== undefined
+                ? { model: parsed.data.model, effort: parsed.data.effort }
+                : { model: parsed.data.model }
+            await engine.applySessionConfig(sessionResult.sessionId, config)
             return c.json({ ok: true })
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Failed to apply model'

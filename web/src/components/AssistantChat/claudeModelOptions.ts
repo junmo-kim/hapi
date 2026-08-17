@@ -90,6 +90,37 @@ export function resolveClaudeSupportedEffortLevels(
     return selectedModel.supportedEffortLevels ?? []
 }
 
+/**
+ * Whether a model change should carry an effort clear (`null`) in the SAME
+ * request, so a switch to a model that doesn't support the currently
+ * pinned effort can't leave the CLI holding an invalid model/effort pair
+ * between two separate RPCs (SessionChat.tsx's handleModelChange).
+ *
+ * Returns:
+ *   - `null` -- the target model is confirmed not to support the pinned
+ *     effort; the caller should send `{ model, effort: null }` together.
+ *   - `undefined` -- nothing to send: either there's no effort pinned, no
+ *     resolvable target row, the catalog hasn't confirmed support either
+ *     way (mirrors resolveClaudeSupportedEffortLevels' unconfirmed case),
+ *     or the target model already supports the pinned effort. The
+ *     existing reconciliation effect covers the "catalog resolves later"
+ *     case separately.
+ */
+export function resolveClaudeModelChangeEffortClear(args: {
+    currentEffort: string | null | undefined
+    nextModelSummary: ClaudeModelSummary | undefined
+    availableModels: ClaudeModelSummary[]
+}): null | undefined {
+    if (!args.currentEffort) {
+        return undefined
+    }
+    const nextSupportedLevels = resolveClaudeSupportedEffortLevels(args.nextModelSummary, args.availableModels)
+    if (nextSupportedLevels === undefined) {
+        return undefined
+    }
+    return nextSupportedLevels.includes(args.currentEffort) ? undefined : null
+}
+
 // The `default` row's wire value resolves to whatever the account's actual
 // default model is server-side; HAPI's storage format keeps representing
 // "use the default" as null (unchanged from before this catalog existed), so
