@@ -712,12 +712,18 @@ describe('SDKToLogConverter', () => {
         })
 
         it('keeps plain vs [1m] variants of the same base model on distinct cache keys (multi-tier: no collision)', () => {
-            // On some tiers plain "sonnet" is 200k while "sonnet[1m]" is 1M. For sonnet the
-            // CLI already reports the "[1m]" on system/init.model and the result key, so the
-            // two variants land on DISTINCT cache keys on their own (only the per-turn
-            // assistant message.model is bare/lossy, which is why lookups go through the
-            // resolved cache key, not message.model). fable is the case where the CLI does
-            // NOT suffix the id and the key has to be folded — covered by the next test.
+            // The two variants must stay on distinct cache keys so neither can serve the
+            // other's window. This test feeds deliberately different numbers to prove the
+            // separation; it does not assert that the two windows differ in practice. (On
+            // claude 2.1.233/2.1.234, plain and "[1m]" report the SAME window for sonnet,
+            // opus and fable on both Pro and Max accounts — the suffix is not a window
+            // signal. Keying per resolved model is still what keeps a future divergence,
+            // or an unmeasured account, from reading a stale entry.) For sonnet the CLI
+            // already reports the "[1m]" on system/init.model and the result key, so the
+            // two variants land on distinct keys on their own (only the per-turn assistant
+            // message.model is bare/lossy, which is why lookups go through the resolved
+            // cache key, not message.model). fable is the case where the CLI does NOT
+            // suffix the id and the key has to be folded — covered by the next test.
             const conv = new SDKToLogConverter({ ...context, selectedModel: 'sonnet[1m]' } as any)
 
             // Turn 1 on sonnet[1m]: learns 1M under the suffixed key.
@@ -733,7 +739,7 @@ describe('SDKToLogConverter', () => {
             } as any) as any
             expect(t1?.message?.usage?.context_window).toBe(1_000_000)
 
-            // Switch to plain sonnet (200k on this tier): learns 200k under the bare key.
+            // Switch to plain sonnet (fixture window 200k): learns it under the bare key.
             conv.updateSelectedModel('sonnet')
             conv.convert({ type: 'system', subtype: 'init', session_id: 's', model: 'claude-sonnet-5' } as SDKSystemMessage)
             conv.convert({
@@ -762,10 +768,12 @@ describe('SDKToLogConverter', () => {
         it('distinguishes fable vs fable[1m] even though the CLI reports both with the bare id', () => {
             // Unlike opus[1m]/sonnet[1m], the CLI reports BOTH "fable" and "fable[1m]" with
             // the bare id "claude-fable-5" on system/init and in result.modelUsage. A cache
-            // keyed on that raw id alone can't tell the two apart, so switching fable[1m]
-            // (1M) -> fable (200k) would keep showing the stale 1M until fable's result
-            // lands. Folding the selectedModel's "[1m]" into the cache key keeps them
-            // distinct. selectedModel is the ONLY turn-1 signal that separates them here.
+            // keyed on that raw id alone can't tell the two apart, so a switch between them
+            // would serve whichever window happened to be cached first until the next
+            // result lands. Folding the selectedModel's "[1m]" into the cache key keeps
+            // them distinct; selectedModel is the ONLY turn-1 signal that separates them.
+            // The differing numbers below are fixtures chosen to make a collision visible,
+            // not a claim that the two windows differ (measured equal on Pro and Max).
             const conv = new SDKToLogConverter({ ...context, selectedModel: 'fable[1m]' } as any)
 
             // fable[1m]: seeds 1M from selectedModel, result confirms 1M.
@@ -781,7 +789,7 @@ describe('SDKToLogConverter', () => {
             } as any) as any
             expect(t1?.message?.usage?.context_window).toBe(1_000_000)
 
-            // Switch to plain fable (200k): must re-seed 200k, NOT keep the stale 1M.
+            // Switch to plain fable (fixture window 200k): must re-seed it, NOT keep the stale 1M.
             conv.updateSelectedModel('fable')
             conv.convert({ type: 'system', subtype: 'init', session_id: 's', model: 'claude-fable-5' } as SDKSystemMessage)
             const t2 = conv.convert({
