@@ -4,7 +4,7 @@ import type { AgentMessage, PlanItem } from '@/agent/types';
 import { registerGeneratedImageFromAcpBlock } from '@/modules/common/generatedImages';
 import type { InlineMediaSource } from '@/modules/common/inlineMediaSource';
 import { asString, isObject } from '@hapi/protocol';
-import { deriveToolNameWithSource, isPlaceholderToolName } from '@/agent/utils';
+import { canonicalizeDiffToolInput, deriveToolNameWithSource, isPlaceholderToolName } from '@/agent/utils';
 import { parseRateLimitText } from '@/agent/rateLimitParser';
 import { isInternalEventJson } from '@/agent/internalEventFilter';
 import { ACP_SESSION_UPDATE_TYPES } from './constants';
@@ -729,7 +729,7 @@ export class AcpMessageHandler {
             rawInput: update.rawInput,
             metaKind: null
         });
-        const name = derivedName.name;
+        let name = derivedName.name;
         // Priority: usable rawInput > kind+title fallback > content JSON fallback.
         // Empty `{}` is treated as missing (OpenCode tool-start / permission clobber).
         // Kimi ACP streams tool arguments as JSON text in the content array
@@ -743,8 +743,18 @@ export class AcpMessageHandler {
                 update.content
             );
         // Content JSON can be `{}` (same as unusable rawInput); never lock that in.
-        const input = isUsableRawInput(candidate) ? candidate : null;
+        let input = isUsableRawInput(candidate) ? candidate : null;
         const status = normalizeStatus(update.status);
+
+        // Agents that keep native argument shapes (OpenCode: {filePath,
+        // oldString, newString} / {filePath, content}) must be canonicalized to
+        // the Claude-shaped Edit/Write inputs the web diff views render — the
+        // same contract as hoistDiffContentIntoInput for Gemini's diff blocks.
+        const canonical = input == null ? null : canonicalizeDiffToolInput(input);
+        if (canonical) {
+            name = canonical.name;
+            input = canonical.input;
+        }
 
         this.toolCalls.set(toolCallId, { name, input });
 
@@ -772,8 +782,15 @@ export class AcpMessageHandler {
 
         if (isUsableRawInput(update.rawInput)) {
             const derivedName = deriveToolNameFromUpdate(update);
-            const name = this.selectToolNameForUpdate(existing?.name ?? null, derivedName);
-            const input = update.rawInput;
+            let name = this.selectToolNameForUpdate(existing?.name ?? null, derivedName);
+            let input: unknown = update.rawInput;
+            // Native-shape args (OpenCode) arrive here as the first usable
+            // input; canonicalize before storing so the web diff views match.
+            const canonical = canonicalizeDiffToolInput(input);
+            if (canonical) {
+                name = canonical.name;
+                input = canonical.input;
+            }
             this.toolCalls.set(toolCallId, { name, input });
             this.onMessage({
                 type: 'tool_call',
@@ -800,9 +817,16 @@ export class AcpMessageHandler {
                     update.content
                 );
                 if (isUsableRawInput(fallback)) {
-                    input = fallback;
-                    const derivedName = deriveToolNameFromUpdate(update);
-                    name = this.selectToolNameForUpdate(existing.name ?? null, derivedName);
+                    let nextInput: unknown = fallback;
+                    const canonical = canonicalizeDiffToolInput(fallback);
+                    if (canonical) {
+                        name = canonical.name;
+                        nextInput = canonical.input;
+                    } else {
+                        const derivedName = deriveToolNameFromUpdate(update);
+                        name = this.selectToolNameForUpdate(existing.name ?? null, derivedName);
+                    }
+                    input = nextInput;
                     this.toolCalls.set(toolCallId, { name, input });
                     rederived = true;
                 }
