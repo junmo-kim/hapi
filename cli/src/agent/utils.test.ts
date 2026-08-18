@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { deriveToolName, deriveToolNameWithSource, isPlaceholderToolName } from './utils';
+import { canonicalizeDiffToolInput, deriveToolName, deriveToolNameWithSource, isPlaceholderToolName } from './utils';
 
 describe('agent tool name helpers', () => {
     it('treats generic kind fallback as placeholder', () => {
@@ -66,6 +66,120 @@ describe('agent tool name helpers', () => {
             });
             expect(derived.name).toBe('MyCustomTool');
             expect(derived.source).toBe('title');
+        });
+    });
+
+    describe('canonicalizeDiffToolInput (OpenCode native diff shapes)', () => {
+        // OpenCode ACP keeps tool arguments in native shape:
+        //   edit  → {filePath, oldString, newString}
+        //   write → {filePath, content}
+        // The web Edit/Write views only render the Claude-shaped inputs
+        // ({file_path, old_string, new_string} / {file_path, content}), so
+        // these shapes are canonicalized at the adapter boundary.
+
+        it('maps camelCase edit input to the canonical Edit shape', () => {
+            expect(canonicalizeDiffToolInput({
+                filePath: '/tmp/a.ts',
+                oldString: 'foo',
+                newString: 'bar'
+            })).toEqual({
+                name: 'Edit',
+                input: { file_path: '/tmp/a.ts', old_string: 'foo', new_string: 'bar' }
+            });
+        });
+
+        it('maps snake_case edit input to the canonical Edit shape', () => {
+            expect(canonicalizeDiffToolInput({
+                file_path: '/tmp/a.ts',
+                old_string: 'foo',
+                new_string: 'bar'
+            })).toEqual({
+                name: 'Edit',
+                input: { file_path: '/tmp/a.ts', old_string: 'foo', new_string: 'bar' }
+            });
+        });
+
+        it('allows empty newString (deletion edits)', () => {
+            expect(canonicalizeDiffToolInput({
+                filePath: '/tmp/a.ts',
+                oldString: 'drop me\n',
+                newString: ''
+            })).toEqual({
+                name: 'Edit',
+                input: { file_path: '/tmp/a.ts', old_string: 'drop me\n', new_string: '' }
+            });
+        });
+
+        it('prefers Edit over Write when both edit and content fields are present', () => {
+            expect(canonicalizeDiffToolInput({
+                filePath: '/tmp/a.ts',
+                oldString: 'foo',
+                newString: 'bar',
+                content: 'baz'
+            })).toEqual({
+                name: 'Edit',
+                input: { file_path: '/tmp/a.ts', old_string: 'foo', new_string: 'bar' }
+            });
+        });
+
+        it('maps camelCase write input to the canonical Write shape', () => {
+            expect(canonicalizeDiffToolInput({
+                filePath: '/tmp/b.txt',
+                content: 'hello\n'
+            })).toEqual({
+                name: 'Write',
+                input: { file_path: '/tmp/b.txt', content: 'hello\n' }
+            });
+        });
+
+        it('maps snake_case write input to the canonical Write shape', () => {
+            expect(canonicalizeDiffToolInput({
+                file_path: '/tmp/b.txt',
+                content: ''
+            })).toEqual({
+                name: 'Write',
+                input: { file_path: '/tmp/b.txt', content: '' }
+            });
+        });
+
+        it('returns null without a usable path', () => {
+            expect(canonicalizeDiffToolInput({
+                oldString: 'foo',
+                newString: 'bar'
+            })).toBeNull();
+            expect(canonicalizeDiffToolInput({
+                filePath: 42,
+                oldString: 'foo',
+                newString: 'bar'
+            })).toBeNull();
+        });
+
+        it('returns null when one of old/new is missing', () => {
+            expect(canonicalizeDiffToolInput({
+                filePath: '/tmp/a.ts',
+                oldString: 'foo'
+            })).toBeNull();
+            expect(canonicalizeDiffToolInput({
+                filePath: '/tmp/a.ts',
+                newString: 'bar'
+            })).toBeNull();
+        });
+
+        it('returns null for non-diff shapes (e.g. apply_patch text)', () => {
+            expect(canonicalizeDiffToolInput({
+                patch: '*** Begin Patch\n...'
+            })).toBeNull();
+            expect(canonicalizeDiffToolInput({
+                filePath: '/tmp/a.ts',
+                command: 'ls'
+            })).toBeNull();
+        });
+
+        it('returns null for non-object inputs', () => {
+            expect(canonicalizeDiffToolInput(null)).toBeNull();
+            expect(canonicalizeDiffToolInput(undefined)).toBeNull();
+            expect(canonicalizeDiffToolInput('{"filePath":"/tmp/a.ts"}')).toBeNull();
+            expect(canonicalizeDiffToolInput([])).toBeNull();
         });
     });
 });
