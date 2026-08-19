@@ -91,7 +91,7 @@ Source: `hub/src/web/routes/sessions.ts`; flavor gates in `shared/src/modes.ts` 
 | Method & path | Request | Applies to |
 |---|---|---|
 | `POST /api/sessions/:id/permission-mode` | `{mode: PermissionMode}` | All flavors except `pi` (per-flavor allowed sets in `modes.ts`) |
-| `POST /api/sessions/:id/model` | `{model: string \| {provider, modelId} \| null, effort?: string \| null}` | All flavors (`supportsModelChange` is true for every current flavor); remote-only for codex/cursor/grok. `effort` is optional and applied in the same config write, so a model change that invalidates the current effort clears it atomically; it is rejected for flavors without `supportsEffort` |
+| `POST /api/sessions/:id/model` | `{model: string \| {provider, modelId} \| null, effort?: string \| null}` | All flavors (`supportsModelChange` is true for every current flavor); remote-only for codex/cursor/grok. `effort` is optional and **Claude-only**: it is applied in the same config write, so a model change that invalidates the current effort clears it atomically. Other flavors must use the separate `/effort` route because their agents do not apply the pair as one operation (400 otherwise) |
 | `POST /api/sessions/:id/effort` | `{effort: string \| null}` | claude, grok, pi (`supportsEffort`) |
 | `POST /api/sessions/:id/model-reasoning-effort` | `{modelReasoningEffort: string \| null}` | codex, opencode (remote-only) |
 | `POST /api/sessions/:id/service-tier` | `{serviceTier: 'fast' \| 'standard'}` | codex (remote-only) |

@@ -688,6 +688,18 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
                 sessionResult.session.agentState?.controlledByUser === true
             )
             if (rejection) return rejection
+            // Passing both only makes sense where the agent applies them as one
+            // operation. Claude's session config RPC does; Pi's runs set_model
+            // and set_thinking_level in sequence and commits the model between
+            // them (cli/src/pi/runPi.ts), so a failing thinking-level call would
+            // leave Pi on the new model while this route reports 409 and the hub
+            // cache keeps the old one. Those flavors must use the two routes.
+            if (flavor !== 'claude') {
+                return c.json(
+                    { error: 'Combining model and effort in one request is only supported for Claude sessions' },
+                    400
+                )
+            }
         }
 
         try {

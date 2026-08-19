@@ -402,6 +402,46 @@ describe('sessions routes', () => {
         expect(applySessionConfigCalls).toEqual([])
     })
 
+    it('rejects a combined model+effort request for a Pi session', async () => {
+        // Pi supports effort, so the capability guard admits it, but its CLI
+        // runs set_model and set_thinking_level in sequence and commits the
+        // model between them. A failing thinking-level call would leave Pi on
+        // the new model while this route reports 409 and the hub cache keeps
+        // the old one, so the pair has to go through the two routes instead.
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'pi' }
+        })
+        const { app, applySessionConfigCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/model', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'some-model', effort: null })
+        })
+
+        expect(response.status).toBe(400)
+        expect(await response.json()).toEqual({
+            error: 'Combining model and effort in one request is only supported for Claude sessions'
+        })
+        expect(applySessionConfigCalls).toEqual([])
+    })
+
+    it('still applies a plain model change for a Pi session', async () => {
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'pi' }
+        })
+        const { app, applySessionConfigCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/model', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'some-model' })
+        })
+
+        expect(response.status).toBe(200)
+        expect(applySessionConfigCalls).toEqual([['session-1', { model: 'some-model' }]])
+    })
+
     it('rejects collaboration mode changes for non-Codex sessions', async () => {
         const session = createSession({
             metadata: {
