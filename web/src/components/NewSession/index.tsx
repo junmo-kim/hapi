@@ -628,10 +628,14 @@ export function NewSession(props: {
     // "Auto" (no option matches "high") while the form still submits
     // effort: 'high' to a model that doesn't advertise it.
     useEffect(() => {
+        // No error guard: claudeEffortOptions already answers from the static
+        // fallback when the catalog request fails, and that answer is confirmed
+        // capability data -- haiku supports no effort either way. Gating on the
+        // query error would let the form submit effort: 'high' to haiku while
+        // rendering Auto, which is the mismatch this effect exists to prevent.
         if (
             agent !== 'claude'
             || claudeModelsState.isLoading
-            || claudeModelsState.error
             || !claudeEffortOptions
         ) {
             return
@@ -642,7 +646,7 @@ export function NewSession(props: {
         ) {
             setEffort('auto')
         }
-    }, [agent, claudeEffortOptions, claudeModelsState.error, claudeModelsState.isLoading, effort])
+    }, [agent, claudeEffortOptions, claudeModelsState.isLoading, effort])
     const copilotModelOptions = useMemo(
         () => [
             { value: 'auto', label: 'Auto' },

@@ -81,8 +81,6 @@ describe('shouldReconcileClaudeEffort', () => {
         agentFlavor: 'claude',
         sessionActive: true,
         isLoading: false,
-        hasError: false,
-        hasSelectedModelSummary: true,
         sessionEffort: 'high' as string | null | undefined
     }
 
@@ -97,12 +95,21 @@ describe('shouldReconcileClaudeEffort', () => {
         expect(shouldReconcileClaudeEffort({ ...baseArgs, isLoading: true })).toBe(false)
     })
 
-    it('does not run when the catalog query errored', () => {
-        expect(shouldReconcileClaudeEffort({ ...baseArgs, hasError: true })).toBe(false)
+    it('still runs once a failed catalog request has settled', () => {
+        // A settled error is not the same as unconfirmed capability:
+        // resolveClaudeSupportedEffortLevels answers from the static fallback,
+        // where haiku is confirmed to support nothing. Gating the effect on the
+        // query error left the selector rendering Auto while the session kept
+        // the unsupported level. The gate deliberately carries no error flag,
+        // so this test asserts the shape as much as the behaviour.
+        expect(shouldReconcileClaudeEffort(baseArgs)).toBe(true)
     })
 
-    it('does not run when the current model has no resolvable catalog row', () => {
-        expect(shouldReconcileClaudeEffort({ ...baseArgs, hasSelectedModelSummary: false })).toBe(false)
+    it('leaves the no-live-row case to the resolver rather than the gate', () => {
+        // A model with no catalog row yields undefined from the resolver and is
+        // dropped at the call site, so the gate must not also filter on it --
+        // doing so would skip the static-fallback case entirely.
+        expect(shouldReconcileClaudeEffort(baseArgs)).toBe(true)
     })
 
     it('does not run when the session has no effort pinned', () => {

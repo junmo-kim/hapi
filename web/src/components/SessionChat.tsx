@@ -153,27 +153,29 @@ export function shouldDriveClaudeCatalog(agentFlavor: string | null, sessionActi
 }
 
 /**
- * Guard for the effect that reconciles a pinned Claude effort level once
- * the live catalog confirms the currently selected model no longer
- * supports it (e.g. switching to haiku, which has no
- * supportedEffortLevels). Shares shouldDriveClaudeCatalog's session gate
- * (see its doc comment for why controlledByUser plays no part here) plus
- * the catalog-readiness checks: still loading, errored, no resolvable
- * catalog row for the current model, or no effort pinned at all mean
- * there's nothing to reconcile yet.
+ * Guard for the effect that reconciles a pinned Claude effort level once the
+ * model's capability is known and no longer includes it (e.g. switching to
+ * haiku, which supports no effort at all). Shares shouldDriveClaudeCatalog's
+ * session gate -- see its doc comment for why controlledByUser plays no part.
+ *
+ * Only two things can make reconciliation premature: nothing is pinned, or the
+ * catalog query hasn't settled yet. A query that settled with an error, or with
+ * no row for the current model, is NOT premature: resolveClaudeSupportedEffortLevels
+ * is total and answers from CLAUDE_MODEL_FALLBACK_OPTIONS in exactly that case,
+ * where haiku is confirmed to support nothing. Gating on the query's error or on
+ * the presence of a live row would leave the selector rendering Auto while the
+ * session still carried the unsupported level, which is the mismatch the whole
+ * effect exists to prevent. The three-state answer from the resolver
+ * (undefined = unconfirmed) is what decides at the call site.
  */
 export function shouldReconcileClaudeEffort(args: {
     agentFlavor: string | null
     sessionActive: boolean
     isLoading: boolean
-    hasError: boolean
-    hasSelectedModelSummary: boolean
     sessionEffort: string | null | undefined
 }): boolean {
     return shouldDriveClaudeCatalog(args.agentFlavor, args.sessionActive)
         && !args.isLoading
-        && !args.hasError
-        && args.hasSelectedModelSummary
         && Boolean(args.sessionEffort)
 }
 
@@ -1639,9 +1641,9 @@ function SessionChatInner(props: SessionChatProps) {
     // runs either way to keep the UI in sync with it; the thing a
     // background correction shouldn't do is buzz the user's phone
     // (hostile-review R4-3).
-    const handleEffortChange = useCallback(async (effort: string | null, options?: { silent?: boolean }) => {
+    const handleEffortChange = useCallback(async (effort: string | null, options?: { silent?: boolean; expectedModel?: string | null }) => {
         try {
-            await setEffort(effort)
+            await setEffort(effort, options?.expectedModel)
             if (!options?.silent) {
                 haptic.notification('success')
             }
@@ -1668,8 +1670,6 @@ function SessionChatInner(props: SessionChatProps) {
             agentFlavor,
             sessionActive: props.session.active,
             isLoading: claudeModelsState.isLoading,
-            hasError: Boolean(claudeModelsState.error),
-            hasSelectedModelSummary: Boolean(claudeSelectedModelSummary),
             sessionEffort: props.session.effort
         })) {
             return
@@ -1691,39 +1691,34 @@ function SessionChatInner(props: SessionChatProps) {
         // row's absence of the field can be trusted as "unsupported" until
         // some row in the same catalog confirms it -- leave a stored effort
         // alone rather than wiping it because of a CLI that hasn't
-        // confirmed anything. shouldReconcileClaudeEffort above already
-        // guarantees claudeSelectedModelSummary is set (a live catalog row
-        // was found), so claudeComposerModelValue -- the wire value that
-        // row was found for -- resolves back to the very same row here.
+        // confirmed anything. When the catalog is unavailable the resolver
+        // answers from the static fallback instead, which is why the gate no
+        // longer requires a live row: an unknown model still yields undefined
+        // and returns here, while haiku yields a confirmed empty list.
         const supportedLevels = resolveClaudeSupportedEffortLevels(claudeComposerModelValue, claudeModelsState.availableModels)
         if (supportedLevels === undefined) {
             return
         }
         if (!supportedLevels.includes(sessionEffort)) {
-            // Deliberately fire-and-forget. A model change that starts while
-            // this write is in flight can land first, so the clear can arrive
-            // after the session already moved to a model that does support the
-            // level. What is lost in that window is a level that was already
-            // invalid for the model it was stored against, and the user can
-            // pick it again. Closing the window would need either a
-            // server-side compare-and-set on model identity or blocking the
-            // composer until this settles. The former is worse than the
-            // problem here: a Claude model has several representations (preset,
-            // legacy '[1m]' alias, catalog id) and the resolution to a catalog
-            // row happens on the client, so a server-side comparison would run
-            // against a different representation and silently drop legitimate
-            // writes. The latter freezes the composer for a background
-            // correction the user never asked for.
-            void handleEffortChange(null, { silent: true })
+            // Fire-and-forget, but not last-write-wins: expectedModel carries the
+            // model this decision was made against, and the hub skips the write
+            // if the session has since moved to another one. Without it, a model
+            // change started while this clear is in flight can land first and
+            // then be undone by the stale clear, silently dropping a level the
+            // new model does support. session.model is passed verbatim rather
+            // than the resolved wire value so both sides compare the same field.
+            void handleEffortChange(null, {
+                silent: true,
+                expectedModel: props.session.model ?? null
+            })
         }
     }, [
         agentFlavor,
         props.session.active,
         claudeModelsState.isLoading,
-        claudeModelsState.error,
-        claudeSelectedModelSummary,
         claudeModelsState.availableModels,
         claudeComposerModelValue,
+        props.session.model,
         props.session.effort,
         handleEffortChange
     ])
