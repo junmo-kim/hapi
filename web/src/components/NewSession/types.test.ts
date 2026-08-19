@@ -6,7 +6,7 @@ describe('Claude model options', () => {
     it('derives options from the fallback offer list (no live catalog)', () => {
         expect(MODEL_OPTIONS.claude).toEqual([
             { value: 'auto', label: 'Default' },
-            ...CLAUDE_MODEL_FALLBACK_OPTIONS
+            ...CLAUDE_MODEL_FALLBACK_OPTIONS.map(({ value, label }) => ({ value, label }))
         ])
     })
 

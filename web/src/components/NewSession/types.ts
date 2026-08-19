@@ -34,7 +34,10 @@ export const MODEL_OPTIONS: Record<AgentType, { value: string; label: string }[]
     // can't be queried -- no bare/[1m] duplicate pairs, one row per family.
     claude: [
         { value: 'auto', label: 'Default' },
-        ...CLAUDE_MODEL_FALLBACK_OPTIONS,
+        // Projected to {value, label}: supportedEffortLevels is capability data
+        // for the effort field, and must not ride into a picker option object
+        // (see getClaudeComposerModelOptions in AssistantChat/claudeModelOptions.ts).
+        ...CLAUDE_MODEL_FALLBACK_OPTIONS.map(({ value, label }) => ({ value, label })),
     ],
     codex: [
         { value: 'auto', label: 'Default' },

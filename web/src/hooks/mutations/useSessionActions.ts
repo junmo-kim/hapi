@@ -196,7 +196,7 @@ export function useSessionActions(
     const setModel = useCallback(
         (model: { provider: string; modelId: string } | string | null, effort?: string | null) =>
             modelMutation.mutateAsync({ model, effort }),
-        [modelMutation]
+        [modelMutation.mutateAsync]
     )
 
     const modelReasoningEffortMutation = useMutation({

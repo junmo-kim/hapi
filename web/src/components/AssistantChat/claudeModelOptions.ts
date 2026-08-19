@@ -317,7 +317,10 @@ export function getNextClaudeComposerModel(currentModel?: string | null): string
     const currentIndex = options.findIndex((option) => option.value === normalizedCurrentModel)
 
     if (currentIndex === -1) {
-        return options[0]?.value ?? null
+        // Same not-found contract as getNextModelForFlavor's claude branch: land
+        // on the first concrete row rather than the null Default row, so an
+        // unrecognized current model does not silently clear the pin.
+        return options.find((option) => option.value !== null)?.value ?? null
     }
 
     return options[(currentIndex + 1) % options.length]?.value ?? null
