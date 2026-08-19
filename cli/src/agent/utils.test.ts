@@ -110,6 +110,50 @@ describe('agent tool name helpers', () => {
             });
         });
 
+        it('preserves replaceAll=true on edit input', () => {
+            expect(canonicalizeDiffToolInput({
+                filePath: '/tmp/a.ts',
+                oldString: 'foo',
+                newString: 'bar',
+                replaceAll: true
+            })).toEqual({
+                name: 'Edit',
+                input: { file_path: '/tmp/a.ts', old_string: 'foo', new_string: 'bar', replace_all: true }
+            });
+        });
+
+        it('preserves replaceAll=false on edit input', () => {
+            expect(canonicalizeDiffToolInput({
+                filePath: '/tmp/a.ts',
+                oldString: 'foo',
+                newString: 'bar',
+                replaceAll: false
+            })).toEqual({
+                name: 'Edit',
+                input: { file_path: '/tmp/a.ts', old_string: 'foo', new_string: 'bar', replace_all: false }
+            });
+        });
+
+        it('omits replace_all when absent or non-boolean', () => {
+            expect(canonicalizeDiffToolInput({
+                filePath: '/tmp/a.ts',
+                oldString: 'foo',
+                newString: 'bar'
+            })).toEqual({
+                name: 'Edit',
+                input: { file_path: '/tmp/a.ts', old_string: 'foo', new_string: 'bar' }
+            });
+            expect(canonicalizeDiffToolInput({
+                filePath: '/tmp/a.ts',
+                oldString: 'foo',
+                newString: 'bar',
+                replaceAll: 'yes'
+            })).toEqual({
+                name: 'Edit',
+                input: { file_path: '/tmp/a.ts', old_string: 'foo', new_string: 'bar' }
+            });
+        });
+
         it('prefers Edit over Write when both edit and content fields are present', () => {
             expect(canonicalizeDiffToolInput({
                 filePath: '/tmp/a.ts',

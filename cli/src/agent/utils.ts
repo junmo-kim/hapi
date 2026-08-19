@@ -3,7 +3,7 @@ import { isObject } from '@hapi/protocol';
 type ToolNameSource = 'title' | 'raw_input_name' | 'raw_input_tool' | 'kind' | 'default';
 
 export type CanonicalDiffToolInput =
-    | { name: 'Edit'; input: { file_path: string; old_string: string; new_string: string } }
+    | { name: 'Edit'; input: { file_path: string; old_string: string; new_string: string; replace_all?: boolean } }
     | { name: 'Write'; input: { file_path: string; content: string } };
 
 function firstString(value: unknown, keys: readonly string[]): string | null {
@@ -35,7 +35,18 @@ export function canonicalizeDiffToolInput(rawInput: unknown): CanonicalDiffToolI
     const oldString = firstString(rawInput, ['oldString', 'old_string']);
     const newString = firstString(rawInput, ['newString', 'new_string']);
     if (oldString !== null && newString !== null) {
-        return { name: 'Edit', input: { file_path: filePath, old_string: oldString, new_string: newString } };
+        const replaceAll = isObject(rawInput) && typeof rawInput.replaceAll === 'boolean'
+            ? rawInput.replaceAll
+            : undefined;
+        return {
+            name: 'Edit',
+            input: {
+                file_path: filePath,
+                old_string: oldString,
+                new_string: newString,
+                ...(replaceAll === undefined ? {} : { replace_all: replaceAll }),
+            },
+        };
     }
 
     const content = firstString(rawInput, ['content']);

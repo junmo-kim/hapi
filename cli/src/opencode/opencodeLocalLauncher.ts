@@ -376,16 +376,19 @@ export async function opencodeLocalLauncher(
                 return;
             }
             let toolInput: unknown = parseMaybeJson(tool.input ?? tool.args ?? record.input ?? record.args);
-            // Native edit/write args are canonicalized before signature and emit
-            // so pairing stays consistent and the web Edit/Write views match the
-            // ACP path.
+            // Compute the pairing signature from the raw name/input BEFORE
+            // canonicalizing: an id-less `before` with empty/partial args must
+            // share a queue key with the full `after`. Canonicalizing first would
+            // re-key the `after` (edit -> Edit) and miss the queued call.
+            const signature = buildToolSignature(name, toolInput);
+            const fallbackSignature = buildToolSignature(name, null);
+            // Native edit/write args are canonicalized for emit so the web
+            // Edit/Write views match the ACP path.
             const canonical = canonicalizeDiffToolInput(toolInput);
             if (canonical) {
                 name = canonical.name;
                 toolInput = canonical.input;
             }
-            const signature = buildToolSignature(name, toolInput);
-            const fallbackSignature = buildToolSignature(name, null);
             const existingId = getString(tool.id)
                 || getString(tool.tool_call_id)
                 || getString(tool.toolCallId);

@@ -3,7 +3,10 @@ import { describe, expect, it } from 'vitest';
 import { canonicalizeDiffToolInput } from '@/agent/utils';
 import { isUsableToolInput, parseToolCall, parseToolResult } from './opencodeLocalToolParse';
 
-/** Mirrors the launcher's execute-hook normalization (name+input before signature/emit). */
+/** Mirrors the launcher's execute-hook normalization: pairing signatures are
+ *  computed from the RAW name/input BEFORE canonicalizing, so an id-less
+ *  `before` shares a queue key with the full `after`; canonicalization only
+ *  affects what gets emitted. */
 function canonicalizeHookPair(name: string, input: unknown): { name: string; input: unknown } {
     const canonical = canonicalizeDiffToolInput(input);
     return canonical ? { name: canonical.name, input: canonical.input } : { name, input };
@@ -221,11 +224,14 @@ function collectExecuteHookMessages(
     let nextId = 0;
 
     for (const event of events) {
+        // Signature is derived from the raw name/input BEFORE canonicalizing
+        // (mirrors opencodeLocalLauncher): an id-less `before` with empty or
+        // partial args must share a queue key with the full `after`.
+        const signature = buildToolSignature(event.name, event.input);
+        const fallbackSignature = buildToolSignature(event.name, null);
         const normalized = canonicalizeHookPair(event.name, event.input);
         const eventName = normalized.name;
         const toolInput = normalized.input;
-        const signature = buildToolSignature(eventName, toolInput);
-        const fallbackSignature = buildToolSignature(eventName, null);
         const existingId = event.id ?? null;
         const isBefore = event.type === 'before';
         const usableInput = isUsableToolInput(toolInput);
@@ -306,6 +312,20 @@ describe('OpenCode local execute-hook tool emit policy', () => {
             callId: messages[1].callId,
             input: { file_path: '/tmp/a.ts', old_string: 'foo', new_string: 'bar' }
         });
+    });
+
+    it('pairs id-less edit with partial before args and full after via a shared queue key', () => {
+        // Regression: canonicalizing `edit` -> `Edit` BEFORE computing the queue
+        // signature re-keys the `after` and misses the call queued by the
+        // partial `before`, orphaning a stale call and emitting a second pair.
+        // The signature must be computed from the raw name/input so an id-less
+        // sequence stays paired to a single call id.
+        const messages = collectExecuteHookMessages([
+            { type: 'before', name: 'edit', input: { filePath: '/tmp/a.ts' } },
+            { type: 'after', name: 'edit', input: { filePath: '/tmp/a.ts', oldString: 'foo', newString: 'bar' }, output: 'ok' }
+        ]);
+        expect(messages.map((m) => m.type)).toEqual(['tool-call', 'tool-call-result']);
+        expect(messages[0].callId).toEqual(messages[1].callId);
     });
 
     it('canonicalizes write tool calls emitted via the execute hook path', () => {
