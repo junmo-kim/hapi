@@ -58,6 +58,7 @@ import { EffortField } from './EffortField'
 import { shouldEnableOpencodeModelDiscovery } from './opencodeModelsGate'
 import { buildGrokEffortOptions, buildGrokModelOptions, shouldEnableGrokModelDiscovery } from './grokModels'
 import { groupModelsByProvider } from '@/components/AssistantChat/piModelGroups'
+import { isThinkingLevelSupported } from '@/components/AssistantChat/piThinkingLevelOptions'
 import {
     loadPreferredAgent,
     loadPreferredLaunchSettings,
@@ -714,11 +715,36 @@ export function NewSession(props: {
     }, [agent, model, piModelsState.availableModels])
     useEffect(() => {
         // A non-reasoning Pi model must not carry a stale launch effort (the
-        // CLI would reject it and fall back to Pi's default).
-        if (agent === 'pi' && piSelectedModel?.reasoning === false && effort !== 'auto') {
+        // CLI would reject it and fall back to Pi's default), and a level the
+        // selected model's thinkingLevelMap marks unsupported must not survive
+        // a model switch (mirrors the HappyComposer effort reconciliation).
+        if (agent !== 'pi' || effort === 'auto') {
+            return
+        }
+        if (piSelectedModel?.reasoning === false) {
+            setEffort('auto')
+            return
+        }
+        // Reset a level the current selection cannot offer, so a level the
+        // field no longer renders can never be submitted. This covers:
+        //   - a resolved model whose map excludes the level;
+        //   - the Default selection (model === 'auto', no map, hides xhigh/max);
+        //   - a failed catalog request, where a restored explicit model stays
+        //     unresolved for good and creation is not blocked (only loading
+        //     gates it), so waiting for a map that will never arrive would let
+        //     the hidden level through.
+        // While a concrete model is still resolving (no error yet) do not
+        // reset — the map may still prove a restored xhigh/max valid.
+        const piSelectionSettled = model === 'auto'
+            || Boolean(piSelectedModel)
+            || Boolean(piModelsState.error)
+        if (
+            piSelectionSettled
+            && !isThinkingLevelSupported(effort, piSelectedModel?.thinkingLevelMap)
+        ) {
             setEffort('auto')
         }
-    }, [agent, piSelectedModel, effort])
+    }, [agent, model, piSelectedModel, piModelsState.error, effort])
     useEffect(() => {
         // Reconcile a restored Pi selection with the live machine catalog
         // (mirrors the Codex/Grok/Copilot validation effects). A model that

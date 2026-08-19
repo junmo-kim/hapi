@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Status-bar small icon (alpha-only per platform rules): a terminal-style
+     ">_" prompt — HAPI is a terminal-agent companion. 24dp grid. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- chevron ">" -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M4.5,5.2 L11.3,12 L4.5,18.8 L6.6,20.9 L15.5,12 L6.6,3.1 Z" />
+    <!-- underscore cursor -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M13,18 h7 v3 h-7 Z" />
+</vector>

@@ -42,6 +42,10 @@ For self-hosted options (Cloudflare Tunnel, Tailscale), see [Installation](docs/
 - [Why HAPI](docs/guide/why-hapi.md)
 - [FAQ](docs/guide/faq.md)
 
+## Native apps (iOS / Android)
+
+Fully native SwiftUI and Kotlin Compose clients are in development under `ios/` and `android/`. They pair with your hub by scanning the same terminal QR code as the web app, and follow the same protocol — see the [client contract docs](docs/api/client-contract/index.md).
+
 ## Build from source
 
 ```bash

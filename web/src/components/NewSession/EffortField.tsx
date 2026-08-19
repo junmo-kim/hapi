@@ -1,4 +1,4 @@
-import { getAgentConfigDescriptor } from '@hapi/protocol'
+import { getAgentConfigDescriptor, type PiThinkingLevelMap } from '@hapi/protocol'
 import { getPiThinkingLevelOptions } from '@/components/AssistantChat/piThinkingLevelOptions'
 import { getCodexComposerReasoningEffortOptions } from '@/components/AssistantChat/codexReasoningEffortOptions'
 import { useTranslation } from '@/lib/use-translation'
@@ -21,8 +21,8 @@ export type EffortFieldProps = {
     claudeOptions?: Array<{ value: string; label: string }>
     /** Model-dependent reasoning-effort options (Codex). */
     codexReasoningOptions?: Array<{ value: string; name?: string }>
-    /** Selected Pi model — hides effort when the model cannot reason. */
-    piSelectedModel?: { reasoning?: boolean } | null
+    /** Selected Pi model — hides effort when the model cannot reason and filters levels via thinkingLevelMap. */
+    piSelectedModel?: { reasoning?: boolean; thinkingLevelMap?: PiThinkingLevelMap } | null
 }
 
 /**
@@ -30,9 +30,11 @@ export type EffortFieldProps = {
  * configuration descriptor (see shared/src/agentConfig.ts).
  *
  * One component serves every flavor with an `effort` field:
- * - Claude: static launch-effort levels.
+ * - Claude: model-dependent launch-effort levels, falling back to the
+ *   static list when the live catalog is unavailable.
  * - Grok: model-dependent launch-effort levels.
- * - Pi: static thinking levels (hidden when the selected model cannot reason).
+ * - Pi: model-dependent thinking levels (filtered by the selected model's
+ *   thinkingLevelMap; hidden when the model cannot reason).
  * - Codex / OpenCode: model-dependent reasoning-effort levels.
  */
 export function EffortField(props: EffortFieldProps) {
@@ -54,7 +56,7 @@ export function EffortField(props: EffortFieldProps) {
         }
         options = [
             { value: 'auto', label: t('newSession.model.default') },
-            ...getPiThinkingLevelOptions(props.effort)
+            ...getPiThinkingLevelOptions(props.effort, props.piSelectedModel?.thinkingLevelMap)
         ]
     } else if (isReasoningEffort) {
         const modelOptions = props.agent === 'codex'

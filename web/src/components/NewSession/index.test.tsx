@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ApiClient } from '@/api/client'
-import type { Machine } from '@/types/api'
+import type { Machine, PiModelSummary } from '@/types/api'
 import { saveNewSessionFormDraft } from './newSessionFormDraft'
 import {
     loadPreferredLaunchSettings,
@@ -24,9 +24,10 @@ const mocks = vi.hoisted(() => ({
     opencodeModels: [] as Array<{ modelId: string; name?: string }>,
     opencodeModelsLoading: false,
     piDialogSelection: ['pi-native-1'] as string[],
-    piModels: [] as Array<{ provider: string; modelId: string; name?: string; reasoning?: boolean }>,
+    piModels: [] as PiModelSummary[],
     piModelsLoading: false,
     claudeModels: [] as Array<{ value: string; displayName: string; resolvedModel?: string; supportedEffortLevels?: string[] }>,
+    piModelsError: null as string | null,
     nextModelValue: 'gpt-5.6-terra',
     refetchSessions: vi.fn(),
     addToast: vi.fn()
@@ -149,7 +150,7 @@ vi.mock('@/hooks/queries/usePiModelsForMachine', () => ({
         availableModels: mocks.piModels,
         currentModelId: null,
         isLoading: mocks.piModelsLoading,
-        error: null
+        error: mocks.piModelsError
     })
 }))
 vi.mock('../../utils/formatRunnerSpawnError', () => ({
@@ -273,6 +274,7 @@ describe('NewSession launch preferences', () => {
         mocks.piModels = []
         mocks.piModelsLoading = false
         mocks.claudeModels = []
+        mocks.piModelsError = null
         mocks.nextModelValue = 'gpt-5.6-terra'
         mocks.refetchSessions.mockReset()
         mocks.refetchSessions.mockResolvedValue(undefined)
@@ -873,6 +875,117 @@ describe('NewSession launch preferences', () => {
             expect(screen.getByTestId('model')).toHaveTextContent('auto')
             expect(screen.getByTestId('launch-effort')).toHaveTextContent('auto')
         })
+    })
+
+    it('resets a restored effort the Default Pi selection cannot offer', async () => {
+        savePreferredAgent('pi')
+        mocks.piModels = [
+            {
+                provider: 'openai-codex',
+                modelId: 'gpt-5.6-sol',
+                reasoning: true,
+                thinkingLevelMap: { xhigh: 'xhigh', max: 'max' },
+            },
+        ]
+        // Default model (auto) renders the effort field without a map, which
+        // hides xhigh — the restored hidden level must not survive into create.
+        savePreferredLaunchSettings('machine-1', 'pi', {
+            model: 'auto',
+            cursorSelectedBase: 'auto',
+            effort: 'xhigh',
+            modelReasoningEffort: 'default',
+        })
+
+        render(
+            <NewSession
+                api={api}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory="C:\\repo"
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        await waitFor(() => {
+            expect(screen.getByTestId('launch-effort')).toHaveTextContent('auto')
+        })
+    })
+
+    it('keeps a restored xhigh effort when the selected model map opts in', async () => {
+        savePreferredAgent('pi')
+        mocks.piModels = [
+            {
+                provider: 'openai-codex',
+                modelId: 'gpt-5.6-sol',
+                reasoning: true,
+                thinkingLevelMap: { xhigh: 'xhigh', max: 'max' },
+            },
+        ]
+        savePreferredLaunchSettings('machine-1', 'pi', {
+            model: 'openai-codex/gpt-5.6-sol',
+            cursorSelectedBase: 'auto',
+            effort: 'xhigh',
+            modelReasoningEffort: 'default',
+        })
+
+        render(
+            <NewSession
+                api={api}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory="C:\\repo"
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        await waitFor(() => {
+            expect(screen.getByTestId('model')).toHaveTextContent('openai-codex/gpt-5.6-sol')
+            expect(screen.getByTestId('launch-effort')).toHaveTextContent('xhigh')
+        })
+    })
+
+    it('does not submit a hidden restored effort when Pi model discovery fails', async () => {
+        savePreferredAgent('pi')
+        // A failed catalog never resolves the restored model, so the effort
+        // field renders with an undefined map and hides xhigh. Creation is not
+        // blocked on error (only on loading), so the hidden level must have
+        // been reconciled away rather than forwarded.
+        mocks.piModels = []
+        mocks.piModelsError = 'probe failed'
+        savePreferredLaunchSettings('machine-1', 'pi', {
+            model: 'openai-codex/gpt-5.6-sol',
+            cursorSelectedBase: 'auto',
+            effort: 'xhigh',
+            modelReasoningEffort: 'default',
+        })
+
+        render(
+            <NewSession
+                api={api}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory="C:\\repo"
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        await waitFor(() => {
+            expect(screen.getByTestId('launch-effort')).toHaveTextContent('auto')
+        })
+
+        act(() => {
+            mocks.spawnSession.mockImplementation(async () => ({ type: 'success', sessionId: 'session-1' }))
+        })
+        fireEvent.click(screen.getByTestId('create'))
+
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('session-1'))
+        expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({
+            agent: 'pi',
+            effort: undefined,
+        }))
     })
 
     it('shows Pi machine models and thinking-level effort and forwards both on create', async () => {

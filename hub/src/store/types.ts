@@ -66,12 +66,21 @@ export type StoredPushSubscription = {
     createdAt: number
 }
 
+export type NativeDevicePlatform = 'phone' | 'wear' | 'ios'
+
 export type StoredFcmDevice = {
     id: number
     namespace: string
+    /** FCM registration token (phone/wear) or hex APNs device token (ios). */
     token: string
-    platform: 'phone' | 'wear'
+    platform: NativeDevicePlatform
     deviceId: string
+    /**
+     * base64 of the device-generated 32-byte E2E push encryption key.
+     * Required for `ios` rows (PUSH SPEC v1 envelope); always null for
+     * phone/wear rows.
+     */
+    pushKey: string | null
     createdAt: number
     updatedAt: number
 }
