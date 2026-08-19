@@ -505,6 +505,62 @@ describe('sessions routes', () => {
 
 
 
+    it('applies an effort change whose expectedModel still matches the session', async () => {
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'claude' },
+            model: 'haiku'
+        })
+        const { app, applySessionConfigCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/effort', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ effort: null, expectedModel: 'haiku' })
+        })
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({ ok: true })
+        expect(applySessionConfigCalls).toEqual([['session-1', { effort: null }]])
+    })
+
+    it('skips an effort change whose expectedModel lost the race to a model change', async () => {
+        // The web decided haiku supports no effort, then the user switched to
+        // opus while the clear was in flight. Landing it would drop a level
+        // opus does support.
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'claude' },
+            model: 'opus'
+        })
+        const { app, applySessionConfigCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/effort', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ effort: null, expectedModel: 'haiku' })
+        })
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({ ok: true, skipped: 'model-changed' })
+        expect(applySessionConfigCalls).toEqual([])
+    })
+
+    it('applies an effort change that opts out of the compare-and-set', async () => {
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'claude' },
+            model: 'opus'
+        })
+        const { app, applySessionConfigCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/effort', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ effort: 'high' })
+        })
+
+        expect(response.status).toBe(200)
+        expect(applySessionConfigCalls).toEqual([['session-1', { effort: 'high' }]])
+    })
+
     it('applies model reasoning effort changes for remote OpenCode sessions', async () => {
         const session = createSession({
             metadata: {
