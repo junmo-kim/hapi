@@ -132,7 +132,10 @@ export function resolvePreferredLaunchSettings(
 ): PreferredLaunchSettings {
     const preferredModel = preferred?.model ?? 'auto'
     const staticModelValues = MODEL_OPTIONS[agent].map((option) => option.value)
-    const model = staticModelValues.length > 0 && agent !== 'codex' && agent !== 'copilot'
+    // claude joins codex/copilot here: its list is the live CLI catalog, so a
+    // saved value the static fallback does not carry (a catalog-only model, or
+    // a legacy '[1m]' alias this PR dropped from the offer list) must survive.
+    const model = staticModelValues.length > 0 && agent !== 'codex' && agent !== 'copilot' && agent !== 'claude'
         ? resolvePreferredOptionValue(preferredModel, staticModelValues, 'auto')
         : preferredModel
     const effort = agent === 'claude'
