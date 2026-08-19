@@ -688,12 +688,10 @@ export class ApiClient {
         })
     }
 
-    async setEffort(sessionId: string, effort: string | null, expectedModel?: string | null): Promise<void> {
-        // expectedModel is only sent when the caller opts into the
-        // compare-and-set; omitting the key keeps last-write-wins.
+    async setEffort(sessionId: string, effort: string | null): Promise<void> {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/effort`, {
             method: 'POST',
-            body: JSON.stringify(expectedModel !== undefined ? { effort, expectedModel } : { effort })
+            body: JSON.stringify({ effort })
         })
     }
 

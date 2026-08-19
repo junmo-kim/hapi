@@ -133,51 +133,23 @@ export function resolvePiContextWindow(
 }
 
 /**
- * Whether the Claude model catalog query (useClaudeModelsForCwd) and its
- * downstream effort reconciliation should run for this session's composer.
+ * Whether the Claude model catalog query (useClaudeModelsForCwd) should run
+ * for this session's composer.
  *
  * Unlike codex/cursor/grok, the hub's `/model` and `/effort` routes for
  * Claude sessions do not gate on `controlledByUser` (hub/src/web/routes/
  * sessions.ts) -- only codex/cursor/grok's model route and grok's effort
  * route 409 for a locally-controlled session; Claude's routes accept the
- * change either way. So the catalog that drives the picker's option list,
- * and the reconciliation effect that clears a now-unsupported effort, both
- * have to cover the same session set those routes actually accept changes
- * for -- every active Claude session, not just remote-controlled ones.
- * Gating this on controlledByUser would leave locally-controlled sessions
- * stuck on the static preset list with no reconciliation, free to submit
- * model/effort combinations the route would otherwise keep consistent.
+ * change either way. So the catalog that drives the picker's option list has
+ * to cover the same session set those routes actually accept changes for --
+ * every active Claude session, not just remote-controlled ones. Gating this
+ * on controlledByUser would leave locally-controlled sessions stuck on the
+ * static preset list.
  */
 export function shouldDriveClaudeCatalog(agentFlavor: string | null, sessionActive: boolean): boolean {
     return agentFlavor === 'claude' && sessionActive
 }
 
-/**
- * Guard for the effect that reconciles a pinned Claude effort level once the
- * model's capability is known and no longer includes it (e.g. switching to
- * haiku, which supports no effort at all). Shares shouldDriveClaudeCatalog's
- * session gate -- see its doc comment for why controlledByUser plays no part.
- *
- * Only two things can make reconciliation premature: nothing is pinned, or the
- * catalog query hasn't settled yet. A query that settled with an error, or with
- * no row for the current model, is NOT premature: resolveClaudeSupportedEffortLevels
- * is total and answers from CLAUDE_MODEL_FALLBACK_OPTIONS in exactly that case,
- * where haiku is confirmed to support nothing. Gating on the query's error or on
- * the presence of a live row would leave the selector rendering Auto while the
- * session still carried the unsupported level, which is the mismatch the whole
- * effect exists to prevent. The three-state answer from the resolver
- * (undefined = unconfirmed) is what decides at the call site.
- */
-export function shouldReconcileClaudeEffort(args: {
-    agentFlavor: string | null
-    sessionActive: boolean
-    isLoading: boolean
-    sessionEffort: string | null | undefined
-}): boolean {
-    return shouldDriveClaudeCatalog(args.agentFlavor, args.sessionActive)
-        && !args.isLoading
-        && Boolean(args.sessionEffort)
-}
 
 export async function applyModelChangeWithReasoningRollback(args: {
     model: SessionModelSelection
@@ -1635,93 +1607,26 @@ function SessionChatInner(props: SessionChatProps) {
         }
     }, [setModelReasoningEffort, props.onRefresh, haptic])
 
-    // `silent` skips only the haptic for a reconciliation (system-initiated)
-    // reset rather than a user picking a value in the composer -- this is
-    // still a write to persisted session state, so props.onRefresh() always
-    // runs either way to keep the UI in sync with it; the thing a
-    // background correction shouldn't do is buzz the user's phone
-    // (hostile-review R4-3).
-    const handleEffortChange = useCallback(async (effort: string | null, options?: { silent?: boolean; expectedModel?: string | null }) => {
+    const handleEffortChange = useCallback(async (effort: string | null) => {
         try {
-            await setEffort(effort, options?.expectedModel)
-            if (!options?.silent) {
-                haptic.notification('success')
-            }
+            await setEffort(effort)
+            haptic.notification('success')
             props.onRefresh()
         } catch (e) {
-            if (!options?.silent) {
-                haptic.notification('error')
-            }
+            haptic.notification('error')
             console.error('Failed to set effort:', e)
         }
     }, [setEffort, props.onRefresh, haptic])
 
-    // Reconcile a pinned Claude effort level once the live catalog confirms
-    // the currently selected model no longer supports it (e.g. switching to
-    // haiku, which has no supportedEffortLevels) -- mirrors NewSession's
-    // identical reconciliation effect (index.tsx) so both surfaces enforce
-    // the same rule instead of leaving the composer able to submit
-    // `effort: 'high'` alongside `--model haiku` (round 3). Runs for
-    // locally-controlled sessions too -- see shouldReconcileClaudeEffort /
-    // shouldDriveClaudeCatalog above for why controlledByUser isn't part of
-    // this gate.
-    useEffect(() => {
-        if (!shouldReconcileClaudeEffort({
-            agentFlavor,
-            sessionActive: props.session.active,
-            isLoading: claudeModelsState.isLoading,
-            sessionEffort: props.session.effort
-        })) {
-            return
-        }
-        // shouldReconcileClaudeEffort already confirmed session.effort is
-        // truthy, but that check happened behind a function call, which
-        // (unlike an inline guard) doesn't narrow the type for TS below --
-        // re-check here so `supportedLevels.includes(...)` sees `string`,
-        // not `string | null`.
-        const sessionEffort = props.session.effort
-        if (!sessionEffort) {
-            return
-        }
-        // resolveClaudeSupportedEffortLevels returns undefined when nothing
-        // in the catalog has confirmed the running claude CLI reports
-        // supportedEffortLevels at all (an older CLI predating the field --
-        // HAPI enforces no minimum claude version, see claudeRemote.ts).
-        // That's a real, ongoing case, not just a loading state, and no
-        // row's absence of the field can be trusted as "unsupported" until
-        // some row in the same catalog confirms it -- leave a stored effort
-        // alone rather than wiping it because of a CLI that hasn't
-        // confirmed anything. When the catalog is unavailable the resolver
-        // answers from the static fallback instead, which is why the gate no
-        // longer requires a live row: an unknown model still yields undefined
-        // and returns here, while haiku yields a confirmed empty list.
-        const supportedLevels = resolveClaudeSupportedEffortLevels(claudeComposerModelValue, claudeModelsState.availableModels)
-        if (supportedLevels === undefined) {
-            return
-        }
-        if (!supportedLevels.includes(sessionEffort)) {
-            // Fire-and-forget, but not last-write-wins: expectedModel carries the
-            // model this decision was made against, and the hub skips the write
-            // if the session has since moved to another one. Without it, a model
-            // change started while this clear is in flight can land first and
-            // then be undone by the stale clear, silently dropping a level the
-            // new model does support. session.model is passed verbatim rather
-            // than the resolved wire value so both sides compare the same field.
-            void handleEffortChange(null, {
-                silent: true,
-                expectedModel: props.session.model ?? null
-            })
-        }
-    }, [
-        agentFlavor,
-        props.session.active,
-        claudeModelsState.isLoading,
-        claudeModelsState.availableModels,
-        claudeComposerModelValue,
-        props.session.model,
-        props.session.effort,
-        handleEffortChange
-    ])
+    // No composer-side effort reconciliation here on purpose. Grok also drives
+    // its composer effort options from a model-dependent list and leaves a
+    // stored level that the current model does not offer alone; the selector
+    // simply stops offering it. Claude matches that. A corrective write from
+    // the composer would be a background mutation racing the user's own model
+    // changes, which no other flavor takes on, and the CLI accepts an effort
+    // the model does not advertise without error. NewSession still reconciles
+    // because that is local form state before the session exists, which is the
+    // same place grok and pi reconcile.
 
     const handleServiceTierChange = useCallback(async (serviceTier: string | null) => {
         try {

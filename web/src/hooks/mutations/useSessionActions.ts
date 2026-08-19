@@ -25,7 +25,7 @@ export function useSessionActions(
     setCopilotAgentMode: (mode: CopilotAgentMode) => Promise<void>
     setModel: (model: { provider: string; modelId: string } | string | null, effort?: string | null) => Promise<void>
     setModelReasoningEffort: (modelReasoningEffort: string | null) => Promise<void>
-    setEffort: (effort: string | null, expectedModel?: string | null) => Promise<void>
+    setEffort: (effort: string | null) => Promise<void>
     setServiceTier: (serviceTier: string | null) => Promise<void>
     renameSession: (name: string) => Promise<void>
     suggestSessionTitle: () => Promise<string>
@@ -216,23 +216,14 @@ export function useSessionActions(
     })
 
     const effortMutation = useMutation({
-        mutationFn: async (variables: { effort: string | null; expectedModel?: string | null }) => {
+        mutationFn: async (effort: string | null) => {
             if (!api || !sessionId) {
                 throw new Error('Session unavailable')
             }
-            await api.setEffort(sessionId, variables.effort, variables.expectedModel)
+            await api.setEffort(sessionId, effort)
         },
         onSuccess: () => void invalidateSession(),
     })
-
-    // expectedModel rides in the same variables object rather than a second
-    // mutation so a background reconciliation can opt into the hub's
-    // compare-and-set; omitting it keeps the plain last-write-wins call.
-    const setEffort = useCallback(
-        (effort: string | null, expectedModel?: string | null) =>
-            effortMutation.mutateAsync({ effort, expectedModel }),
-        [effortMutation.mutateAsync]
-    )
 
     const serviceTierMutation = useMutation({
         mutationFn: async (serviceTier: string | null) => {
@@ -313,7 +304,7 @@ export function useSessionActions(
         setCopilotAgentMode: copilotAgentModeMutation.mutateAsync,
         setModel,
         setModelReasoningEffort: modelReasoningEffortMutation.mutateAsync,
-        setEffort,
+        setEffort: effortMutation.mutateAsync,
         setServiceTier: serviceTierMutation.mutateAsync,
         renameSession: renameMutation.mutateAsync,
         suggestSessionTitle: titleSuggestionMutation.mutateAsync,

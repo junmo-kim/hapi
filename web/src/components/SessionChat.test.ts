@@ -10,7 +10,6 @@ import {
     resolveLatestCompletedBoundaryIdForView,
     shouldAutoClearPendingSchedule,
     shouldDriveClaudeCatalog,
-    shouldReconcileClaudeEffort,
     shouldRouteToScratchlist,
 } from './SessionChat'
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
@@ -76,54 +75,6 @@ describe('shouldDriveClaudeCatalog', () => {
     })
 })
 
-describe('shouldReconcileClaudeEffort', () => {
-    const baseArgs = {
-        agentFlavor: 'claude',
-        sessionActive: true,
-        isLoading: false,
-        sessionEffort: 'high' as string | null | undefined
-    }
-
-    it('runs for a locally-controlled session once the catalog has loaded (the fixed gap)', () => {
-        // controlledByUser is intentionally absent from the args shape --
-        // the whole point of the fix is that reconciliation no longer
-        // branches on it.
-        expect(shouldReconcileClaudeEffort(baseArgs)).toBe(true)
-    })
-
-    it('does not run while the catalog is still loading', () => {
-        expect(shouldReconcileClaudeEffort({ ...baseArgs, isLoading: true })).toBe(false)
-    })
-
-    it('still runs once a failed catalog request has settled', () => {
-        // A settled error is not the same as unconfirmed capability:
-        // resolveClaudeSupportedEffortLevels answers from the static fallback,
-        // where haiku is confirmed to support nothing. Gating the effect on the
-        // query error left the selector rendering Auto while the session kept
-        // the unsupported level. The gate deliberately carries no error flag,
-        // so this test asserts the shape as much as the behaviour.
-        expect(shouldReconcileClaudeEffort(baseArgs)).toBe(true)
-    })
-
-    it('leaves the no-live-row case to the resolver rather than the gate', () => {
-        // A model with no catalog row yields undefined from the resolver and is
-        // dropped at the call site, so the gate must not also filter on it --
-        // doing so would skip the static-fallback case entirely.
-        expect(shouldReconcileClaudeEffort(baseArgs)).toBe(true)
-    })
-
-    it('does not run when the session has no effort pinned', () => {
-        expect(shouldReconcileClaudeEffort({ ...baseArgs, sessionEffort: null })).toBe(false)
-    })
-
-    it('does not run for an inactive session', () => {
-        expect(shouldReconcileClaudeEffort({ ...baseArgs, sessionActive: false })).toBe(false)
-    })
-
-    it('does not run for a non-Claude flavor', () => {
-        expect(shouldReconcileClaudeEffort({ ...baseArgs, agentFlavor: 'codex' })).toBe(false)
-    })
-})
 
 describe('resolvePiContextWindow', () => {
     const models = [

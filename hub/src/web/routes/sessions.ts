@@ -768,16 +768,6 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         )
         if (rejection) return rejection
 
-        // Compare-and-set: a reconciliation write that raced a model change
-        // must not land on the new model. Compared against session.model, the
-        // same field the sender read.
-        if (
-            parsed.data.expectedModel !== undefined
-            && (sessionResult.session.model ?? null) !== parsed.data.expectedModel
-        ) {
-            return c.json({ ok: true, skipped: 'model-changed' })
-        }
-
         try {
             await engine.applySessionConfig(sessionResult.sessionId, { effort: parsed.data.effort })
             return c.json({ ok: true })

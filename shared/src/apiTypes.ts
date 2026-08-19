@@ -282,16 +282,7 @@ export const SessionCopilotAgentModeRequestSchema = z.object({
 export type SessionCopilotAgentModeRequest = z.infer<typeof SessionCopilotAgentModeRequestSchema>
 
 export const SessionEffortRequestSchema = z.object({
-    effort: z.string().trim().min(1).nullable(),
-    // Optional compare-and-set for background reconciliation writes. The web
-    // clears an effort the session's model turns out not to support, and that
-    // decision is made against a model the user can change while the write is
-    // in flight. Senders that pass the model their decision was based on get
-    // the write skipped if the session has moved on; senders that omit it keep
-    // the previous last-write-wins behaviour. It carries `session.model`
-    // verbatim -- the same representation the hub stores -- so no catalog
-    // resolution is involved on either side.
-    expectedModel: z.string().nullable().optional()
+    effort: z.string().trim().min(1).nullable()
 })
 
 export type SessionEffortRequest = z.infer<typeof SessionEffortRequestSchema>

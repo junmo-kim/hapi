@@ -261,29 +261,6 @@ describe('ApiClient error mapping', () => {
         })
     })
 
-    it('omits expectedModel from the effort request unless the caller opts in', async () => {
-        fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }))
-
-        const api = new ApiClient('test-token')
-        await api.setEffort('session-1', 'high')
-
-        const [, init] = fetchMock.mock.calls[0] ?? []
-        expect(init).toMatchObject({ method: 'POST', body: JSON.stringify({ effort: 'high' }) })
-    })
-
-    it('sends expectedModel so the hub can skip a clear that lost the race', async () => {
-        fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }))
-
-        const api = new ApiClient('test-token')
-        await api.setEffort('session-1', null, 'haiku')
-
-        const [, init] = fetchMock.mock.calls[0] ?? []
-        expect(init).toMatchObject({
-            method: 'POST',
-            body: JSON.stringify({ effort: null, expectedModel: 'haiku' })
-        })
-    })
-
     it('carries a concrete effort alongside the model when both are given', async () => {
         fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }))
 
