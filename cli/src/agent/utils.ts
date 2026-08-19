@@ -35,9 +35,17 @@ export function canonicalizeDiffToolInput(rawInput: unknown): CanonicalDiffToolI
     const oldString = firstString(rawInput, ['oldString', 'old_string']);
     const newString = firstString(rawInput, ['newString', 'new_string']);
     if (oldString !== null && newString !== null) {
-        const replaceAll = isObject(rawInput) && typeof rawInput.replaceAll === 'boolean'
-            ? rawInput.replaceAll
-            : undefined;
+        // OpenCode streams camelCase replaceAll; already-canonical inputs may
+        // carry snake_case replace_all. Accept both so the execution argument
+        // survives every call site.
+        let replaceAll: boolean | undefined;
+        if (isObject(rawInput)) {
+            if (typeof rawInput.replaceAll === 'boolean') {
+                replaceAll = rawInput.replaceAll;
+            } else if (typeof rawInput.replace_all === 'boolean') {
+                replaceAll = rawInput.replace_all;
+            }
+        }
         return {
             name: 'Edit',
             input: {

@@ -134,6 +134,43 @@ describe('agent tool name helpers', () => {
             });
         });
 
+        it('preserves snake_case replace_all=true on edit input', () => {
+            expect(canonicalizeDiffToolInput({
+                file_path: '/tmp/a.ts',
+                old_string: 'foo',
+                new_string: 'bar',
+                replace_all: true
+            })).toEqual({
+                name: 'Edit',
+                input: { file_path: '/tmp/a.ts', old_string: 'foo', new_string: 'bar', replace_all: true }
+            });
+        });
+
+        it('preserves snake_case replace_all=false on edit input', () => {
+            expect(canonicalizeDiffToolInput({
+                file_path: '/tmp/a.ts',
+                old_string: 'foo',
+                new_string: 'bar',
+                replace_all: false
+            })).toEqual({
+                name: 'Edit',
+                input: { file_path: '/tmp/a.ts', old_string: 'foo', new_string: 'bar', replace_all: false }
+            });
+        });
+
+        it('prefers camelCase replaceAll over snake_case replace_all', () => {
+            expect(canonicalizeDiffToolInput({
+                filePath: '/tmp/a.ts',
+                oldString: 'foo',
+                newString: 'bar',
+                replaceAll: true,
+                replace_all: false
+            })).toEqual({
+                name: 'Edit',
+                input: { file_path: '/tmp/a.ts', old_string: 'foo', new_string: 'bar', replace_all: true }
+            });
+        });
+
         it('omits replace_all when absent or non-boolean', () => {
             expect(canonicalizeDiffToolInput({
                 filePath: '/tmp/a.ts',
