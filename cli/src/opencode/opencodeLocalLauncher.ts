@@ -1,4 +1,5 @@
 import { logger } from '@/ui/logger';
+import { canonicalizeDiffToolInput } from '@/agent/utils';
 import { opencodeLocal } from './opencodeLocal';
 import { OpencodeSession } from './session';
 import { ensureOpencodeHookPlugin } from './utils/hookPlugin';
@@ -370,11 +371,19 @@ export async function opencodeLocalLauncher(
             }
             const record = payload as Record<string, unknown>;
             const tool = isObject(record.tool) ? record.tool as Record<string, unknown> : record;
-            const name = getString(tool.name) || getString(record.name);
+            let name = getString(tool.name) || getString(record.name);
             if (!name) {
                 return;
             }
-            const toolInput = parseMaybeJson(tool.input ?? tool.args ?? record.input ?? record.args);
+            let toolInput: unknown = parseMaybeJson(tool.input ?? tool.args ?? record.input ?? record.args);
+            // Native edit/write args are canonicalized before signature and emit
+            // so pairing stays consistent and the web Edit/Write views match the
+            // ACP path.
+            const canonical = canonicalizeDiffToolInput(toolInput);
+            if (canonical) {
+                name = canonical.name;
+                toolInput = canonical.input;
+            }
             const signature = buildToolSignature(name, toolInput);
             const fallbackSignature = buildToolSignature(name, null);
             const existingId = getString(tool.id)
