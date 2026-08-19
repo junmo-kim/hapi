@@ -20,7 +20,8 @@ object ClaudeModels {
         "haiku" to "Haiku",
     )
 
-    /** `CLAUDE_MODEL_FALLBACK_OPTIONS`. */
+    /** Keys of `CLAUDE_MODEL_LABELS` (recognition aliases) -- not the
+     *  `CLAUDE_MODEL_FALLBACK_OPTIONS` offer list, which drops the `[1m]` pairs. */
     val PRESETS: List<String> = LABELS.keys.toList()
 
     /** `getClaudeModelLabel`: trimmed lookup; unknown/blank → null. */

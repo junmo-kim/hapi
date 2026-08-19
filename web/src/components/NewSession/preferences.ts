@@ -138,6 +138,13 @@ export function resolvePreferredLaunchSettings(
     const model = staticModelValues.length > 0 && agent !== 'codex' && agent !== 'copilot' && agent !== 'claude'
         ? resolvePreferredOptionValue(preferredModel, staticModelValues, 'auto')
         : preferredModel
+    // The effort clamp stays, but not because the levels are static: the probe
+    // passes through whatever strings the CLI reports, and both effort pickers
+    // render an unknown level via `CLAUDE_EFFORT_LABELS[...] ?? level`. It stays
+    // because the static five are the only levels `--effort` accepts today, and
+    // a saved value outside the rendered options would leave the select showing
+    // a value it has no row for. Revisit if the catalog ever reports a level
+    // outside CLAUDE_EFFORT_LEVELS.
     const effort = agent === 'claude'
         ? resolvePreferredOptionValue(
             preferred?.effort ?? 'auto',

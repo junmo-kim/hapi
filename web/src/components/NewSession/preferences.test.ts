@@ -147,6 +147,17 @@ describe('NewSession preferences', () => {
         }).model).toBe('opusplan')
     })
 
+    it('still clamps a remembered model for a flavor whose list is static', () => {
+        // Claude leaving the clamp took the only coverage of its true branch
+        // with it; agy is one of the flavors the clamp still governs.
+        expect(resolvePreferredLaunchSettings('agy', {
+            model: 'retired-model',
+            cursorSelectedBase: 'auto',
+            effort: 'auto',
+            modelReasoningEffort: 'default'
+        }).model).toBe('auto')
+    })
+
     it('keeps dynamic model values for catalog validation after restore', () => {
         expect(resolvePreferredLaunchSettings('codex', {
             model: 'gpt-5.6-sol',

@@ -8,7 +8,8 @@ import Foundation
 // `core/protocol/.../catalog/Models.kt`). Codex-family model lists are NOT
 // static — they come from `GET /api/sessions/:id/codex-models` per session.
 
-/// `CLAUDE_MODEL_LABELS` / `CLAUDE_MODEL_FALLBACK_OPTIONS`.
+/// `CLAUDE_MODEL_LABELS` -- the recognition aliases, not the
+/// `CLAUDE_MODEL_FALLBACK_OPTIONS` offer list, which drops the `[1m]` pairs.
 public enum ClaudeModels {
     /// Preset ids in declaration (picker) order.
     public static let presets: [String] = [
