@@ -1070,6 +1070,9 @@ describe('NewSession launch preferences', () => {
         // catalog is per-cwd, so a value the loaded catalog omits must not stay
         // selectable and must not be what Create submits.
         mocks.claudeModels = [
+            // The real catalog leads with a `default` row; the picker must not
+            // render it as a second Default alongside the 'auto' sentinel.
+            { value: 'default', displayName: 'Default (Sonnet)', resolvedModel: 'claude-sonnet-5' },
             { value: 'sonnet', displayName: 'Sonnet', resolvedModel: 'claude-sonnet-5' },
             { value: 'haiku', displayName: 'Haiku', resolvedModel: 'claude-haiku-4-5-20251001' }
         ]

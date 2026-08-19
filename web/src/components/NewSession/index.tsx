@@ -588,10 +588,17 @@ export function NewSession(props: {
         }
         return [
             { value: 'auto', label: 'Default' },
-            ...claudeModelsState.availableModels.map((candidate) => ({
-                value: candidate.value,
-                label: candidate.displayName
-            }))
+            // The catalog carries its own `default` row; 'auto' above already is
+            // that row's sentinel here, so emitting both would render two
+            // Default choices and let Create submit the literal string
+            // `default` (only 'auto' is translated away in handleCreate). The
+            // composer builder maps the same row onto its null sentinel.
+            ...claudeModelsState.availableModels
+                .filter((candidate) => candidate.value !== 'default')
+                .map((candidate) => ({
+                    value: candidate.value,
+                    label: candidate.displayName
+                }))
         ]
     }, [agent, claudeModelsState.availableModels, model])
     const claudeEffortOptions = useMemo(() => {
