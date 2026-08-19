@@ -219,9 +219,18 @@ function collectExecuteHookMessages(
 ): Array<{ type: string; name?: string; callId: string; input?: unknown; output?: unknown }> {
     const sentToolCalls = new Set<string>();
     const sentToolResults = new Set<string>();
+    const emittedToolInputs = new Map<string, unknown>();
     const toolExecutionQueues = new Map<string, string[]>();
     const out: Array<{ type: string; name?: string; callId: string; input?: unknown; output?: unknown }> = [];
     let nextId = 0;
+
+    const shouldEmit = (callId: string, toolInput: unknown): boolean => {
+        const previousInput = emittedToolInputs.get(callId);
+        const previousCanonical = canonicalizeDiffToolInput(previousInput);
+        const currentCanonical = canonicalizeDiffToolInput(toolInput);
+        return previousInput === undefined
+            || (previousCanonical === null && currentCanonical !== null);
+    };
 
     for (const event of events) {
         // Signature is derived from the raw name/input BEFORE canonicalizing
@@ -254,8 +263,9 @@ function collectExecuteHookMessages(
             } else {
                 pushQueue(toolExecutionQueues, fallbackSignature, callId);
             }
-            if (!sentToolCalls.has(callId)) {
+            if (!sentToolResults.has(callId) && shouldEmit(callId, toolInput)) {
                 if (!usableInput) continue;
+                emittedToolInputs.set(callId, toolInput);
                 sentToolCalls.add(callId);
                 out.push({ type: 'tool-call', name: eventName, callId, input: toolInput });
             }
@@ -267,7 +277,8 @@ function collectExecuteHookMessages(
             removeFromQueue(toolExecutionQueues, fallbackSignature, callId);
         }
         if (!sentToolResults.has(callId)) {
-            if (!sentToolCalls.has(callId)) {
+            if (!sentToolCalls.has(callId) || shouldEmit(callId, toolInput)) {
+                emittedToolInputs.set(callId, toolInput);
                 sentToolCalls.add(callId);
                 out.push({ type: 'tool-call', name: eventName, callId, input: toolInput });
             }
@@ -314,18 +325,23 @@ describe('OpenCode local execute-hook tool emit policy', () => {
         });
     });
 
-    it('pairs id-less edit with partial before args and full after via a shared queue key', () => {
-        // Regression: canonicalizing `edit` -> `Edit` BEFORE computing the queue
-        // signature re-keys the `after` and misses the call queued by the
-        // partial `before`, orphaning a stale call and emitting a second pair.
-        // The signature must be computed from the raw name/input so an id-less
-        // sequence stays paired to a single call id.
+    it('upgrades a partial edit before to the full canonical input when after arrives', () => {
+        // Regression: a partial native `before` ({filePath}) is emitted as-is.
+        // When the full `after` arrives it must REPLACE the earlier partial call
+        // so the web Edit view receives the complete old_string/new_string args.
+        // The replacement is a second tool-call (same callId) followed by the result.
         const messages = collectExecuteHookMessages([
             { type: 'before', name: 'edit', input: { filePath: '/tmp/a.ts' } },
             { type: 'after', name: 'edit', input: { filePath: '/tmp/a.ts', oldString: 'foo', newString: 'bar' }, output: 'ok' }
         ]);
-        expect(messages.map((m) => m.type)).toEqual(['tool-call', 'tool-call-result']);
+        expect(messages.map((m) => m.type)).toEqual(['tool-call', 'tool-call', 'tool-call-result']);
         expect(messages[0].callId).toEqual(messages[1].callId);
+        expect(messages[0].callId).toEqual(messages[2].callId);
+        expect(messages[1]).toMatchObject({
+            type: 'tool-call',
+            name: 'Edit',
+            input: { file_path: '/tmp/a.ts', old_string: 'foo', new_string: 'bar' }
+        });
     });
 
     it('canonicalizes write tool calls emitted via the execute hook path', () => {
