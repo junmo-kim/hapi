@@ -19,7 +19,6 @@ object NewSessionCatalogs {
         OptionItem("opus", "Opus"),
         OptionItem("fable", "Fable"),
         OptionItem("sonnet", "Sonnet"),
-        OptionItem("haiku", "Haiku"),
     )
 
     val CLAUDE_EFFORTS: List<OptionItem> = listOf(

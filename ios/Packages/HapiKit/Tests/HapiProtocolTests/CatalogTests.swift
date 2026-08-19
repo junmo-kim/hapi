@@ -241,12 +241,17 @@ struct CatalogTests {
     // MARK: - New-session catalogs (derived from the claude catalog data, #39)
 
     @Test func newSessionCatalogsMatchTheWebOptionLists() {
+        // One deliberate divergence from the web offer list: Haiku. The web
+        // picker drives its effort options from the model's advertised
+        // capability, so it can offer a model that supports no effort; these
+        // catalogs are static and post model and effort separately, so offering
+        // Haiku here would let a session sit on it with `high` pinned. It stays
+        // in ClaudeModels.labels, so an existing Haiku session still renders.
         #expect(NewSessionCatalogs.claudeModels == [
             NewSessionOption(value: "auto", label: "Default"),
             NewSessionOption(value: "opus", label: "Opus"),
             NewSessionOption(value: "fable", label: "Fable"),
             NewSessionOption(value: "sonnet", label: "Sonnet"),
-            NewSessionOption(value: "haiku", label: "Haiku"),
         ])
         #expect(NewSessionCatalogs.claudeEfforts == [
             NewSessionOption(value: "auto", label: "Auto"),

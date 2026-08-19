@@ -15,11 +15,17 @@ public enum ClaudeModels {
     /// `[1m]` ids are absent here on purpose: they are the same models as their
     /// bare counterparts, so they survive only in `labels` below, which keeps
     /// resolving them for sessions created before they were dropped.
+    ///
+    /// Haiku is absent for a different reason: it is the first Claude model
+    /// that supports no effort at all, and these pickers post model and effort
+    /// separately against a static effort list, so offering it here would let a
+    /// native session sit on Haiku with `high` pinned. `labels` still resolves
+    /// it, so a session already on Haiku renders correctly. Add it once the
+    /// native effort offers are model-aware.
     public static let fallbackPresets: [String] = [
         "opus",
         "fable",
         "sonnet",
-        "haiku",
     ]
 
     /// `CLAUDE_MODEL_LABELS`: recognition aliases, wider than the offer list.

@@ -26,8 +26,15 @@ object ClaudeModels {
      * ids are absent on purpose: they are the same models as their bare
      * counterparts, so they survive only in [LABELS], which keeps resolving
      * them for sessions created before they were dropped.
+     *
+     * Haiku is absent for a different reason: it is the first Claude model that
+     * supports no effort at all, and these pickers post model and effort
+     * separately against a static effort list, so offering it here would let a
+     * native session sit on Haiku with `high` pinned. [LABELS] still resolves
+     * it, so a session already on Haiku renders correctly. Add it once the
+     * native effort offers are model-aware.
      */
-    val FALLBACK_PRESETS: List<String> = listOf("opus", "fable", "sonnet", "haiku")
+    val FALLBACK_PRESETS: List<String> = listOf("opus", "fable", "sonnet")
 
     /** `getClaudeModelLabel`: trimmed lookup; unknown/blank → null. */
     fun label(model: String?): String? {
