@@ -1700,6 +1700,20 @@ function SessionChatInner(props: SessionChatProps) {
             return
         }
         if (!supportedLevels.includes(sessionEffort)) {
+            // Deliberately fire-and-forget. A model change that starts while
+            // this write is in flight can land first, so the clear can arrive
+            // after the session already moved to a model that does support the
+            // level. What is lost in that window is a level that was already
+            // invalid for the model it was stored against, and the user can
+            // pick it again. Closing the window would need either a
+            // server-side compare-and-set on model identity or blocking the
+            // composer until this settles. The former is worse than the
+            // problem here: a Claude model has several representations (preset,
+            // legacy '[1m]' alias, catalog id) and the resolution to a catalog
+            // row happens on the client, so a server-side comparison would run
+            // against a different representation and silently drop legitimate
+            // writes. The latter freezes the composer for a background
+            // correction the user never asked for.
             void handleEffortChange(null, { silent: true })
         }
     }, [

@@ -124,6 +124,16 @@ export function getContextBudgetTokens(model: string | null | undefined, flavor?
             return DEFAULT_CLAUDE_CONTEXT_WINDOW_TOKENS
         }
 
+        // The '[1m]' suffix carries no context-window information, so the
+        // family lookup deliberately strips it instead of treating it as a
+        // signal. Measured on claude 2.1.233/2.1.234 against both a Pro and a
+        // Max account: sonnet and sonnet[1m] both report 967,000, opus and
+        // fable both report 1,000,000 with and without the suffix, and haiku
+        // reports 200,000. These numbers are the same on both tiers, so a
+        // family window is a measurement rather than an optimistic guess.
+        // This value is only the pre-measurement seed in any case -- the first
+        // turn's get_context_usage reading replaces it (see
+        // seedMeasuredContextWindow in cli/src/claude/utils/sdkToLogConverter.ts).
         const family = resolveClaudeContextWindowFamily(stripClaude1mSuffix(trimmedModel))
         if (family) {
             return CLAUDE_FAMILY_CONTEXT_WINDOW_TOKENS[family]
