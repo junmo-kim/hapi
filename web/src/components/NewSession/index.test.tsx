@@ -1065,6 +1065,48 @@ describe('NewSession launch preferences', () => {
         })
     })
 
+    it('resets a restored Claude model this cwd\'s catalog does not list', async () => {
+        // Mirrors the grok reset: the saved preference is machine-wide while the
+        // catalog is per-cwd, so a value the loaded catalog omits must not stay
+        // selectable and must not be what Create submits.
+        mocks.claudeModels = [
+            { value: 'sonnet', displayName: 'Sonnet', resolvedModel: 'claude-sonnet-5' },
+            { value: 'haiku', displayName: 'Haiku', resolvedModel: 'claude-haiku-4-5-20251001' }
+        ]
+        saveNewSessionFormDraft({
+            agent: 'claude',
+            model: 'opusplan',
+            cursorSelectedBase: 'auto',
+            machineId: 'machine-1',
+            effort: 'auto',
+            modelReasoningEffort: 'default',
+            serviceTier: 'standard',
+            collaborationMode: 'default',
+            copilotAgentMode: 'interactive',
+            yoloMode: false,
+            codexFamilyPermissionMode: 'default',
+            grokPermissionMode: 'default',
+            sessionType: 'simple',
+            worktreeName: ''
+        })
+
+        render(
+            <NewSession
+                api={api}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory="C:\\repo"
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        await waitFor(() => {
+            expect(screen.getByTestId('model')).toHaveTextContent('auto')
+            expect(screen.getByTestId('model-options')).toHaveTextContent('Default,Sonnet,Haiku')
+        })
+    })
+
     it('shows Default plus the static fallback list when Claude catalog discovery falls back with no pin', async () => {
         mocks.claudeModels = []
         savePreferredAgent('claude')
