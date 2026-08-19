@@ -8,7 +8,7 @@ import Foundation
 // `core/protocol/.../catalog/Models.kt`). Codex-family model lists are NOT
 // static — they come from `GET /api/sessions/:id/codex-models` per session.
 
-/// `CLAUDE_MODEL_LABELS` / `CLAUDE_MODEL_PRESETS`.
+/// `CLAUDE_MODEL_LABELS` / `CLAUDE_MODEL_FALLBACK_OPTIONS`.
 public enum ClaudeModels {
     /// Preset ids in declaration (picker) order.
     public static let presets: [String] = [
@@ -18,6 +18,7 @@ public enum ClaudeModels {
         "opus[1m]",
         "fable",
         "fable[1m]",
+        "haiku",
     ]
 
     private static let labels: [String: String] = [
@@ -27,6 +28,7 @@ public enum ClaudeModels {
         "opus[1m]": "Opus 1M",
         "fable": "Fable",
         "fable[1m]": "Fable 1M",
+        "haiku": "Haiku",
     ]
 
     /// `getClaudeModelLabel`: trimmed lookup; unknown/blank → nil.

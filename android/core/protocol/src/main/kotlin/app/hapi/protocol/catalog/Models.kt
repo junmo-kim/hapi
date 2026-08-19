@@ -17,9 +17,10 @@ object ClaudeModels {
         "opus[1m]" to "Opus 1M",
         "fable" to "Fable",
         "fable[1m]" to "Fable 1M",
+        "haiku" to "Haiku",
     )
 
-    /** `CLAUDE_MODEL_PRESETS`. */
+    /** `CLAUDE_MODEL_FALLBACK_OPTIONS`. */
     val PRESETS: List<String> = LABELS.keys.toList()
 
     /** `getClaudeModelLabel`: trimmed lookup; unknown/blank → null. */
