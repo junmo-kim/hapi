@@ -336,8 +336,8 @@ export async function opencodeLocalLauncher(
             if (toolCall && isUsableToolInput(toolCall.input) && !sentToolResults.has(toolCall.callId)) {
                 // Wait for non-empty input (OpenCode pending often has input:{}).
                 const previousInput = emittedToolInputs.get(toolCall.callId);
-                const previousCanonical = canonicalizeDiffToolInput(previousInput);
-                const currentCanonical = canonicalizeDiffToolInput(toolCall.input);
+                const previousCanonical = canonicalizeDiffToolInput(previousInput, toolCall.name);
+                const currentCanonical = canonicalizeDiffToolInput(toolCall.input, toolCall.name);
                 // Emit on first usable input, and replace a partial native
                 // edit/write input with the full canonical one when it arrives.
                 const shouldEmit = previousInput === undefined
@@ -398,8 +398,9 @@ export async function opencodeLocalLauncher(
             const signature = buildToolSignature(name, toolInput);
             const fallbackSignature = buildToolSignature(name, null);
             // Native edit/write args are canonicalized for emit so the web
-            // Edit/Write views match the ACP path.
-            const canonical = canonicalizeDiffToolInput(toolInput);
+            // Edit/Write views match the ACP path. Gate on the tool name so an
+            // arbitrary non-edit tool isn't misclassified as Write.
+            const canonical = canonicalizeDiffToolInput(toolInput, name);
             if (canonical) {
                 name = canonical.name;
                 toolInput = canonical.input;
@@ -443,8 +444,8 @@ export async function opencodeLocalLauncher(
                     return;
                 }
                 const previousInput = emittedToolInputs.get(callId);
-                const previousCanonical = canonicalizeDiffToolInput(previousInput);
-                const currentCanonical = canonicalizeDiffToolInput(toolInput);
+                const previousCanonical = canonicalizeDiffToolInput(previousInput, name);
+                const currentCanonical = canonicalizeDiffToolInput(toolInput, name);
                 // Emit on first usable input; replace a partial native
                 // edit/write input with the full canonical one when it arrives.
                 const shouldEmit = previousInput === undefined
@@ -467,8 +468,8 @@ export async function opencodeLocalLauncher(
                 // Mirror message.part.updated so result is never unpaired, and
                 // replace a partial native edit/write call with the full input.
                 const previousInput = emittedToolInputs.get(callId);
-                const previousCanonical = canonicalizeDiffToolInput(previousInput);
-                const currentCanonical = canonicalizeDiffToolInput(toolInput);
+                const previousCanonical = canonicalizeDiffToolInput(previousInput, name);
+                const currentCanonical = canonicalizeDiffToolInput(toolInput, name);
                 const shouldEmit = previousInput === undefined
                     || (previousCanonical === null && currentCanonical !== null);
                 if (!sentToolCalls.has(callId) || shouldEmit) {

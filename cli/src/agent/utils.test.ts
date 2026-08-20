@@ -82,7 +82,7 @@ describe('agent tool name helpers', () => {
                 filePath: '/tmp/a.ts',
                 oldString: 'foo',
                 newString: 'bar'
-            })).toEqual({
+            }, 'edit')).toEqual({
                 name: 'Edit',
                 input: { file_path: '/tmp/a.ts', old_string: 'foo', new_string: 'bar' }
             });
@@ -93,7 +93,7 @@ describe('agent tool name helpers', () => {
                 file_path: '/tmp/a.ts',
                 old_string: 'foo',
                 new_string: 'bar'
-            })).toEqual({
+            }, 'edit')).toEqual({
                 name: 'Edit',
                 input: { file_path: '/tmp/a.ts', old_string: 'foo', new_string: 'bar' }
             });
@@ -104,7 +104,7 @@ describe('agent tool name helpers', () => {
                 filePath: '/tmp/a.ts',
                 oldString: 'drop me\n',
                 newString: ''
-            })).toEqual({
+            }, 'edit')).toEqual({
                 name: 'Edit',
                 input: { file_path: '/tmp/a.ts', old_string: 'drop me\n', new_string: '' }
             });
@@ -116,7 +116,7 @@ describe('agent tool name helpers', () => {
                 oldString: 'foo',
                 newString: 'bar',
                 replaceAll: true
-            })).toEqual({
+            }, 'edit')).toEqual({
                 name: 'Edit',
                 input: { file_path: '/tmp/a.ts', old_string: 'foo', new_string: 'bar', replace_all: true }
             });
@@ -128,7 +128,7 @@ describe('agent tool name helpers', () => {
                 oldString: 'foo',
                 newString: 'bar',
                 replaceAll: false
-            })).toEqual({
+            }, 'edit')).toEqual({
                 name: 'Edit',
                 input: { file_path: '/tmp/a.ts', old_string: 'foo', new_string: 'bar', replace_all: false }
             });
@@ -140,7 +140,7 @@ describe('agent tool name helpers', () => {
                 old_string: 'foo',
                 new_string: 'bar',
                 replace_all: true
-            })).toEqual({
+            }, 'edit')).toEqual({
                 name: 'Edit',
                 input: { file_path: '/tmp/a.ts', old_string: 'foo', new_string: 'bar', replace_all: true }
             });
@@ -152,7 +152,7 @@ describe('agent tool name helpers', () => {
                 old_string: 'foo',
                 new_string: 'bar',
                 replace_all: false
-            })).toEqual({
+            }, 'edit')).toEqual({
                 name: 'Edit',
                 input: { file_path: '/tmp/a.ts', old_string: 'foo', new_string: 'bar', replace_all: false }
             });
@@ -165,7 +165,7 @@ describe('agent tool name helpers', () => {
                 newString: 'bar',
                 replaceAll: true,
                 replace_all: false
-            })).toEqual({
+            }, 'edit')).toEqual({
                 name: 'Edit',
                 input: { file_path: '/tmp/a.ts', old_string: 'foo', new_string: 'bar', replace_all: true }
             });
@@ -176,7 +176,7 @@ describe('agent tool name helpers', () => {
                 filePath: '/tmp/a.ts',
                 oldString: 'foo',
                 newString: 'bar'
-            })).toEqual({
+            }, 'edit')).toEqual({
                 name: 'Edit',
                 input: { file_path: '/tmp/a.ts', old_string: 'foo', new_string: 'bar' }
             });
@@ -185,7 +185,7 @@ describe('agent tool name helpers', () => {
                 oldString: 'foo',
                 newString: 'bar',
                 replaceAll: 'yes'
-            })).toEqual({
+            }, 'edit')).toEqual({
                 name: 'Edit',
                 input: { file_path: '/tmp/a.ts', old_string: 'foo', new_string: 'bar' }
             });
@@ -197,7 +197,7 @@ describe('agent tool name helpers', () => {
                 oldString: 'foo',
                 newString: 'bar',
                 content: 'baz'
-            })).toEqual({
+            }, 'edit')).toEqual({
                 name: 'Edit',
                 input: { file_path: '/tmp/a.ts', old_string: 'foo', new_string: 'bar' }
             });
@@ -207,7 +207,7 @@ describe('agent tool name helpers', () => {
             expect(canonicalizeDiffToolInput({
                 filePath: '/tmp/b.txt',
                 content: 'hello\n'
-            })).toEqual({
+            }, 'write')).toEqual({
                 name: 'Write',
                 input: { file_path: '/tmp/b.txt', content: 'hello\n' }
             });
@@ -217,7 +217,7 @@ describe('agent tool name helpers', () => {
             expect(canonicalizeDiffToolInput({
                 file_path: '/tmp/b.txt',
                 content: ''
-            })).toEqual({
+            }, 'write')).toEqual({
                 name: 'Write',
                 input: { file_path: '/tmp/b.txt', content: '' }
             });
@@ -227,40 +227,74 @@ describe('agent tool name helpers', () => {
             expect(canonicalizeDiffToolInput({
                 oldString: 'foo',
                 newString: 'bar'
-            })).toBeNull();
+            }, 'edit')).toBeNull();
             expect(canonicalizeDiffToolInput({
                 filePath: 42,
                 oldString: 'foo',
                 newString: 'bar'
-            })).toBeNull();
+            }, 'edit')).toBeNull();
         });
 
         it('returns null when one of old/new is missing', () => {
             expect(canonicalizeDiffToolInput({
                 filePath: '/tmp/a.ts',
                 oldString: 'foo'
-            })).toBeNull();
+            }, 'edit')).toBeNull();
             expect(canonicalizeDiffToolInput({
                 filePath: '/tmp/a.ts',
                 newString: 'bar'
-            })).toBeNull();
+            }, 'edit')).toBeNull();
         });
 
         it('returns null for non-diff shapes (e.g. apply_patch text)', () => {
             expect(canonicalizeDiffToolInput({
                 patch: '*** Begin Patch\n...'
-            })).toBeNull();
+            }, 'edit')).toBeNull();
             expect(canonicalizeDiffToolInput({
                 filePath: '/tmp/a.ts',
                 command: 'ls'
-            })).toBeNull();
+            }, 'edit')).toBeNull();
         });
 
         it('returns null for non-object inputs', () => {
-            expect(canonicalizeDiffToolInput(null)).toBeNull();
-            expect(canonicalizeDiffToolInput(undefined)).toBeNull();
-            expect(canonicalizeDiffToolInput('{"filePath":"/tmp/a.ts"}')).toBeNull();
-            expect(canonicalizeDiffToolInput([])).toBeNull();
+            expect(canonicalizeDiffToolInput(null, 'edit')).toBeNull();
+            expect(canonicalizeDiffToolInput(undefined, 'edit')).toBeNull();
+            expect(canonicalizeDiffToolInput('{"filePath":"/tmp/a.ts"}', 'edit')).toBeNull();
+            expect(canonicalizeDiffToolInput([], 'edit')).toBeNull();
+        });
+
+        it('does not rename a non-edit tool whose schema accepts filePath/content', () => {
+            // A custom MCP tool with {filePath, content, mode} must not be
+            // canonicalized to Write — its name and extra args are preserved.
+            expect(canonicalizeDiffToolInput({
+                filePath: '/tmp/a.ts',
+                content: 'payload',
+                mode: 'append'
+            }, 'artifact_write')).toBeNull();
+        });
+
+        it('returns null when the semantic hint is missing or unknown', () => {
+            expect(canonicalizeDiffToolInput({
+                filePath: '/tmp/a.ts',
+                oldString: 'foo',
+                newString: 'bar'
+            }, null)).toBeNull();
+            expect(canonicalizeDiffToolInput({
+                filePath: '/tmp/a.ts',
+                content: 'hi'
+            }, 'bash')).toBeNull();
+        });
+
+        it('canonicalizes write when the kind is edit (OpenCode mapping)', () => {
+            // OpenCode maps write's kind to 'edit'; that alias must still
+            // canonicalize a write-shaped input.
+            expect(canonicalizeDiffToolInput({
+                filePath: '/tmp/b.txt',
+                content: 'hello\n'
+            }, 'edit')).toEqual({
+                name: 'Write',
+                input: { file_path: '/tmp/b.txt', content: 'hello\n' }
+            });
         });
     });
 });

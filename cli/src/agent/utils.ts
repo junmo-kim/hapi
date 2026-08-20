@@ -21,14 +21,23 @@ function firstString(value: unknown, keys: readonly string[]): string | null {
  * edit and `{filePath, content}` for write) and normalizes them to the
  * Claude-shaped inputs the web Edit/Write views render.
  *
- * Shape-based on purpose: a path plus both old/new strings is unambiguously an
- * edit, and a path plus content (without old/new) a write. No kind/name gate —
- * gating on agent-specific kind vocabulary would miss variants that omit it,
- * and rendering such a shape as a diff is correct even if one slips through.
+ * Gated on the tool's semantic name/kind: only known edit/write aliases are
+ * canonicalized. The Edit shape (path + both old/new strings) is unambiguous on
+ * its own, but Write is just `{path, content}` — a shape many non-edit MCP
+ * tools also accept — so without the gate those tools would be renamed to
+ * Write and their extra args dropped. The gate keeps the OpenCode native-shape
+ * cases (OpenCode maps both edit and write to kind 'edit', which is in the
+ * allow-list) while avoiding that misclassification.
  *
- * Returns null for everything else so callers keep their existing fallback.
+ * Returns null when the semantic hint is missing/unknown, or the input shape
+ * doesn't match, so callers keep their existing fallback.
  */
-export function canonicalizeDiffToolInput(rawInput: unknown): CanonicalDiffToolInput | null {
+export function canonicalizeDiffToolInput(rawInput: unknown, semanticHint: string | null): CanonicalDiffToolInput | null {
+    const kind = semanticHint?.trim().toLowerCase() ?? null;
+    if (!kind || !['edit', 'write', 'write_file', 'replace', 'modify', 'file_edit'].includes(kind)) {
+        return null;
+    }
+
     const filePath = firstString(rawInput, ['filePath', 'file_path']);
     if (filePath === null || filePath.length === 0) return null;
 

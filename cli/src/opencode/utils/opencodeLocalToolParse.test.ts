@@ -8,7 +8,7 @@ import { isUsableToolInput, parseToolCall, parseToolResult } from './opencodeLoc
  *  `before` shares a queue key with the full `after`; canonicalization only
  *  affects what gets emitted. */
 function canonicalizeHookPair(name: string, input: unknown): { name: string; input: unknown } {
-    const canonical = canonicalizeDiffToolInput(input);
+    const canonical = canonicalizeDiffToolInput(input, name);
     return canonical ? { name: canonical.name, input: canonical.input } : { name, input };
 }
 
@@ -224,10 +224,10 @@ function collectExecuteHookMessages(
     const out: Array<{ type: string; name?: string; callId: string; input?: unknown; output?: unknown }> = [];
     let nextId = 0;
 
-    const shouldEmit = (callId: string, toolInput: unknown): boolean => {
+    const shouldEmit = (callId: string, toolInput: unknown, hint: string): boolean => {
         const previousInput = emittedToolInputs.get(callId);
-        const previousCanonical = canonicalizeDiffToolInput(previousInput);
-        const currentCanonical = canonicalizeDiffToolInput(toolInput);
+        const previousCanonical = canonicalizeDiffToolInput(previousInput, hint);
+        const currentCanonical = canonicalizeDiffToolInput(toolInput, hint);
         return previousInput === undefined
             || (previousCanonical === null && currentCanonical !== null);
     };
@@ -263,7 +263,7 @@ function collectExecuteHookMessages(
             } else {
                 pushQueue(toolExecutionQueues, fallbackSignature, callId);
             }
-            if (!sentToolResults.has(callId) && shouldEmit(callId, toolInput)) {
+            if (!sentToolResults.has(callId) && shouldEmit(callId, toolInput, eventName)) {
                 if (!usableInput) continue;
                 emittedToolInputs.set(callId, toolInput);
                 sentToolCalls.add(callId);
@@ -277,7 +277,7 @@ function collectExecuteHookMessages(
             removeFromQueue(toolExecutionQueues, fallbackSignature, callId);
         }
         if (!sentToolResults.has(callId)) {
-            if (!sentToolCalls.has(callId) || shouldEmit(callId, toolInput)) {
+            if (!sentToolCalls.has(callId) || shouldEmit(callId, toolInput, eventName)) {
                 emittedToolInputs.set(callId, toolInput);
                 sentToolCalls.add(callId);
                 out.push({ type: 'tool-call', name: eventName, callId, input: toolInput });

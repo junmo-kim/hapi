@@ -74,7 +74,7 @@ export function parseToolCall(part: unknown): ParsedToolCall | null {
     // {filePath, content}) are canonicalized to the Claude-shaped inputs the
     // web Edit/Write views render — same contract as the ACP path.
     const toParsed = (input: unknown, title: string | null): ParsedToolCall => {
-        const canonical = canonicalizeDiffToolInput(input);
+        const canonical = canonicalizeDiffToolInput(input, name);
         return {
             callId,
             name: canonical ? canonical.name : name,

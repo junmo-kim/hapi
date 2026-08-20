@@ -750,7 +750,8 @@ export class AcpMessageHandler {
         // oldString, newString} / {filePath, content}) must be canonicalized to
         // the Claude-shaped Edit/Write inputs the web diff views render — the
         // same contract as hoistDiffContentIntoInput for Gemini's diff blocks.
-        const canonical = input == null ? null : canonicalizeDiffToolInput(input);
+        // Gate on the kind so an arbitrary non-edit tool isn't misclassified.
+        const canonical = input == null ? null : canonicalizeDiffToolInput(input, asString(update.kind) ?? derivedName.name);
         if (canonical) {
             name = canonical.name;
             input = canonical.input;
@@ -786,7 +787,8 @@ export class AcpMessageHandler {
             let input: unknown = update.rawInput;
             // Native-shape args (OpenCode) arrive here as the first usable
             // input; canonicalize before storing so the web diff views match.
-            const canonical = canonicalizeDiffToolInput(input);
+            // Gate on the kind so an arbitrary non-edit tool isn't misclassified.
+            const canonical = canonicalizeDiffToolInput(input, asString(update.kind) ?? derivedName.name);
             if (canonical) {
                 name = canonical.name;
                 input = canonical.input;
@@ -818,7 +820,7 @@ export class AcpMessageHandler {
                 );
                 if (isUsableRawInput(fallback)) {
                     let nextInput: unknown = fallback;
-                    const canonical = canonicalizeDiffToolInput(fallback);
+                    const canonical = canonicalizeDiffToolInput(fallback, existing.name);
                     if (canonical) {
                         name = canonical.name;
                         nextInput = canonical.input;
