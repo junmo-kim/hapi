@@ -236,13 +236,13 @@ export async function opencodeLocalLauncher(
 
     let storageScanner: OpencodeStorageScannerHandle | null = null;
     const messageRoles = new Map<string, string>();
-const sentTextParts = new Set<string>();
-const sentToolCalls = new Set<string>();
-const sentToolResults = new Set<string>();
-// Emitted tool input per callId. When a partial native edit/write call is
-// emitted first (e.g. `{filePath}`), a later canonical full input replaces it
-// so the web Edit/Write view receives the complete arguments.
-const emittedToolInputs = new Map<string, unknown>();
+    const sentTextParts = new Set<string>();
+    const sentToolCalls = new Set<string>();
+    const sentToolResults = new Set<string>();
+    // Emitted tool input per callId. When a partial native edit/write call is
+    // emitted first (e.g. `{filePath}`), a later canonical full input replaces
+    // it so the web Edit/Write view receives the complete arguments.
+    const emittedToolInputs = new Map<string, unknown>();
     const textBuffers = new Map<string, string>();
     const toolExecutionQueues = new Map<string, string[]>();
 
