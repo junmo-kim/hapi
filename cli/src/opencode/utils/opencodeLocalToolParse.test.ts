@@ -16,13 +16,23 @@ function canonicalizeHookPair(name: string, input: unknown): { name: string; inp
 function collectMessages(parts: unknown[]): Array<{ type: string; name?: string; callId: string; input?: unknown; output?: unknown }> {
     const sentToolCalls = new Set<string>();
     const sentToolResults = new Set<string>();
+    const emittedToolInputs = new Map<string, unknown>();
     const out: Array<{ type: string; name?: string; callId: string; input?: unknown; output?: unknown }> = [];
 
     for (const part of parts) {
         const toolCall = parseToolCall(part);
-        if (toolCall && isUsableToolInput(toolCall.input) && !sentToolCalls.has(toolCall.callId)) {
-            sentToolCalls.add(toolCall.callId);
-            out.push({ type: 'tool-call', name: toolCall.name, callId: toolCall.callId, input: toolCall.input });
+        if (toolCall && isUsableToolInput(toolCall.input) && !sentToolResults.has(toolCall.callId)) {
+            const previousInput = emittedToolInputs.get(toolCall.callId);
+            const previousCanonical = canonicalizeDiffToolInput(previousInput, toolCall.name);
+            const currentCanonical = canonicalizeDiffToolInput(toolCall.input, toolCall.name);
+            const canonicalChanged = currentCanonical !== null
+                && hashObject(currentCanonical) !== hashObject(previousCanonical);
+            const shouldEmit = previousInput === undefined || canonicalChanged;
+            if (shouldEmit) {
+                emittedToolInputs.set(toolCall.callId, toolCall.input);
+                sentToolCalls.add(toolCall.callId);
+                out.push({ type: 'tool-call', name: toolCall.name, callId: toolCall.callId, input: toolCall.input });
+            }
         }
         const toolResult = parseToolResult(part);
         if (toolResult && !sentToolResults.has(toolResult.callId)) {
@@ -31,6 +41,7 @@ function collectMessages(parts: unknown[]): Array<{ type: string; name?: string;
                 out.push({ type: 'tool-call', name: toolCall.name, callId: toolCall.callId, input: toolCall.input });
             }
             sentToolResults.add(toolResult.callId);
+            emittedToolInputs.delete(toolResult.callId);
             out.push({ type: 'tool-call-result', callId: toolResult.callId, output: toolResult.output });
         }
     }
@@ -179,6 +190,38 @@ describe('OpenCode local tool part parsing', () => {
         ]);
         expect(messages.map((m) => m.type)).toEqual(['tool-call', 'tool-call-result']);
         expect(messages[0].input).toEqual({ command: 'echo hi' });
+    });
+
+    it('re-emits a running write when content changes from empty to final (message.part.updated path)', () => {
+        const callId = 'call-write-stream';
+        const messages = collectMessages([
+            {
+                type: 'tool',
+                tool: 'write',
+                callID: callId,
+                state: { status: 'running', input: { filePath: '/tmp/b.txt', content: '' } }
+            },
+            {
+                type: 'tool',
+                tool: 'write',
+                callID: callId,
+                state: { status: 'running', input: { filePath: '/tmp/b.txt', content: 'final\n' } }
+            },
+            {
+                type: 'tool',
+                tool: 'write',
+                callID: callId,
+                state: { status: 'completed', input: { filePath: '/tmp/b.txt', content: 'final\n' }, output: 'wrote' }
+            }
+        ]);
+        const calls = messages.filter((m) => m.type === 'tool-call');
+        const results = messages.filter((m) => m.type === 'tool-call-result');
+        expect(calls.length).toBe(2);
+        expect(results.length).toBe(1);
+        expect(calls[calls.length - 1]).toMatchObject({
+            name: 'Write',
+            input: { file_path: '/tmp/b.txt', content: 'final\n' }
+        });
     });
 });
 
