@@ -228,8 +228,9 @@ function collectExecuteHookMessages(
         const previousInput = emittedToolInputs.get(callId);
         const previousCanonical = canonicalizeDiffToolInput(previousInput, hint);
         const currentCanonical = canonicalizeDiffToolInput(toolInput, hint);
-        return previousInput === undefined
-            || (previousCanonical === null && currentCanonical !== null);
+        const canonicalChanged = currentCanonical !== null
+            && hashObject(currentCanonical) !== hashObject(previousCanonical);
+        return previousInput === undefined || canonicalChanged;
     };
 
     for (const event of events) {
@@ -370,5 +371,22 @@ describe('OpenCode local execute-hook tool emit policy', () => {
         expect(messages.map((m) => m.type)).toEqual(['tool-call', 'tool-call', 'tool-call-result']);
         expect(messages.filter((m) => m.type === 'tool-call').length).toBe(2);
         expect(messages.filter((m) => m.type === 'tool-call-result').length).toBe(1);
+    });
+
+    it('re-emits a canonical write when content changes from empty to final', () => {
+        // {filePath, content:""} already canonicalizes, so the previous
+        // null->canonical rule would suppress the final content. The canonical
+        // value itself changed, so a replacement tool-call must be emitted.
+        const messages = collectExecuteHookMessages([
+            { type: 'before', name: 'write', id: 'hook-w-1', input: { filePath: '/tmp/b.txt', content: '' } },
+            { type: 'after', name: 'write', id: 'hook-w-1', input: { filePath: '/tmp/b.txt', content: 'final\n' }, output: 'wrote' }
+        ]);
+        expect(messages.map((m) => m.type)).toEqual(['tool-call', 'tool-call', 'tool-call-result']);
+        expect(messages[0].callId).toEqual(messages[1].callId);
+        expect(messages[1]).toMatchObject({
+            type: 'tool-call',
+            name: 'Write',
+            input: { file_path: '/tmp/b.txt', content: 'final\n' }
+        });
     });
 });
