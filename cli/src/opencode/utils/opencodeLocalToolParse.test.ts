@@ -283,6 +283,7 @@ function collectExecuteHookMessages(
                 out.push({ type: 'tool-call', name: eventName, callId, input: toolInput });
             }
             sentToolResults.add(callId);
+            emittedToolInputs.delete(callId);
             out.push({ type: 'tool-call-result', callId, output: event.output });
         }
     }
@@ -354,5 +355,20 @@ describe('OpenCode local execute-hook tool emit policy', () => {
             name: 'Write',
             input: { file_path: '/tmp/b.txt', content: 'hi\n' }
         });
+    });
+
+    it('releases completed calls from upgrade tracking (no re-emit after result)', () => {
+        // Once a call is completed (tool-call-result emitted), the upgrade map
+        // entry is released. A later stale part for the same callId must not
+        // trigger a replacement emit or a duplicate result — the lifecycle is
+        // already closed by sentToolResults.
+        const messages = collectExecuteHookMessages([
+            { type: 'before', name: 'edit', id: 'hook-e-1', input: { filePath: '/tmp/a.ts' } },
+            { type: 'after', name: 'edit', id: 'hook-e-1', input: { filePath: '/tmp/a.ts', oldString: 'foo', newString: 'bar' }, output: 'ok' },
+            { type: 'after', name: 'edit', id: 'hook-e-1', input: { filePath: '/tmp/a.ts', oldString: 'x', newString: 'y' }, output: 'late' }
+        ]);
+        expect(messages.map((m) => m.type)).toEqual(['tool-call', 'tool-call', 'tool-call-result']);
+        expect(messages.filter((m) => m.type === 'tool-call').length).toBe(2);
+        expect(messages.filter((m) => m.type === 'tool-call-result').length).toBe(1);
     });
 });

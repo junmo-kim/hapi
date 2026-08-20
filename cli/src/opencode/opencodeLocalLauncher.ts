@@ -370,6 +370,7 @@ const emittedToolInputs = new Map<string, unknown>();
                     });
                 }
                 sentToolResults.add(toolResult.callId);
+                emittedToolInputs.delete(toolResult.callId);
                 session.sendAgentMessage({
                     type: 'tool-call-result',
                     callId: toolResult.callId,
@@ -482,6 +483,7 @@ const emittedToolInputs = new Map<string, unknown>();
                     });
                 }
                 sentToolResults.add(callId);
+                emittedToolInputs.delete(callId);
                 session.sendAgentMessage({
                     type: 'tool-call-result',
                     callId,
