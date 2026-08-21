@@ -106,7 +106,7 @@ describe('getModelOptionsForFlavor', () => {
         expect(rendered.filter((option) => option.value === 'sonnet[1m]')).toHaveLength(1)
     })
 
-    it('integration: R2-1 regression -- resolving the wire value first (as SessionChat.tsx now does) keeps the picker selection visible and Ctrl/Cmd+M cycling advances instead of clearing the pin', () => {
+    it('resolving the wire value first, as SessionChat.tsx does, keeps the picker selection visible and lets Ctrl/Cmd+M cycling advance instead of clearing the pin', () => {
         const liveCatalog = [
             { value: 'default', displayName: 'Default (recommended)', resolvedModel: 'claude-opus-5[1m]', supportsFastMode: true },
             { value: 'opus[1m]', displayName: 'Opus (1M context)', resolvedModel: 'claude-opus-5[1m]', supportsFastMode: true },

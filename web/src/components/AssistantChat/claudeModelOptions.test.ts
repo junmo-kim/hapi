@@ -8,7 +8,7 @@ const LIVE_CATALOG = [
     { value: 'haiku', displayName: 'Haiku', resolvedModel: 'claude-haiku-4-5-20251001', supportsFastMode: false }
 ]
 
-// hostile-review R3-3: a catalog where `default` shares its resolvedModel
+// a catalog where `default` shares its resolvedModel
 // with NO concrete row -- unlike LIVE_CATALOG above, where `default` and
 // `opus[1m]` are siblings sharing "claude-opus-5[1m]". Real catalogs happen
 // not to hit this today, but nothing in the protocol guarantees it.
@@ -18,7 +18,7 @@ const DEFAULT_ONLY_CATALOG = [
     { value: 'haiku', displayName: 'Haiku', resolvedModel: 'claude-haiku-4-5-20251001' }
 ]
 
-// hostile-review R3-Q1: nothing in the control-protocol schema guarantees a
+// nothing in the control-protocol schema guarantees a
 // `default` row is present.
 const NO_DEFAULT_CATALOG = [
     { value: 'opus[1m]', displayName: 'Opus (1M context)', resolvedModel: 'claude-opus-5[1m]', supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'] },
@@ -121,7 +121,7 @@ describe('getClaudeComposerModelOptions (live catalog)', () => {
         ])
     })
 
-    // hostile-review R3-3: when the current model's resolvedModel only
+    // when the current model's resolvedModel only
     // matches the `default` row (no sibling concrete row shares it, unlike
     // LIVE_CATALOG's opus[1m]/default pair), the picker must not silently
     // collapse the pin onto "Default" -- it must keep an explicit,
@@ -135,7 +135,7 @@ describe('getClaudeComposerModelOptions (live catalog)', () => {
         ])
     })
 
-    // hostile-review R3-Q1: nothing in the control-protocol schema
+    // nothing in the control-protocol schema
     // guarantees a `default` row is present. Without one, the picker would
     // have no way to unpin a model.
     it('synthesizes a Default/null row when the live catalog has no default row', () => {
@@ -190,7 +190,7 @@ describe('resolveClaudeComposerWireValue', () => {
         expect(resolveClaudeComposerWireValue('fable[1m]', LIVE_CATALOG)).toBe('fable[1m]')
     })
 
-    // hostile-review R3-3: a resolvedModel that only the `default` row
+    // a resolvedModel that only the `default` row
     // matches must NOT collapse to null (which would demote a deliberate
     // concrete pin to "use the account default" and leave no row in
     // getClaudeComposerModelOptions() to reselect it from).
@@ -257,8 +257,7 @@ describe('resolveClaudeSupportedEffortLevels', () => {
         expect(resolveClaudeSupportedEffortLevels('sonnet', LIVE_CATALOG)).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
     })
 
-    // The regression a hostile review round's own R4-4 instruction caused:
-    // when NO row in the catalog ever reports supportedEffortLevels (an
+    // When NO row in the catalog ever reports supportedEffortLevels (an
     // older claude CLI), every model -- not just haiku -- must be treated
     // as unconfirmed (undefined), not as confirmed-zero-support. undefined
     // is what tells callers (SessionChat.tsx, NewSession/index.tsx) to fall

@@ -202,7 +202,7 @@ export function resolveVisibleModelEffortSelectedValue(args: {
  * genuinely supports zero effort levels (Claude's haiku) renders as "only
  * Auto selectable" instead of silently falling through to the static
  * full-level list, which would let the composer submit an effort haiku
- * doesn't support (hostile-review R3-2). Grok's caller never passes an empty
+ * doesn't support. Grok's caller never passes an empty
  * array today, so this is a no-op for that branch; extracted out of the
  * `claudeEffortOptions` memo below so the branch logic itself is unit
  * testable without a full component render.

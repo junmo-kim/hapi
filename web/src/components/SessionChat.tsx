@@ -1012,7 +1012,7 @@ function SessionChatInner(props: SessionChatProps) {
             : props.session.model
     ), [agentFlavor, claudeModelsState.availableModels, props.session.model])
     // Same "which catalog row is selected" lookup NewSession/index.tsx uses
-    // for its effort gating (hostile-review R3-7 unification), driven off
+    // for its effort gating, driven off
     // the wire value above so it agrees with what the composer/StatusBar
     // actually show as selected.
     const claudeSelectedModelSummary = useMemo(
@@ -1026,7 +1026,7 @@ function SessionChatInner(props: SessionChatProps) {
     // legitimately resolve to an empty array once the catalog has loaded --
     // that's different from "no data yet", which HappyComposer's gate must
     // fall back from instead of rendering zero options as an empty picker
-    // (round 3). resolveClaudeSupportedEffortLevels handles the round-4
+    //. resolveClaudeSupportedEffortLevels handles the round-4
     // correction to that: a single row's absence of the field is ambiguous
     // by itself (haiku's real zero-support vs. an older CLI that doesn't
     // report the field for any model), so it checks the whole catalog

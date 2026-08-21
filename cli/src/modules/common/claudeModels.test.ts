@@ -29,7 +29,7 @@ function fakeChild() {
 }
 
 // The probe generates its own request_id (randomUUID()) at write time and
-// now (hostile-review R3-5) only resolves a control_response carrying that
+// now only resolves a control_response carrying that
 // exact id -- so tests must read the id the source actually sent instead of
 // hardcoding one, or every response line here would look like a stray
 // unrelated response and every test would hang until the probe's own
@@ -111,7 +111,7 @@ describe('listClaudeModelsForCwd', () => {
             resolvedModel: model.resolvedModel,
             // supportsFastMode is deliberately absent from the parsed output:
             // it had zero readers anywhere in cli/hub/shared/web, so this PR
-            // doesn't parse or expose it (hostile-review R3-6). A future
+            // doesn't parse or expose it. A future
             // fast-mode-toggle PR adds it back alongside its consumer.
             ...(model.supportedEffortLevels ? { supportedEffortLevels: model.supportedEffortLevels } : {})
         })))
@@ -205,7 +205,7 @@ describe('listClaudeModelsForCwd', () => {
         expect(spawnMock).toHaveBeenCalledTimes(2)
     })
 
-    it('ignores a control_response for a different request_id before its own reply arrives (hostile-review R3-5)', async () => {
+    it('ignores a control_response for a different request_id before its own reply arrives', async () => {
         const child = fakeChild()
         spawnMock.mockReturnValue(child)
 
@@ -236,7 +236,7 @@ describe('listClaudeModelsForCwd', () => {
         expect(result.models).toHaveLength(SAMPLE_MODELS.length)
     })
 
-    it('does not throw when stdin write hits a dead pipe (hostile-review R3-1, R4-1)', async () => {
+    it('does not throw when stdin write hits a dead pipe', async () => {
         const child = fakeChild()
         // Simulate a child that has already gone away by the time the probe
         // writes its control request: Node emits 'error' (e.g. EPIPE)
@@ -249,14 +249,13 @@ describe('listClaudeModelsForCwd', () => {
         // uncaughtException).
         //
         // Node delivers stream errors via errorOrDestroy -> process.nextTick,
-        // never synchronously from inside write() itself (hostile-review
-        // R4-1: the first version of this test emitted synchronously, which
-        // turns into a same-tick promise rejection the source's try/catch
-        // already swallows regardless of whether the stdin 'error' listener
-        // exists -- removing the fix left this test green, i.e. it asserted
-        // nothing). Scheduling via nextTick reproduces the real delivery
-        // path: unhandled, it becomes an uncaughtException outside any
-        // promise chain, which is the actual failure mode being guarded
+        // never synchronously from inside write() itself. Emitting
+        // synchronously here would turn into a same-tick promise rejection
+        // that the source's try/catch swallows whether or not the stdin
+        // 'error' listener exists, so the test would stay green with the fix
+        // removed and assert nothing. Scheduling via nextTick reproduces the
+        // real delivery path: unhandled, it becomes an uncaughtException
+        // outside any promise chain, which is the failure mode being guarded
         // against.
         child.stdin.write = vi.fn(() => {
             process.nextTick(() => {

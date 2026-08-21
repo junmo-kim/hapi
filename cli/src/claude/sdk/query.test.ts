@@ -215,7 +215,7 @@ describe('Query', () => {
         await expect(result.next()).rejects.toThrow('prompt failed')
     })
 
-    it('registers an stdin error listener at spawn time, absorbing an async write failure instead of throwing (hostile-review R4-2)', async () => {
+    it('registers an stdin error listener at spawn time, absorbing an async write failure instead of throwing', async () => {
         const child = createFakeChild()
         spawnMock.mockReturnValueOnce(child)
         process.env.HAPI_CLAUDE_PATH = 'claude'

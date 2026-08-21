@@ -149,7 +149,7 @@ function runClaudeListModelsProbe(cwd: string): Promise<ListClaudeModelsForCwdRe
                 // parsed as the model list, its absent `models` field
                 // normalizes to `[]`, and the probe fails with the misleading
                 // "Claude reported no models" instead of waiting for the
-                // actual list_models reply (hostile-review R3-5).
+                // actual list_models reply.
                 if (asString(response?.request_id) !== requestId) continue
                 const payload = response && isObject(response.response) ? response.response : null
                 const models = payload ? normalizeClaudeModels(payload.models) : []
@@ -185,7 +185,7 @@ function runClaudeListModelsProbe(cwd: string): Promise<ListClaudeModelsForCwdRe
         // the whole runner daemon down. child.on('error') above only covers
         // spawn failures, not this. The 'exit'/'error' handlers above already
         // decide the probe's result, so this handler only needs to swallow
-        // the event and prevent the throw (hostile-review R3-1).
+        // the event and prevent the throw.
         child.stdin?.on('error', () => {})
 
         child.stdin?.write(JSON.stringify({

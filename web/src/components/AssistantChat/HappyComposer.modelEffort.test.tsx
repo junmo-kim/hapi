@@ -40,7 +40,7 @@ describe('resolveVisibleModelEffortSelectedValue', () => {
 });
 
 describe('resolveComposerEffortOptions', () => {
-    // hostile-review R3-2: haiku is the one Claude catalog row with no
+    // haiku is the one Claude catalog row with no
     // supportedEffortLevels at all, so the composer's effort options for it
     // must resolve to "only Auto selectable" rather than the full static
     // level list -- otherwise the picker keeps offering effort: 'high' etc.

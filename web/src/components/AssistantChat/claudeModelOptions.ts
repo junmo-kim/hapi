@@ -22,7 +22,7 @@ function normalizeClaudeComposerModel(model?: string | null): string | null {
  * Every "which row is the current model?" call site (this file's two
  * functions below, plus NewSession/index.tsx and SessionChat.tsx) funnels
  * through this so they agree on one priority order instead of drifting into
- * slightly different `.find()`s (hostile-review R3-7):
+ * slightly different `.find()`s:
  *
  *   1. An exact `value` match -- the row IS this wire value.
  *   2. A concrete (non-`default`) row's `resolvedModel` match -- a stored
@@ -36,7 +36,7 @@ function normalizeClaudeComposerModel(model?: string | null): string | null {
  * resolving to "claude-opus-5[1m]"), and collapsing a concrete pin into the
  * default row there would silently demote it -- the picker would show
  * "Default" checked for a model the user explicitly chose, with no row left
- * to reselect it from (hostile-review R3-3).
+ * to reselect it from.
  */
 export function findCatalogRowFor(
     model: string | null | undefined,
@@ -198,7 +198,7 @@ function buildDynamicClaudeComposerOptions(
     // omits a `default` row -- the control-protocol schema doesn't promise
     // one, and without it the picker would have no way to unpin a model, and
     // NewSession's initial 'auto' state would have no matching option
-    // (hostile-review R3-Q1).
+    //.
     if (!options.some((option) => option.value === null)) {
         options.unshift({ value: null, label: 'Default' })
     }
@@ -262,7 +262,7 @@ export function resolveClaudeComposerWireValue(
     // rows commonly share a resolvedModel with `default` (e.g. both
     // "default" and "opus[1m]" resolving to "claude-opus-5[1m]"). Collapsing
     // that pin onto the `default` row here would return null and silently
-    // demote it (hostile-review R3-3).
+    // demote it.
     const matched = findCatalogRowFor(normalizedCurrentModel, availableModels)
     return matched ? catalogValueOf(matched) : normalizedCurrentModel
 }
