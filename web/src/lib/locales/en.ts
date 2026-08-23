@@ -650,6 +650,18 @@ export default {
   'queuedMessages.steeredBadge': '↳ Steered',
   'queuedMessages.steeredBadgeTitle': 'Steered into the active turn',
 
+  // Fork preview (confirm dialog before forking a conversation)
+  'forkPreview.title': 'Start a new session from here',
+  'forkPreview.roleUser': 'You',
+  'forkPreview.roleAssistant': 'Agent',
+  'forkPreview.keptAbove': '↑ Stays with the original session',
+  'forkPreview.emptyPrefix': 'The original session keeps everything above.',
+  'forkPreview.boundaryBadge': 'Fork point',
+  'forkPreview.newSessionStart': 'New session starts with',
+  'forkPreview.below': 'A new session starts from this point · The original session is unchanged',
+  'forkPreview.cancel': 'Cancel',
+  'forkPreview.confirm': 'Fork here',
+
   // Scratchlist (per-session workbench, issue #11)
   'scratchlist.title': 'Scratchlist',
   'scratchlist.heldLabel': 'held — not sent',

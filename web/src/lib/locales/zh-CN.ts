@@ -649,6 +649,18 @@ export default {
   'queuedMessages.steeredBadge': '↳ 已介入',
   'queuedMessages.steeredBadgeTitle': '已介入当前进行中的回合',
 
+  // Fork preview (confirm dialog before forking a conversation)
+  'forkPreview.title': '从这里开始一个新会话',
+  'forkPreview.roleUser': '你',
+  'forkPreview.roleAssistant': '代理',
+  'forkPreview.keptAbove': '↑ 保留在原会话中',
+  'forkPreview.emptyPrefix': '上方内容全部保留在原会话中。',
+  'forkPreview.boundaryBadge': '分叉点',
+  'forkPreview.newSessionStart': '新会话从这条消息开始',
+  'forkPreview.below': '新会话将从这里开始 · 原会话保持不变',
+  'forkPreview.cancel': '取消',
+  'forkPreview.confirm': '在此分叉',
+
   // Scratchlist (per-session workbench, issue #11)
   'scratchlist.title': '草稿夹',
   'scratchlist.heldLabel': '暂存 · 未发送',
