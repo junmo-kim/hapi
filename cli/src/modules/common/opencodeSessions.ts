@@ -24,6 +24,7 @@ type StatementLike = {
 type DatabaseLike = {
     query: (sql: string) => StatementLike
     close: () => void
+    exec?: (sql: string) => void
 }
 
 export type OpencodeDatabaseOpener = (dbPath: string) => Promise<DatabaseLike | null>
@@ -263,15 +264,29 @@ export async function listLocalOpencodeSessionsWithMessagesByIds(
             }
             const row = rows[0]
             if (!row) continue
-            const summary: OpencodeLocalSessionSummary = {
-                id: row.id,
-                title: row.title ?? '',
-                lastUserMessage: extractLastUserMessage(db, row.id),
-                cwd: row.directory ?? null,
-                file: dbPath,
-                modifiedAt: normalizeTimestamp(row.time_updated, Date.now())
+            // Read messages and their parts inside one deferred transaction:
+            // OpenCode may write while we scan, and a snapshot hole here would
+            // permanently fail re-imports as transcript_diverged.
+            const exec = db.exec?.bind(db)
+            const inTransaction = typeof exec === 'function'
+            if (inTransaction) exec('BEGIN DEFERRED')
+            try {
+                const summary: OpencodeLocalSessionSummary = {
+                    id: row.id,
+                    title: row.title ?? '',
+                    lastUserMessage: extractLastUserMessage(db, row.id),
+                    cwd: row.directory ?? null,
+                    file: dbPath,
+                    modifiedAt: normalizeTimestamp(row.time_updated, Date.now())
+                }
+                sessions.push(await buildSessionMessages(db, summary))
+                if (inTransaction) exec('COMMIT')
+            } catch (error) {
+                if (inTransaction) {
+                    try { exec('ROLLBACK') } catch {}
+                }
+                throw error
             }
-            sessions.push(await buildSessionMessages(db, summary))
         }
         // same ordering semantics as summaries: modifiedAt desc
         return sessions.sort((a, b) => b.modifiedAt - a.modifiedAt)
