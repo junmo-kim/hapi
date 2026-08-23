@@ -61,9 +61,9 @@ export function findCatalogRowFor(
  * response carries the field, this CLI reports it, and every other row's
  * absence is the real "unsupported" signal. If no row carries it, nothing
  * in this response confirms the field is understood, so no row's absence
- * can be trusted as a real signal either -- callers should treat the whole
- * catalog as unconfirmed and fall back to the static effort list rather
- * than asserting every model has zero support.
+ * can be trusted as a real signal either -- resolveClaudeSupportedEffortLevels
+ * then answers from the measured static table instead of from this response,
+ * which is right whichever of the two the catalog actually is.
  */
 export function catalogReportsEffortLevels(availableModels: ClaudeModelSummary[]): boolean {
     return availableModels.some((entry) => entry.supportedEffortLevels !== undefined)
@@ -140,12 +140,19 @@ export function resolveClaudeSupportedEffortLevels(
     modelValue: string | null | undefined,
     availableModels: ClaudeModelSummary[]
 ): string[] | undefined {
-    if (availableModels.length > 0) {
-        if (!catalogReportsEffortLevels(availableModels)) return undefined
+    if (availableModels.length > 0 && catalogReportsEffortLevels(availableModels)) {
         const row = findCatalogRowFor(modelValue, availableModels)
         if (!row) return undefined
         return row.supportedEffortLevels ?? []
     }
+    // Either there is no catalog, or the catalog says nothing about effort at
+    // all. The second case is ambiguous on the wire -- an older CLI that never
+    // reports the field looks exactly like a catalog whose every model happens
+    // to support no effort (an account seeing only haiku). Rather than guess
+    // which, defer to the measured static table: it already records haiku as
+    // supporting none and the other families as supporting all five, so both
+    // readings land on the right answer. A model the table doesn't know stays
+    // undefined, since nothing has confirmed anything about it.
     return resolveClaudeFallbackSupportedEffortLevels(modelValue)
 }
 

@@ -263,10 +263,22 @@ describe('resolveClaudeSupportedEffortLevels', () => {
     // is what tells callers (SessionChat.tsx, NewSession/index.tsx) to fall
     // back to the static effort list and leave a stored effort selection
     // alone instead of wiping it.
-    it('resolves undefined (unconfirmed) for every row when nothing in the catalog reports the field', () => {
-        for (const row of NO_EFFORT_FIELD_CATALOG) {
-            expect(resolveClaudeSupportedEffortLevels(row.value, NO_EFFORT_FIELD_CATALOG)).toBeUndefined()
-        }
+    it('answers from the measured static table when nothing in the catalog reports the field', () => {
+        // Indistinguishable on the wire: an older CLI that never reports the
+        // field, or an account whose only visible model happens to support no
+        // effort. The static table is right either way -- it knows haiku
+        // supports none and the other families support all five.
+        expect(resolveClaudeSupportedEffortLevels('haiku', NO_EFFORT_FIELD_CATALOG)).toEqual([])
+        expect(resolveClaudeSupportedEffortLevels('sonnet', NO_EFFORT_FIELD_CATALOG))
+            .toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
+        expect(resolveClaudeSupportedEffortLevels('opus[1m]', NO_EFFORT_FIELD_CATALOG))
+            .toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
+    })
+
+    it('stays undefined for a row the static table does not know either', () => {
+        // `default` is a catalog sentinel, not a family the static offer list
+        // carries, so nothing has confirmed anything about its capability.
+        expect(resolveClaudeSupportedEffortLevels('default', NO_EFFORT_FIELD_CATALOG)).toBeUndefined()
     })
 
     it('resolves undefined when the model value matches no row in the catalog', () => {
@@ -328,12 +340,14 @@ describe('resolveClaudeModelChangeEffortClear', () => {
         })).toBeUndefined()
     })
 
-    it('returns undefined (send nothing) when the catalog has not confirmed support either way', () => {
+    it('still clears for haiku when the catalog reports no effort field at all', () => {
+        // The static table confirms haiku supports none, so the model change
+        // carries the clear even though this catalog says nothing about effort.
         expect(resolveClaudeModelChangeEffortClear({
             currentEffort: 'high',
             nextModelValue: 'haiku',
             availableModels: NO_EFFORT_FIELD_CATALOG
-        })).toBeUndefined()
+        })).toBeNull()
     })
 
     it('returns undefined (send nothing) when the session has no effort pinned to begin with', () => {
