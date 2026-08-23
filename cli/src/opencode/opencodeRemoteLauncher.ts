@@ -24,6 +24,7 @@ import {
 import { OpencodePermissionHandler } from './utils/permissionHandler';
 import { getOpencodeNativeToolInstruction, PLAN_MODE_INSTRUCTION } from './utils/systemPrompt';
 import { resolveThoughtLevelEffort } from './thoughtLevelEffort';
+import { OpencodeConversationHistory } from './conversationHistory';
 
 type OpencodeRemoteLauncherOptions = {
     onReasoningEffortRollback?: (effort: string | null) => void;
@@ -134,6 +135,13 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     /** Subscription to the agent's own server event stream; null until the ACP session id is known, closed in cleanup(). */
     private eventStream: OpencodeEventSubscription | null = null;
     private stallErrorReportedForPrompt = false;
+    // Counts real prompt batches (0-based) for conversation history fork points;
+    // compact/clear batches never increment it.
+    private userPromptCounter = 0;
+    private readonly conversationHistory = new OpencodeConversationHistory(() => ({
+        baseUrl: this.baseUrl,
+        sessionId: this.activeAcpSessionId
+    }));
 
     constructor(
         session: OpencodeSession,
@@ -240,6 +248,48 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             sessionId: acpSessionId,
             onRetry: (retry) => this.surfaceUpstreamRetry(retry)
         });
+
+        this.conversationHistory.setPublishCapabilities(async () => {
+            const conversationHistory = this.conversationHistory.getCapabilitiesForMetadata()?.conversationHistory;
+            try {
+                session.client.updateMetadata((metadata) => {
+                    const capabilities = { ...metadata?.capabilities };
+                    delete capabilities.conversationHistory;
+                    if (conversationHistory) {
+                        capabilities.conversationHistory = conversationHistory;
+                    }
+                    return {
+                        ...metadata,
+                        path: metadata?.path ?? session.path,
+                        host: metadata?.host ?? 'unknown',
+                        capabilities,
+                        conversationHistoryPoints: {
+                            ...metadata?.conversationHistoryPoints,
+                            ...this.conversationHistory.getHistoryPoints()
+                        },
+                        conversationHistoryIndexes: {
+                            ...metadata?.conversationHistoryIndexes,
+                            ...this.conversationHistory.getHistoryIndexes()
+                        }
+                    };
+                });
+            } catch {
+                // best-effort; transient hub disconnects must not crash the loop
+            }
+        });
+        this.conversationHistory.restorePromptIndexes(
+            typeof session.client.getMetadata === 'function'
+                ? session.client.getMetadata()?.conversationHistoryIndexes
+                : undefined
+        );
+        session.client.rpcHandlerManager.registerHandler(RPC_METHODS.ForkConversation, async (payload: unknown) => {
+            const messageLocalId = payload !== null && typeof payload === 'object' && !Array.isArray(payload)
+                && typeof (payload as Record<string, unknown>).messageLocalId === 'string'
+                ? (payload as Record<string, unknown>).messageLocalId as string
+                : undefined;
+            return await this.conversationHistory.fork(messageLocalId);
+        });
+        void this.conversationHistory.probeCapabilities().catch(() => {});
 
         // Seed currentBackendModel from the ACP session metadata so the first
         // batch — whose model the hub mirrors from the just-discovered session —
@@ -610,6 +660,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             session.onThinkingChange(true);
 
             try {
+                this.conversationHistory.rememberPromptIndex(batch.items[0]?.localId, this.userPromptCounter++);
                 await backend.prompt(acpSessionId, promptContent, (message: AgentMessage) => {
                     this.handleAgentMessage(message);
                 });
