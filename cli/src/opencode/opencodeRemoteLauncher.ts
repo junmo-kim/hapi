@@ -137,6 +137,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     private stallErrorReportedForPrompt = false;
     /** Next native user-message index for fork points; null until the first successful count. */
     private nativeUserIndexCursor: number | null = null;
+    /** Guards the one-shot native history count attempt (failure must not retry every turn). */
+    private nativeUserCountAttempted = false;
     private readonly conversationHistory = new OpencodeConversationHistory(() => ({
         baseUrl: this.baseUrl,
         sessionId: this.activeAcpSessionId
@@ -686,6 +688,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                         // Compaction can change how many native user messages
                         // exist; re-derive the fork index on the next prompt.
                         this.nativeUserIndexCursor = null;
+                        this.nativeUserCountAttempted = false;
                     } finally {
                         session.onThinkingChange(false);
                         if (session.queue.size() === 0 && !this.shouldExit) {
@@ -723,7 +726,10 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 // nothing rather than guessing: a synthetic index would fork at
                 // the wrong boundary forever.
                 let nativeUserCount = this.nativeUserIndexCursor;
-                if (nativeUserCount === null) {
+                if (nativeUserCount === null && !this.nativeUserCountAttempted) {
+                    // Try the native count exactly once: an endpoint that stalls
+                    // or fails must not re-add its timeout to every turn.
+                    this.nativeUserCountAttempted = true;
                     nativeUserCount = await this.conversationHistory.getNativeUserMessageCount();
                 }
                 if (nativeUserCount === null) {
@@ -752,6 +758,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     // it so the next turn re-derives the index from native
                     // history instead of trusting a possibly stale count.
                     this.nativeUserIndexCursor = null;
+                    this.nativeUserCountAttempted = false;
                     logger.warn('[opencode-remote] prompt failed', error);
                     this.reportPromptFailure(error);
                 } finally {

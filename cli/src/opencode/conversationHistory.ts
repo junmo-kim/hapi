@@ -188,8 +188,12 @@ export class OpencodeConversationHistory {
         } catch (error) {
             // Only a missing route hides the capability; transient network or
             // server errors must not permanently disable an advertised fork.
-            if (!messageID && isRouteMissing(error)) {
-                this.states = markUnsupported(this.states, 'forkCurrent');
+            // Both fork modes share this endpoint, so a 404/405 disables both.
+            if (isRouteMissing(error)) {
+                this.states = markUnsupported(
+                    markUnsupported(this.states, 'forkCurrent'),
+                    'forkAtMessage'
+                );
                 await this.publishCapabilities?.();
             }
             throw error;
