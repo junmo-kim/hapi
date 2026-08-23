@@ -210,7 +210,9 @@ export class OpencodeConversationHistory {
         try {
             const response = await this.fetchFn(
                 `${baseUrl}/session/${encodeURIComponent(sessionId)}/message`,
-                { method: 'GET' }
+                // Bounded wait: this lookup runs before every first prompt, so a
+                // stalled loopback endpoint must not block the turn forever.
+                { method: 'GET', signal: AbortSignal.timeout(5_000) }
             );
             if (!response.ok) return null;
             const data: unknown = await response.json().catch(() => null);

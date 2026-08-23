@@ -722,22 +722,26 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 }
                 if (nativeUserCount === null) {
                     logger.warn('[opencode-remote] Native history unavailable; skipping fork point');
-                } else {
-                    this.conversationHistory.rememberPromptIndex(batch.items[0]?.localId, nativeUserCount);
-                    void this.conversationHistory.publish().catch(() => {});
                 }
                 logger.debug(`[opencode-remote] history point: localId=${batch.items[0]?.localId} index=${nativeUserCount} items=${batch.items.length}`);
-                // Commit the cursor advance only after OpenCode accepted the
-                // prompt — a failed turn persists no user message, so bumping
-                // early would skew every later fork boundary.
+                // Record the locator and advance the cursor only after OpenCode
+                // accepted the prompt — a rejected turn persists no user message,
+                // so committing earlier would leave a forkable locator at an
+                // index that belongs to no prompt.
                 await backend.prompt(acpSessionId, promptContent, (message: AgentMessage) => {
                     this.handleAgentMessage(message);
                 });
                 if (nativeUserCount !== null) {
                     this.nativeUserIndexCursor = nativeUserCount + 1;
+                    this.conversationHistory.rememberPromptIndex(batch.items[0]?.localId, nativeUserCount);
+                    void this.conversationHistory.publish().catch(() => {});
                 }
                 void backend.refreshSessionInfo(acpSessionId, session.path);
                 } catch (error) {
+                    // The cursor is intentionally not advanced on failure; reset
+                    // it so the next turn re-derives the index from native
+                    // history instead of trusting a possibly stale count.
+                    this.nativeUserIndexCursor = null;
                     logger.warn('[opencode-remote] prompt failed', error);
                     this.reportPromptFailure(error);
                 } finally {
