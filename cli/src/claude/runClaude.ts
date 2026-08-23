@@ -27,6 +27,7 @@ import {
     CLAUDE_CONVERSATION_HISTORY,
     toConversationHistoryCapabilities
 } from '@hapi/protocol/conversationHistory';
+import { readNativeTurns, resolveRewindPlan } from './conversationHistory';
 import { listSkills, type SkillSummary } from '@/modules/common/skills';
 
 export interface StartOptions {
@@ -257,8 +258,51 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         }
         return { nativeSessionId, forkSession: true as const }
     })
-    session.rpcHandlerManager.registerHandler(RPC_METHODS.RewindConversation, async () => {
-        throw new Error('Rewind is not supported for Claude')
+    // Hub localIds of delivered user turns, one entry per native turn (a single
+    // batch of queued messages is joined into one prompt = one native turn).
+    const deliveredTurnLocalIds: string[][] = []
+    session.rpcHandlerManager.registerHandler(RPC_METHODS.RewindConversation, async (payload: unknown) => {
+        const rejected = (error: string) => ({ success: false as const, outcome: 'rejected' as const, error })
+        if (!payload || typeof payload !== 'object' || typeof (payload as { messageLocalId?: unknown }).messageLocalId !== 'string') {
+            return rejected('messageLocalId is required')
+        }
+        const messageLocalId = (payload as { messageLocalId: string }).messageLocalId
+        // Known pre-mutation rejections must use success:false — throwing would make
+        // the hub treat the outcome as unknown and diverge the session history.
+        const claudeSession = currentSessionRef.current
+        if (!claudeSession?.requestRemoteRestart) {
+            return rejected('Rewind requires a running remote Claude session')
+        }
+        if (claudeSession.queue.size() > 0) {
+            return rejected('Session is busy')
+        }
+        const nativeSessionId = claudeSession.sessionId
+            ?? session.getMetadata()?.claudeSessionId
+            ?? null
+        if (!nativeSessionId) {
+            return rejected('Claude session id is not ready')
+        }
+        const dropFromTurnIndex = deliveredTurnLocalIds.findIndex((batch) => batch.includes(messageLocalId))
+        if (dropFromTurnIndex < 0) {
+            return rejected(`No native history point for message ${messageLocalId}`)
+        }
+        let plan
+        try {
+            plan = resolveRewindPlan(readNativeTurns(workingDirectory, nativeSessionId), dropFromTurnIndex)
+        } catch (error) {
+            return rejected(error instanceof Error ? error.message : String(error))
+        }
+
+        // One-shot flags consumed by the respawned process; Session.consumeOneTimeFlags
+        // strips them after onSessionFound so they never leak into later launches.
+        const flags = ['--resume', nativeSessionId]
+        if (plan.resumeSessionAt) flags.push('--resume-session-at', plan.resumeSessionAt)
+        for (const dropTurn of plan.dropsTurns) flags.push('--resume-drops-turn', dropTurn)
+        claudeSession.claudeArgs = [...(claudeSession.claudeArgs ?? []), ...flags]
+        deliveredTurnLocalIds.length = 0
+
+        await claudeSession.requestRemoteRestart()
+        return { success: true as const, truncateFromLocalId: messageLocalId }
     })
 
     // Set initial agent state
@@ -570,6 +614,9 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             onSessionReady: (sessionInstance) => {
                 currentSessionRef.current = sessionInstance;
                 resolveSessionReady(sessionInstance);
+                sessionInstance.onUserTurnDelivered = (localIds) => {
+                    if (localIds.length > 0) deliveredTurnLocalIds.push(localIds)
+                };
                 if (nativeSkills) {
                     sessionInstance.setNativeSkillNames(nativeSkills.map((skill) => skill.name));
                 }

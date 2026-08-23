@@ -90,6 +90,21 @@ export async function claudeRemote(opts: {
     }
     const forkedFrom = forkSession ? startFrom : null;
 
+    // One-shot rewind flags (set by the RewindConversation handler) pass through
+    // claudeArgs; filterCatalogAffectingClaudeArgs strips them from additionalArgs,
+    // so they must be parsed here into first-class SDK options.
+    let resumeSessionAt: string | undefined;
+    const resumeDropsTurn: string[] = [];
+    if (opts.claudeArgs) {
+        for (let i = 0; i < opts.claudeArgs.length; i++) {
+            if (opts.claudeArgs[i] === '--resume-session-at' && i + 1 < opts.claudeArgs.length) {
+                resumeSessionAt = opts.claudeArgs[++i];
+            } else if (opts.claudeArgs[i] === '--resume-drops-turn' && i + 1 < opts.claudeArgs.length) {
+                resumeDropsTurn.push(opts.claudeArgs[++i]);
+            }
+        }
+    }
+
     // Mode starts from the persisted session for fork bootstrap; updated when
     // the first child prompt arrives. plan/auto must be present at process start.
     const bootstrapMode: EnhancedMode = opts.bootstrapMode ?? { permissionMode: 'default' };
@@ -163,6 +178,8 @@ export async function claudeRemote(opts: {
         cwd: opts.path,
         resume: startFrom ?? undefined,
         forkSession,
+        resumeSessionAt,
+        resumeDropsTurn: resumeDropsTurn.length > 0 ? resumeDropsTurn : undefined,
         mcpServers: opts.mcpServers,
         permissionMode: bootstrapMode.permissionMode,
         model: bootstrapMode.model,

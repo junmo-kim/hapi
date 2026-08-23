@@ -24,6 +24,14 @@ export class Session extends AgentSessionBase<EnhancedMode> {
     readonly startingMode: 'local' | 'remote';
     localLaunchFailure: LocalLaunchFailure | null = null;
     private nativeSkillNames = new Set<string>();
+    /**
+     * Set by the remote launcher while it is running. Invoking it aborts the
+     * current SDK attempt so the main loop respawns Claude with fresh args
+     * (used by rewind, which requires a process restart). Cleared on cleanup.
+     */
+    requestRemoteRestart: (() => Promise<void>) | null = null;
+    /** Set by the remote launcher; reports the hub localIds of each delivered user turn. */
+    onUserTurnDelivered: ((localIds: string[]) => void) | null = null;
 
     constructor(opts: {
         api: ApiClient;
@@ -151,6 +159,12 @@ export class Session extends AgentSessionBase<EnhancedMode> {
                 }
             } else if (this.claudeArgs[i] === '--fork-session') {
                 logger.debug('[Session] Consumed --fork-session flag');
+            } else if (
+                (this.claudeArgs[i] === '--resume-session-at' || this.claudeArgs[i] === '--resume-drops-turn')
+                && i + 1 < this.claudeArgs.length
+            ) {
+                logger.debug(`[Session] Consumed ${this.claudeArgs[i]} flag`);
+                i++; // Skip the uuid value
             } else {
                 filteredArgs.push(this.claudeArgs[i]);
             }

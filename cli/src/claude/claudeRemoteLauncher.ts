@@ -49,6 +49,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
     private readonly session: Session;
     private abortController: AbortController | null = null;
     private abortFuture: Future<void> | null = null;
+    private restartRequested = false;
     private permissionHandler: PermissionHandler | null = null;
     private handleSessionFound: ((sessionId: string) => void) | null = null;
 
@@ -114,6 +115,17 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
         await this.handleSwitchRequest();
     }
 
+    /**
+     * Abort the current SDK attempt (without an exit reason) so the main loop
+     * respawns Claude with fresh one-shot args. Used by rewind, which needs a
+     * process restart to apply --resume-session-at.
+     */
+    public async requestRestart(): Promise<void> {
+        logger.debug('[remote]: doRestart');
+        this.restartRequested = true;
+        await this.abort();
+    }
+
     public async launch(): Promise<RemoteLauncherExitReason> {
         return this.start({
             onExit: () => this.handleExitFromUi(),
@@ -127,6 +139,8 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
 
         const session = this.session;
         const messageBuffer = this.messageBuffer;
+
+        session.requestRemoteRestart = () => this.requestRestart();
 
         this.setupAbortHandlers(session.client.rpcHandlerManager, {
             onAbort: () => this.handleAbortRequest(),
@@ -428,6 +442,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                 deliveredMessageThisAttempt = true;
                                 const deliveredText = session.expandSkillReference(p.message)
                                 inFlightMessage = { items: p.items, mode: p.mode, isolate: p.isolate, deliveredText };
+                                session.onUserTurnDelivered?.(p.items.flatMap((item) => item.localId ? [item.localId] : []))
                                 session.client.notePendingHubPromptEcho(
                                     deliveredText,
                                     p.items.flatMap((item) => item.localId ? [item.localId] : [])
@@ -463,6 +478,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                 deliveredMessageThisAttempt = true;
                                 const deliveredText = session.expandSkillReference(msg.message)
                                 inFlightMessage = { items: msg.items, mode: msg.mode, isolate: msg.isolate, deliveredText };
+                                session.onUserTurnDelivered?.(msg.items.flatMap((item) => item.localId ? [item.localId] : []))
                                 session.client.notePendingHubPromptEcho(
                                     deliveredText,
                                     msg.items.flatMap((item) => item.localId ? [item.localId] : [])
@@ -537,7 +553,11 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                     });
 
                     if (!this.exitReason && controller.signal.aborted) {
-                        session.client.sendSessionEvent({ type: 'message', message: 'Aborted by user' });
+                        if (this.restartRequested) {
+                            this.restartRequested = false;
+                        } else {
+                            session.client.sendSessionEvent({ type: 'message', message: 'Aborted by user' });
+                        }
                     }
 
                     // A full attempt completed without throwing. Clear the
@@ -675,6 +695,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
 
     protected async cleanup(): Promise<void> {
         this.clearAbortHandlers(this.session.client.rpcHandlerManager);
+        this.session.requestRemoteRestart = null;
 
         if (this.handleSessionFound) {
             this.session.removeSessionFoundCallback(this.handleSessionFound);
