@@ -295,9 +295,8 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             return rejected('Session is busy')
         }
         const nativeSessionId = claudeSession.sessionId
-            ?? session.getMetadata()?.claudeSessionId
-            ?? null
         if (!nativeSessionId) {
+            // No metadata fallback: a stale id would truncate an unrelated native session.
             return rejected('Claude session id is not ready')
         }
         const dropFromTurnIndex = deliveredTurnLocalIds.findIndex((batch) => batch.includes(messageLocalId))
@@ -634,6 +633,10 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
                 resolveSessionReady(sessionInstance);
                 sessionInstance.onUserTurnDelivered = (localIds) => {
                     if (localIds.length > 0) deliveredTurnLocalIds.push(localIds)
+                };
+                sessionInstance.onNativeSessionReset = () => {
+                    // /clear drops the native session; turn-index tracking is no longer valid.
+                    deliveredTurnLocalIds.length = 0
                 };
                 if (nativeSkills) {
                     sessionInstance.setNativeSkillNames(nativeSkills.map((skill) => skill.name));

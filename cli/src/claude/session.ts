@@ -32,6 +32,8 @@ export class Session extends AgentSessionBase<EnhancedMode> {
     requestRemoteRestart: (() => Promise<void>) | null = null;
     /** Set by the remote launcher; reports the hub localIds of each delivered user turn. */
     onUserTurnDelivered: ((localIds: string[]) => void) | null = null;
+    /** Invoked when the native session id is dropped (/clear); rewind tracking must reset. */
+    onNativeSessionReset: (() => void) | null = null;
 
     constructor(opts: {
         api: ApiClient;
@@ -126,6 +128,7 @@ export class Session extends AgentSessionBase<EnhancedMode> {
      */
     clearSessionId = (): void => {
         this.sessionId = null;
+        this.onNativeSessionReset?.();
         logger.debug('[Session] Session ID cleared');
     };
 

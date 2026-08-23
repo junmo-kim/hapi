@@ -647,6 +647,23 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                 message: `Process exited unexpectedly ${MAX_IMMEDIATE_RESPAWN_FAILURES} times in a row: ${detail}. Dropping the queued message; resolve the issue and resend it.`
                             });
                             immediateFailureCount = 0;
+                        } else if (this.restartRequested) {
+                            // Intentional restart (rewind): the aborted in-flight
+                            // turn belongs to the pre-rewind history. Re-delivering
+                            // it into the respawned (truncated) process would
+                            // diverge native history from the hub transcript.
+                            for (const item of inFlightMessage?.items ?? []) {
+                                if (item.localId) {
+                                    session.client.discardPendingHubPromptEcho(item.localId)
+                                }
+                            }
+                            if (inFlightMessage?.deliveredText) {
+                                session.client.discardPendingHubPromptEchoText(inFlightMessage.deliveredText)
+                            }
+                            inFlightMessage = null;
+                            session.client.sendSessionEvent({ type: 'message', message: `Process exited unexpectedly: ${detail}` });
+                            await this.respawnBackoff(getRespawnBackoffMs(), controller.signal);
+                            continue;
                         } else {
                             restoreInFlightMessage();
                             session.client.sendSessionEvent({ type: 'message', message: `Process exited unexpectedly: ${detail}` });
