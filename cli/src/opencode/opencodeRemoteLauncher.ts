@@ -240,6 +240,14 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 mcpServers: mcpServerList
             });
         }
+
+        // Fire the validated session-ready fence only now (after the actual
+        // load/new below): loop.ts seeds onSessionFound with the resume id
+        // before ACP initialize, so the hub's exact-binding wait must not
+        // succeed until this point (same fence as Pi).
+        if ((resumeSessionId || strictForkResume) && typeof session.client.emitSessionReady === 'function') {
+            session.client.emitSessionReady();
+        }
         session.onSessionFound(acpSessionId);
         this.activeAcpSessionId = acpSessionId;
 

@@ -164,7 +164,7 @@ describe('Pi conversation-history hub integration', () => {
 
             const result = await engine.forkConversation(source.id, 'default')
             if (result.type !== 'success') throw new Error(result.message)
-            expect(exactBinds).toEqual([[result.sessionId, 'oc-clone-native', 'opencodeSessionId', false]])
+            expect(exactBinds).toEqual([[result.sessionId, 'oc-clone-native', 'opencodeSessionId', true]])
         } finally {
             engine.stop()
         }

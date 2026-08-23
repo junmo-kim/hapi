@@ -1546,8 +1546,11 @@ export class SyncEngine {
             }
 
             if (flavor === 'opencode') {
+                // The CLI seeds opencodeSessionId from the resume id before ACP
+                // initialize, so only the validated session-ready fence proves
+                // the forked native session actually loaded.
                 const bound = await this.waitForExactNativeForkBound(
-                    childId, rpcResult.nativeSessionId, 'opencodeSessionId', false
+                    childId, rpcResult.nativeSessionId, 'opencodeSessionId', true
                 )
                 if (!bound) {
                     throw new Error('OpenCode fork could not load the forked native session')
