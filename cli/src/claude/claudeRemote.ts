@@ -13,6 +13,13 @@ import { getHapiBlobsDir } from "@/constants/uploadPaths";
 import { getDefaultClaudeCodePath } from "./sdk/utils";
 import { filterCatalogAffectingClaudeArgs } from "./sdk/metadataExtractor";
 import { buildCompactCompletionEvent } from "./utils/compactCompletion";
+import { findLatestCompactSummary } from "./utils/compactSummaryLookup";
+
+export interface CompactSummaryPayload {
+    summary: string;
+    tokensBefore?: number;
+    tokensAfter?: number;
+}
 
 export async function claudeRemote(opts: {
 
@@ -31,7 +38,7 @@ export async function claudeRemote(opts: {
 
     // Dynamic parameters
     nextMessage: () => Promise<{ message: string, mode: EnhancedMode } | null>,
-    onReady: (completionEvent?: string) => void | Promise<void>,
+    onReady: (completionEvent?: string, compactSummary?: CompactSummaryPayload) => void | Promise<void>,
     isAborted: (toolCallId: string) => boolean,
 
     // Callbacks
@@ -108,9 +115,28 @@ export async function claudeRemote(opts: {
     // usage (measured), so the boundary metadata is the only real source.
     let compactTokensBefore: number | undefined;
     let compactTokensAfter: number | undefined;
+    // The local transcript is keyed by the live session id (updated on init),
+    // not opts.sessionId which can be stale for forked sessions.
+    let currentSessionId = startFrom;
     let awaitingForkInit = forkSession;
 
     const messages = new PushableAsyncIterable<SDKUserMessage>();
+
+    // Success-only: a failed compaction keeps its failure line, an unknown
+    // session id or any transcript read problem falls back to the plain
+    // completion line. Never propagates errors into the result flow.
+    const lookupCompactSummary = async (failure: string | null): Promise<CompactSummaryPayload | undefined> => {
+        if (failure !== null || !currentSessionId) return undefined;
+        try {
+            const transcriptPath = join(getProjectPath(opts.path), `${currentSessionId}.jsonl`);
+            const summary = await findLatestCompactSummary(transcriptPath);
+            if (summary === null) return undefined;
+            return { summary, tokensBefore: compactTokensBefore, tokensAfter: compactTokensAfter };
+        } catch (e) {
+            logger.debug('[claudeRemote] compact summary lookup failed', e);
+            return undefined;
+        }
+    };
 
     const applyInitialTurn = async (): Promise<{ message: string; mode: EnhancedMode } | null> => {
         let next: { message: string; mode: EnhancedMode } | null;
@@ -308,6 +334,7 @@ export async function claudeRemote(opts: {
                 // Session id is still in memory, wait until session file is written to disk
                 // Start a watcher for to detect the session id
                 if (systemInit.session_id) {
+                    currentSessionId = systemInit.session_id;
                     logger.debug(`[claudeRemote] Waiting for session file to be written to disk: ${systemInit.session_id}`);
                     const projectDir = getProjectPath(opts.path);
                     const found = await awaitFileExist(join(projectDir, `${systemInit.session_id}.jsonl`));
@@ -366,9 +393,13 @@ export async function claudeRemote(opts: {
                 }
 
                 let completionEvent: string | undefined;
+                let compactSummary: CompactSummaryPayload | undefined;
                 if (isCompactCommand) {
-                    completionEvent = buildCompactCompletionEvent(compactFailure, compactTokensBefore, compactTokensAfter);
-                    logger.debug(`[claudeRemote] ${completionEvent}`);
+                    compactSummary = await lookupCompactSummary(compactFailure);
+                    if (!compactSummary) {
+                        completionEvent = buildCompactCompletionEvent(compactFailure, compactTokensBefore, compactTokensAfter);
+                    }
+                    logger.debug(`[claudeRemote] ${compactSummary ? `compact summary promoted (${compactSummary.summary.length} chars)` : completionEvent}`);
                     isCompactCommand = false;
                     compactFailure = null;
                     compactTokensBefore = undefined;
@@ -376,7 +407,7 @@ export async function claudeRemote(opts: {
                 }
 
                 // Flush the result carrier before completion, then announce ready.
-                await opts.onReady(completionEvent);
+                await opts.onReady(completionEvent, compactSummary);
                 logger.debug(`${debugPrefix} onReady emitted for result #${resultSeq}`);
 
                 // Pull next user message without blocking response stream processing.

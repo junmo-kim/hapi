@@ -1,6 +1,15 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as claudeSdk from '@/claude/sdk';
 import type { SDKMessage } from '@/claude/sdk/types';
+import { join } from 'node:path';
+import { getProjectPath } from '@/claude/utils/path';
+
+vi.mock('@/claude/utils/compactSummaryLookup', () => ({
+    findLatestCompactSummary: vi.fn(async () => null)
+}));
+
+import { findLatestCompactSummary } from '@/claude/utils/compactSummaryLookup';
+const findLatestCompactSummaryMock = vi.mocked(findLatestCompactSummary);
 
 vi.mock('@/claude/utils/claudeCheckSession', () => ({
     claudeCheckSession: () => true
@@ -69,6 +78,10 @@ async function waitFor(condition: () => boolean, timeoutMs = 300, intervalMs = 1
 }
 
 describe('claudeRemote async message handling', () => {
+    beforeEach(() => {
+        findLatestCompactSummaryMock.mockReset();
+        findLatestCompactSummaryMock.mockImplementation(async () => null);
+    });
     // CI occasionally exceeds the default 5s under load (unrelated to job work).
     it('reports the initial normal message once after the first result', { timeout: 15_000 }, async () => {
         const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
@@ -374,6 +387,10 @@ describe('claudeRemote async message handling', () => {
 });
 
 describe('claudeRemote /compact result reporting', () => {
+    beforeEach(() => {
+        findLatestCompactSummaryMock.mockReset();
+        findLatestCompactSummaryMock.mockImplementation(async () => null);
+    });
     const resultMessage = {
         type: 'result',
         subtype: 'success',
@@ -530,5 +547,107 @@ describe('claudeRemote /compact result reporting', () => {
         }
 
         expect(wireOrder).toEqual(['result', '📦 Compacted', 'ready']);
+    }, 15_000);
+});
+
+describe('claudeRemote compact summary promotion', () => {
+    beforeEach(() => {
+        findLatestCompactSummaryMock.mockReset();
+        findLatestCompactSummaryMock.mockImplementation(async () => null);
+    });
+
+    const initMessage = {
+        type: 'system',
+        subtype: 'init',
+        session_id: 's-9'
+    } as unknown as SDKMessage;
+
+    const resultMessage = {
+        type: 'result',
+        subtype: 'success',
+        num_turns: 1,
+        total_cost_usd: 0,
+        duration_ms: 1,
+        duration_api_ms: 1,
+        is_error: false,
+        session_id: 's-9'
+    } as unknown as SDKMessage;
+
+    async function runCompactWithSummary(
+        mockSummary: string | null
+    ): Promise<{ completionEvents: string[]; readyPayloads: Array<Record<string, unknown> | undefined> }> {
+        findLatestCompactSummaryMock.mockImplementation(async () => mockSummary);
+        const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
+        const { claudeRemote } = await import('./claudeRemote');
+        const completionEvents: string[] = [];
+        const readyPayloads: Array<Record<string, unknown> | undefined> = [];
+
+        queryMock.mockReturnValueOnce(createAsyncStream([
+            initMessage,
+            {
+                type: 'system',
+                subtype: 'compact_boundary',
+                compact_metadata: { trigger: 'manual', pre_tokens: 34492, post_tokens: 2082 },
+                session_id: 's-9',
+                uuid: 'u-2'
+            } as unknown as SDKMessage,
+            resultMessage
+        ]));
+
+        let nextCallCount = 0;
+        try {
+            await claudeRemote({
+                sessionId: 's-9',
+                path: process.cwd(),
+                mcpServers: {},
+                claudeEnvVars: {},
+                claudeArgs: [],
+                allowedTools: [],
+                hookSettingsPath: '/tmp/hook.json',
+                canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+                nextMessage: async () => {
+                    nextCallCount += 1;
+                    if (nextCallCount === 1) {
+                        return { message: '/compact', mode: { permissionMode: 'default' } };
+                    }
+                    return null;
+                },
+                onReady: (completionEvent, compactSummary) => {
+                    if (completionEvent) completionEvents.push(completionEvent);
+                    readyPayloads.push(compactSummary as Record<string, unknown> | undefined);
+                },
+                isAborted: () => false,
+                onSessionFound: () => {},
+                onMessage: () => {},
+                onCompletionEvent: (message) => {
+                    completionEvents.push(message);
+                },
+                onSessionReset: () => {}
+            });
+        } finally {
+            queryMock.mockReset();
+            querySpy.mockRestore();
+        }
+
+        return { completionEvents, readyPayloads };
+    }
+
+    it('promotes the transcript summary into a structured compact-summary payload', async () => {
+        const { completionEvents, readyPayloads } = await runCompactWithSummary('The conversation was about X');
+
+        expect(findLatestCompactSummaryMock).toHaveBeenCalledWith(
+            expect.stringContaining(join(getProjectPath(process.cwd()), 's-9.jsonl').slice(-40))
+        );
+        expect(readyPayloads).toEqual([
+            { summary: 'The conversation was about X', tokensBefore: 34492, tokensAfter: 2082 }
+        ]);
+        expect(completionEvents).toEqual(['📦 Compaction started']);
+    }, 15_000);
+
+    it('keeps the token delta fallback line when the transcript never yields a summary', async () => {
+        const { completionEvents, readyPayloads } = await runCompactWithSummary(null);
+
+        expect(readyPayloads).toEqual([undefined]);
+        expect(completionEvents).toEqual(['📦 Compaction started', '📦 Compacted (34492 → 2082 tokens)']);
     }, 15_000);
 });
