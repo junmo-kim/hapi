@@ -304,9 +304,13 @@ export async function claudeRemote(opts: {
     // A rewind respawn starts with no running turn: booting into "thinking"
     // would leave the session permanently generating. Report idle once the
     // process has survived long enough to prove the resume flags were accepted
-    // (a rejected resume exits almost immediately).
+    // (a rejected resume exits almost immediately). The timer must not outlive
+    // this attempt — a rejected resume exits before it fires, and a stale
+    // callback would steal the queue waiter from the launcher's next attempt.
+    let rewindReadyTimer: ReturnType<typeof setTimeout> | null = null;
     if (awaitingRewindInit) {
-        setTimeout(() => {
+        rewindReadyTimer = setTimeout(() => {
+            rewindReadyTimer = null;
             awaitingRewindInit = false;
             updateThinking(false);
             void opts.onReady?.();
@@ -449,6 +453,10 @@ export async function claudeRemote(opts: {
             `${debugPrefix} finally ` +
             `(streamMessages=${streamMessageSeq}, results=${resultSeq}, nextFetches=${nextMessageFetchSeq}, inputEnded=${inputEnded})`
         );
+        if (rewindReadyTimer) {
+            clearTimeout(rewindReadyTimer);
+            rewindReadyTimer = null;
+        }
         updateThinking(false);
     }
 }

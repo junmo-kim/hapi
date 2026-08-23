@@ -30,8 +30,12 @@ export class Session extends AgentSessionBase<EnhancedMode> {
      * (used by rewind, which requires a process restart). Cleared on cleanup.
      */
     requestRemoteRestart: (() => Promise<void>) | null = null;
-    /** Set by the remote launcher; reports the hub localIds of each delivered user turn. */
-    onUserTurnDelivered: ((localIds: string[]) => void) | null = null;
+    /**
+     * Set by the remote launcher when a user turn completes natively (result
+     * reached). Reports the hub localIds of the completed batch so rewind
+     * locators are only recorded for turns that really happened.
+     */
+    onUserTurnCompleted: ((localIds: string[]) => void) | null = null;
     /** Invoked when the native session id is dropped (/clear); rewind tracking must reset. */
     onNativeSessionReset: (() => void) | null = null;
     /**

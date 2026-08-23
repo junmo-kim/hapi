@@ -363,6 +363,9 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                 }
 
                 previousSessionId = session.sessionId;
+                // A restart flag only concerns the attempt that was aborted; the
+                // fresh attempt must classify its own aborts normally.
+                this.restartRequested = false;
                 // Rewind confirmation: surviving this window means the resume
                 // flags were accepted (a rejected resume exits almost immediately).
                 let rewindConfirmTimer: ReturnType<typeof setTimeout> | null = null;
@@ -467,7 +470,6 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                 deliveredMessageThisAttempt = true;
                                 const deliveredText = session.expandSkillReference(p.message)
                                 inFlightMessage = { items: p.items, mode: p.mode, isolate: p.isolate, deliveredText };
-                                session.onUserTurnDelivered?.(p.items.flatMap((item) => item.localId ? [item.localId] : []))
                                 session.client.notePendingHubPromptEcho(
                                     deliveredText,
                                     p.items.flatMap((item) => item.localId ? [item.localId] : [])
@@ -503,7 +505,6 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                 deliveredMessageThisAttempt = true;
                                 const deliveredText = session.expandSkillReference(msg.message)
                                 inFlightMessage = { items: msg.items, mode: msg.mode, isolate: msg.isolate, deliveredText };
-                                session.onUserTurnDelivered?.(msg.items.flatMap((item) => item.localId ? [item.localId] : []))
                                 session.client.notePendingHubPromptEcho(
                                     deliveredText,
                                     msg.items.flatMap((item) => item.localId ? [item.localId] : [])
@@ -554,7 +555,15 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             // respawn-storm guard. The turn that led here is no
                             // longer "in flight" either.
                             reachedReadyThisAttempt = true;
+                            // The in-flight batch's native turn just completed:
+                            // record rewind locators only now, after the result,
+                            // so a retry after a crash never double-books them.
+                            const completedLocalIds = inFlightMessage?.items
+                                .flatMap((item) => item.localId ? [item.localId] : []) ?? [];
                             inFlightMessage = null;
+                            if (completedLocalIds.length > 0) {
+                                session.onUserTurnCompleted?.(completedLocalIds);
+                            }
 
                             await messageQueue.flush();
 
@@ -577,14 +586,23 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                         signal: controller.signal,
                     });
 
-                    // Attempt finished cleanly: the resume flags were accepted.
+                    // Attempt finished cleanly: the resume flags were accepted —
+                    // unless this return was really an abort (claudeRemote swallows
+                    // AbortError) or the launcher is exiting, in which case the
+                    // outcome is unknown rather than applied.
                     if (rewindConfirmTimer) {
                         clearTimeout(rewindConfirmTimer);
                         rewindConfirmTimer = null;
                         if (session.rewindAck) {
-                            const ack = session.rewindAck;
-                            session.rewindAck = null;
-                            ack(true);
+                            if (controller.signal.aborted && this.restartRequested) {
+                                // Our own rewind abort tearing down the previous
+                                // attempt — keep the ack armed for the respawn.
+                            } else {
+                                const confirmed = !controller.signal.aborted && !this.exitReason;
+                                const ack = session.rewindAck;
+                                session.rewindAck = null;
+                                ack(confirmed, confirmed ? undefined : 'unconfirmed');
+                            }
                         }
                     }
 
