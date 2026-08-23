@@ -1,4 +1,4 @@
-import { CLAUDE_MODEL_FALLBACK_OPTIONS, getClaudeModelLabel } from '@hapi/protocol'
+import { CLAUDE_MODEL_FALLBACK_OPTIONS, getClaudeModelLabel, resolveClaudeModelFamily } from '@hapi/protocol'
 import type { ClaudeModelSummary } from '@hapi/protocol/apiTypes'
 
 export type ClaudeComposerModelOption = {
@@ -75,10 +75,6 @@ export function catalogReportsEffortLevels(availableModels: ClaudeModelSummary[]
 // stripClaude1mSuffix -- same operation, kept local here since that
 // helper isn't exported and belongs to an unrelated concern (context-window
 // budgeting, not effort capability).
-function stripClaude1mSuffixForFallbackMatch(model: string): string {
-    return model.endsWith('[1m]') ? model.slice(0, -'[1m]'.length) : model
-}
-
 // Looks up a model's effort capability in the static, hand-maintained
 // CLAUDE_MODEL_FALLBACK_OPTIONS list (shared/src/models.ts) -- used when the
 // live catalog can't confirm capability itself (no catalog at all, or a
@@ -94,8 +90,13 @@ function resolveClaudeFallbackSupportedEffortLevels(modelValue: string | null | 
     if (!modelValue) {
         return undefined
     }
-    const normalized = stripClaude1mSuffixForFallbackMatch(modelValue)
-    return CLAUDE_MODEL_FALLBACK_OPTIONS.find((option) => option.value === normalized)?.supportedEffortLevels
+    // Match on family rather than on the identifier itself: a session can carry
+    // a resolved SDK id (claude-haiku-4-5-20251001), which no entry's `value`
+    // equals, and answering "unknown" for it would hand back the full effort
+    // list for a model we know supports none.
+    const family = resolveClaudeModelFamily(modelValue)
+    if (!family) return undefined
+    return CLAUDE_MODEL_FALLBACK_OPTIONS.find((option) => option.value === family)?.supportedEffortLevels
 }
 
 /**

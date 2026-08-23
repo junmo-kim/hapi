@@ -35,13 +35,27 @@ public enum ClaudeModels {
     /// gets: nothing has said otherwise.
     private static let effortlessFamilies: Set<String> = ["haiku"]
 
-    /// Whether `--effort` means anything for this model. `[1m]` is stripped
-    /// because a suffixed id names the same family as its bare counterpart.
+    /// Whether `--effort` means anything for this model, in whatever form the
+    /// identifier arrives: a preset, a legacy `[1m]` alias, or a resolved SDK id
+    /// such as `claude-haiku-4-5-20251001`. Mirrors `resolveClaudeModelFamily`
+    /// in `shared/src/models.ts` -- resolved ids are `claude-<family>-...`, so
+    /// the family is read structurally rather than from an id-by-id table.
     public static func supportsEffort(_ model: String?) -> Bool {
+        !effortlessFamilies.contains(family(of: model) ?? "")
+    }
+
+    /// Family behind an identifier; nil for the Default sentinel and for
+    /// anything neither a known alias nor a `claude-` id.
+    public static func family(of model: String?) -> String? {
         let trimmed = model?.trimmingCharacters(in: .whitespaces).lowercased() ?? ""
-        if trimmed.isEmpty || trimmed == "auto" || trimmed == "default" { return true }
+        if trimmed.isEmpty || trimmed == "auto" || trimmed == "default" { return nil }
         let bare = trimmed.hasSuffix("[1m]") ? String(trimmed.dropLast(4)) : trimmed
-        return !effortlessFamilies.contains(bare)
+        guard bare.hasPrefix("claude-") else {
+            return labels[bare] != nil ? bare : nil
+        }
+        let rest = bare.dropFirst("claude-".count)
+        let head = rest.split(separator: "-").first.map(String.init)
+        return (head?.isEmpty ?? true) ? nil : head
     }
 
     /// `CLAUDE_MODEL_LABELS`: recognition aliases, wider than the offer list.

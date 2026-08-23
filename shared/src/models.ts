@@ -100,3 +100,26 @@ export function getClaudeModelLabel(model: string): string | null {
 
     return CLAUDE_MODEL_LABELS[trimmedModel as ClaudeModelPreset] ?? null
 }
+
+/**
+ * Family a Claude model identifier belongs to, in whatever form it reaches us:
+ * a preset (`sonnet`), a legacy alias (`sonnet[1m]`), or a resolved SDK id
+ * (`claude-sonnet-5`, `claude-haiku-4-5-20251001`). Resolved ids are
+ * `claude-<family>-<generation>...`, so the family is the segment after the
+ * prefix -- reading it structurally keeps new generations working without an
+ * id-by-id table.
+ *
+ * Returns null for the Default sentinel and for anything that is neither a
+ * known preset nor a `claude-` id, which callers read as "nothing has told us
+ * what this is".
+ */
+export function resolveClaudeModelFamily(model: string | null | undefined): string | null {
+    const trimmed = typeof model === 'string' ? model.trim().toLowerCase() : ''
+    if (!trimmed || trimmed === 'auto' || trimmed === 'default') return null
+    const bare = trimmed.endsWith('[1m]') ? trimmed.slice(0, -'[1m]'.length) : trimmed
+    if (!bare.startsWith('claude-')) {
+        return Object.hasOwn(CLAUDE_MODEL_LABELS, bare) ? bare : null
+    }
+    const family = bare.slice('claude-'.length).split('-')[0]
+    return family || null
+}

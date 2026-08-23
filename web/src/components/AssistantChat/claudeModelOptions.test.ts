@@ -300,6 +300,17 @@ describe('resolveClaudeSupportedEffortLevels', () => {
             .toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
     })
 
+    it('places a resolved SDK id on its family before the static lookup', () => {
+        // A session created before discovery existed stores the resolved id, so
+        // exact-matching the short aliases would call Haiku unknown and hand
+        // back the full effort list.
+        expect(resolveClaudeSupportedEffortLevels('claude-haiku-4-5-20251001', [])).toEqual([])
+        expect(resolveClaudeSupportedEffortLevels('claude-sonnet-5', []))
+            .toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
+        expect(resolveClaudeSupportedEffortLevels('claude-opus-5[1m]', []))
+            .toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
+    })
+
     it('stays undefined for a model neither the catalog nor the static table can place', () => {
         expect(resolveClaudeSupportedEffortLevels('opusplan', [
             { value: 'opusplan', displayName: 'Opus Plan', resolvedModel: 'claude-opusplan-1' }
@@ -330,8 +341,16 @@ describe('resolveClaudeSupportedEffortLevels', () => {
             expect(resolveClaudeSupportedEffortLevels('sonnet[1m]', [])).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
         })
 
-        it('resolves undefined for a model the fallback list does not recognize (e.g. a resolved SDK id)', () => {
-            expect(resolveClaudeSupportedEffortLevels('claude-opus-5[1m]', [])).toBeUndefined()
+        it('places a resolved SDK id on its family instead of calling it unknown', () => {
+            // This used to resolve undefined, which handed the full effort list
+            // back for a stored `claude-haiku-...` id.
+            expect(resolveClaudeSupportedEffortLevels('claude-opus-5[1m]', []))
+                .toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
+        })
+
+        it('resolves undefined for an id whose family the list does not carry', () => {
+            expect(resolveClaudeSupportedEffortLevels('claude-opusplan-1', [])).toBeUndefined()
+            expect(resolveClaudeSupportedEffortLevels('some-other-vendor-model', [])).toBeUndefined()
         })
 
         it('resolves undefined when nothing is selected (auto/null)', () => {

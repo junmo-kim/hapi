@@ -258,6 +258,12 @@ struct CatalogTests {
         #expect(ClaudeModels.supportsEffort("default"))
         #expect(ClaudeModels.supportsEffort("opusplan"))
         #expect(!ClaudeModels.supportsEffort("haiku"))
+        // Sessions predating discovery store the resolved SDK id.
+        #expect(!ClaudeModels.supportsEffort("claude-haiku-4-5-20251001"))
+        #expect(ClaudeModels.supportsEffort("claude-sonnet-5"))
+        #expect(ClaudeModels.family(of: "claude-haiku-4-5-20251001") == "haiku")
+        #expect(ClaudeModels.family(of: "sonnet[1m]") == "sonnet")
+        #expect(ClaudeModels.family(of: "default") == nil)
         // A suffixed id names the same family as its bare counterpart.
         #expect(ModelCatalog.claudeEffortOptions(currentEffort: nil, model: "sonnet[1m]").count
             == ClaudeEfforts.levels.count + 1)

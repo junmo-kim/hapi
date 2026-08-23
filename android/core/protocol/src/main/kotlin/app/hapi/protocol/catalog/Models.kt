@@ -23,10 +23,25 @@ object ClaudeModels {
      * because a suffixed id names the same family as its bare counterpart.
      */
     fun supportsEffort(model: String?): Boolean {
+        val resolved = family(model) ?: return true
+        return resolved !in EFFORTLESS_FAMILIES
+    }
+
+    /**
+     * Family behind an identifier, in whatever form it arrives: a preset, a
+     * legacy `[1m]` alias, or a resolved SDK id such as
+     * `claude-haiku-4-5-20251001`. Mirrors `resolveClaudeModelFamily` in
+     * `shared/src/models.ts` — resolved ids are `claude-<family>-...`, so the
+     * family is read structurally rather than from an id-by-id table. Null for
+     * the Default sentinel and for anything unrecognized.
+     */
+    fun family(model: String?): String? {
         val trimmed = model?.trim()?.lowercase().orEmpty()
-        if (trimmed.isEmpty() || trimmed == "auto" || trimmed == "default") return true
+        if (trimmed.isEmpty() || trimmed == "auto" || trimmed == "default") return null
         val bare = if (trimmed.endsWith("[1m]")) trimmed.removeSuffix("[1m]") else trimmed
-        return bare !in EFFORTLESS_FAMILIES
+        if (!bare.startsWith("claude-")) return if (LABELS.containsKey(bare)) bare else null
+        val head = bare.removePrefix("claude-").substringBefore('-')
+        return if (head.isEmpty()) null else head
     }
 
     /** `CLAUDE_MODEL_LABELS`: recognition aliases, wider than the offer list. */
