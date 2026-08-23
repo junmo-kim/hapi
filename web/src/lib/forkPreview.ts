@@ -5,7 +5,11 @@ export type ForkPreviewTurn = {
     text: string
 }
 
+export type ForkPreviewKind = 'current' | 'historical'
+
 export type ForkPreview = {
+    /** How the fork maps onto the transcript. */
+    kind: ForkPreviewKind
     /** Turns copied into the new session (shown above the fork point). */
     keptTurns: ForkPreviewTurn[]
     /** Text of the selected cutoff message, which is NOT copied into the
@@ -25,9 +29,12 @@ function blockPreviewText(block: VisibleChatBlock): { role: 'user' | 'assistant'
     const role = visibleBlockRole(block)
     if (role === 'system') return null
     let text: string | undefined
-    if (block.kind === 'user-text' || block.kind === 'agent-text') {
-        text = block.text
-    } else if (block.kind === 'cli-output') {
+    if (block.kind === 'user-text') {
+        // Attachment-only messages have empty text; surface their filenames so
+        // they are not silently dropped from the preview.
+        const attachments = block.attachments?.map(({ filename }) => filename).join(', ')
+        text = [block.text, attachments].filter(Boolean).join(' ')
+    } else if (block.kind === 'agent-text' || block.kind === 'cli-output') {
         text = block.text
     }
     if (!text || text.trim().length === 0) return null
@@ -47,7 +54,7 @@ export function buildForkPreview(blocks: readonly VisibleChatBlock[], messageLoc
     let boundaryText: string | null = null
     if (messageLocalId) {
         cutoff = blocks.findLastIndex((block) => block.kind !== 'agent-event' && block.kind !== 'tool-group' && block.localId === messageLocalId)
-        if (cutoff < 0) return { keptTurns: [], boundaryText: null }
+        if (cutoff < 0) return { kind: 'historical', keptTurns: [], boundaryText: null }
         const selected = blockPreviewText(blocks[cutoff])
         boundaryText = selected ? truncate(selected.text) : null
     }
@@ -64,5 +71,5 @@ export function buildForkPreview(blocks: readonly VisibleChatBlock[], messageLoc
             turns.push({ role: entry.role, text: truncate(entry.text) })
         }
     }
-    return { keptTurns: turns.slice(-MAX_KEPT_TURNS), boundaryText }
+    return { kind: messageLocalId ? 'historical' : 'current', keptTurns: turns.slice(-MAX_KEPT_TURNS), boundaryText }
 }

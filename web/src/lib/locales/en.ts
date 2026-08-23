@@ -656,6 +656,7 @@ export default {
   'forkPreview.boundaryBadge': 'Fork point',
   'forkPreview.newSessionStart': 'Not included in the new session',
   'forkPreview.below': 'The new session resumes just before this message · The original session is unchanged',
+  'forkPreview.currentTail': 'A copy of this conversation becomes a new session · The original session is unchanged',
   'forkPreview.cancel': 'Cancel',
   'forkPreview.confirm': 'Fork here',
 

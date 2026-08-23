@@ -89,4 +89,19 @@ describe('buildForkPreview', () => {
         const preview = buildForkPreview(withQueued)
         expect(preview.keptTurns.map((turn) => turn.text)).toEqual(['answered question', 'answer'])
     })
+
+    it('reports the fork kind for historical and current forks', () => {
+        expect(buildForkPreview(blocks, 'u3').kind).toBe('historical')
+        expect(buildForkPreview(blocks).kind).toBe('current')
+    })
+
+    it('includes attachment-only user messages by their filenames', () => {
+        const attachmentOnly: VisibleChatBlock[] = [
+            { ...user('', 'u-file'), attachments: [{ id: 'a1', filename: 'report.pdf', mimeType: 'application/pdf', size: 10, path: '/tmp/report.pdf' }] } as VisibleChatBlock,
+            user('next question', 'u2'),
+        ]
+        const preview = buildForkPreview(attachmentOnly, 'u2')
+        expect(preview.keptTurns.map((turn) => turn.text)).toEqual(['report.pdf'])
+        expect(preview.boundaryText).toBe('next question')
+    })
 })

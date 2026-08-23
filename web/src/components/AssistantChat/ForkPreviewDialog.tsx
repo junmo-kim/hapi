@@ -1,21 +1,36 @@
+import { useState } from 'react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { useTranslation } from '@/lib/use-translation'
-import type { ForkPreviewTurn } from '@/lib/forkPreview'
+import type { ForkPreviewKind, ForkPreviewTurn } from '@/lib/forkPreview'
 
 type ForkPreviewDialogProps = {
     isOpen: boolean
+    kind: ForkPreviewKind
     keptTurns: ForkPreviewTurn[]
     boundaryText: string | null
-    pending: boolean
     onCancel: () => void
-    onConfirm: () => void
+    onConfirm: () => Promise<void>
 }
 
-export function ForkPreviewDialog({ isOpen, keptTurns, boundaryText, pending, onCancel, onConfirm }: ForkPreviewDialogProps) {
+export function ForkPreviewDialog({ isOpen, kind, keptTurns, boundaryText, onCancel, onConfirm }: ForkPreviewDialogProps) {
     const { t } = useTranslation()
+    const [pending, setPending] = useState(false)
+    const [error, setError] = useState<string | null>(null)
+
+    const handleConfirm = async () => {
+        setError(null)
+        setPending(true)
+        try {
+            await onConfirm()
+        } catch (err) {
+            setError(err instanceof Error && err.message ? err.message : t('dialog.error.default'))
+        } finally {
+            setPending(false)
+        }
+    }
 
     return (
-        <Dialog open={isOpen} onOpenChange={(open) => { if (!open) onCancel() }}>
+        <Dialog open={isOpen} onOpenChange={(open) => { if (!open && !pending) onCancel() }}>
             <DialogContent aria-describedby={undefined} className="flex max-h-[85vh] flex-col gap-3">
                 <DialogHeader>
                     <DialogTitle>{t('forkPreview.title')}</DialogTitle>
@@ -38,23 +53,34 @@ export function ForkPreviewDialog({ isOpen, keptTurns, boundaryText, pending, on
                     ) : (
                         <div className="text-center text-xs text-[var(--app-hint)]">{t('forkPreview.emptyPrefix')}</div>
                     )}
-                    <div className="my-3 flex items-center gap-2" data-testid="fork-preview-boundary">
-                        <span className="h-px flex-1 bg-[var(--app-link)]" />
-                        <span className="rounded-full bg-[var(--app-link)] px-2 py-0.5 text-[10px] font-medium text-white">
-                            {t('forkPreview.boundaryBadge')}
-                        </span>
-                        <span className="h-px flex-1 bg-[var(--app-link)]" />
-                    </div>
-                    {boundaryText ? (
-                        <div className="rounded-xl border-2 border-dashed border-[var(--app-link)] px-3 py-2 text-sm" data-testid="fork-preview-boundary-message">
-                            <span className="mb-0.5 block text-[10px] uppercase tracking-wide text-[var(--app-link)]">
-                                {t('forkPreview.newSessionStart')}
-                            </span>
-                            <span className="line-clamp-2">{boundaryText}</span>
-                        </div>
+                    {kind === 'historical' ? (
+                        <>
+                            <div className="my-3 flex items-center gap-2" data-testid="fork-preview-boundary">
+                                <span className="h-px flex-1 bg-[var(--app-link)]" />
+                                <span className="rounded-full bg-[var(--app-link)] px-2 py-0.5 text-[10px] font-medium text-white">
+                                    {t('forkPreview.boundaryBadge')}
+                                </span>
+                                <span className="h-px flex-1 bg-[var(--app-link)]" />
+                            </div>
+                            {boundaryText ? (
+                                <div className="rounded-xl border-2 border-dashed border-[var(--app-link)] px-3 py-2 text-sm" data-testid="fork-preview-boundary-message">
+                                    <span className="mb-0.5 block text-[10px] uppercase tracking-wide text-[var(--app-link)]">
+                                        {t('forkPreview.newSessionStart')}
+                                    </span>
+                                    <span className="line-clamp-2">{boundaryText}</span>
+                                </div>
+                            ) : null}
+                        </>
                     ) : null}
                 </div>
-                <p className="text-xs text-[var(--app-hint)]">{t('forkPreview.below')}</p>
+                <p className="text-xs text-[var(--app-hint)]">
+                    {t(kind === 'historical' ? 'forkPreview.below' : 'forkPreview.currentTail')}
+                </p>
+                {error ? (
+                    <div className="rounded-md bg-red-50 p-3 text-sm text-red-600 dark:bg-red-900/20 dark:text-red-400" data-testid="fork-preview-error">
+                        {error}
+                    </div>
+                ) : null}
                 <div className={`flex gap-2 ${pending ? 'opacity-60' : ''}`}>
                     <button
                         type="button"
@@ -66,7 +92,7 @@ export function ForkPreviewDialog({ isOpen, keptTurns, boundaryText, pending, on
                     </button>
                     <button
                         type="button"
-                        onClick={onConfirm}
+                        onClick={() => { void handleConfirm() }}
                         disabled={pending}
                         data-testid="fork-preview-confirm"
                         className="flex-1 rounded-lg bg-[var(--app-link)] px-3 py-2 text-sm font-medium text-white hover:opacity-90"

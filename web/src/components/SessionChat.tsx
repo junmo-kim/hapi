@@ -566,10 +566,10 @@ function SessionChatInner(props: SessionChatProps) {
     const [forkPreviewRequest, setForkPreviewRequest] = useState<{ messageLocalId?: string } | null>(null)
 
     const executeForkConversation = useCallback(async (messageLocalId?: string) => {
-        setForkPreviewRequest(null)
         setHistoryActionPending(true)
         try {
             const result = await props.api.forkConversation(props.session.id, messageLocalId)
+            setForkPreviewRequest(null)
             await navigate({
                 to: '/sessions/$sessionId',
                 params: { sessionId: result.sessionId },
@@ -1780,11 +1780,11 @@ function SessionChatInner(props: SessionChatProps) {
                 {forkPreviewRequest && forkPreview ? (
                     <ForkPreviewDialog
                         isOpen
+                        kind={forkPreview.kind}
                         keptTurns={forkPreview.keptTurns}
                         boundaryText={forkPreview.boundaryText}
-                        pending={historyActionPending}
                         onCancel={() => setForkPreviewRequest(null)}
-                        onConfirm={() => { void executeForkConversation(forkPreviewRequest.messageLocalId) }}
+                        onConfirm={() => executeForkConversation(forkPreviewRequest.messageLocalId)}
                     />
                 ) : null}
                 <AbortRestoreConsumer messages={normalizedMessages} onAbortRestore={props.onAbortRestore ?? (() => {})} />

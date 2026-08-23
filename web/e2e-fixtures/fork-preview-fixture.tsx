@@ -33,6 +33,7 @@ function Fixture() {
     return (
         <ForkPreviewDialog
             isOpen={open}
+            kind="historical"
             keptTurns={KEPT_TURNS}
             boundaryText="third question — not copied into the new session"
             pending={false}
