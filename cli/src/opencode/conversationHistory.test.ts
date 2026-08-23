@@ -65,6 +65,23 @@ describe('OpencodeConversationHistory probeCapabilities', () => {
         await expect(history.probeCapabilities()).resolves.toBeUndefined();
         expect(history.getCapabilitiesForMetadata()?.conversationHistory).toBeUndefined();
     });
+
+    it('falls back to /openapi.json when /doc returns 404', async () => {
+        const fetchImpl: FetchLike = vi.fn(async (url: string) => {
+            if (url.endsWith('/doc')) return new Response('not found', { status: 404 });
+            expect(url).toBe('http://127.0.0.1:48273/openapi.json');
+            return jsonResponse({
+                paths: {
+                    '/session/{sessionID}/fork': { post: {} }
+                }
+            });
+        });
+
+        const history = new OpencodeConversationHistory(createContext('http://127.0.0.1:48273', 'ses_1'), fetchImpl);
+        await history.probeCapabilities();
+
+        expect(history.getCapabilitiesForMetadata()?.conversationHistory).toEqual({ forkCurrent: true, forkAtMessage: true });
+    });
 });
 
 describe('OpencodeConversationHistory fork', () => {

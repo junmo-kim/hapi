@@ -103,7 +103,14 @@ export class OpencodeConversationHistory {
             // candidate rather than concluding "unsupported".
             let forkSupported = false;
             for (const url of [`${baseUrl}/doc`, `${baseUrl}/openapi.json`]) {
-                const bodyText = await this.fetchDocText(url);
+                let bodyText: string | null = null;
+                try {
+                    bodyText = await this.fetchDocText(url);
+                } catch {
+                    // A missing/failing endpoint must not abort the probe —
+                    // fall through to the next candidate.
+                    continue;
+                }
                 if (bodyText !== null && FORK_PATH_MARKERS.some((marker) => bodyText.includes(marker))) {
                     forkSupported = true;
                     break;
