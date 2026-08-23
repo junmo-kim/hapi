@@ -137,6 +137,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     private stallErrorReportedForPrompt = false;
     /** Next native user-message index for fork points; null until the first successful count. */
     private nativeUserIndexCursor: number | null = null;
+    /** Cancels the detached capability probe when remote mode is left. */
+    private readonly historyProbeAbortController = new AbortController();
     /** Guards the one-shot native history count attempt (failure must not retry every turn). */
     private nativeUserCountAttempted = false;
     private readonly conversationHistory = new OpencodeConversationHistory(() => ({
@@ -348,7 +350,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             return await this.conversationHistory.fork(messageLocalId);
         });
         if (!historyDiverged) {
-            void this.conversationHistory.probeCapabilities().catch(() => {});
+            void this.conversationHistory.probeCapabilities(this.historyProbeAbortController.signal).catch(() => {});
         }
 
         // Seed currentBackendModel from the ACP session metadata so the first
@@ -829,6 +831,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
      * comment on RemoteLauncherBase for exactly when this fires.
      */
     protected onLeavingRemote(): void {
+        this.historyProbeAbortController.abort();
         this.options.onCompactAvailabilityChange?.(false);
         // Withdraw history affordances for the teardown window and any
         // subsequent local mode: the loopback server is going away, so forks

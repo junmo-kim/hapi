@@ -109,7 +109,7 @@ export class OpencodeConversationHistory {
         }
     }
 
-    async probeCapabilities(): Promise<void> {
+    async probeCapabilities(signal?: AbortSignal): Promise<void> {
         const { baseUrl, sessionId } = this.getContext();
         if (!baseUrl || !sessionId) return;
 
@@ -121,7 +121,7 @@ export class OpencodeConversationHistory {
             for (const url of [`${baseUrl}/doc`, `${baseUrl}/openapi.json`]) {
                 let bodyText: string | null = null;
                 try {
-                    bodyText = await this.fetchDocText(url);
+                    bodyText = await this.fetchDocText(url, signal);
                 } catch {
                     // A missing/failing endpoint must not abort the probe —
                     // fall through to the next candidate.
@@ -141,11 +141,16 @@ export class OpencodeConversationHistory {
         }
         this.states = markUnsupported(this.states, 'rewindToMessage');
 
+        // A torn-down launcher must not overwrite a successor's fresher state.
+        if (signal?.aborted) return;
         await this.publishCapabilities?.();
     }
 
-    private async fetchDocText(url: string): Promise<string> {
-        const response = await this.fetchFn(url, { method: 'GET', signal: AbortSignal.timeout(5_000) });
+    private async fetchDocText(url: string, signal?: AbortSignal): Promise<string> {
+        const response = await this.fetchFn(url, {
+            method: 'GET',
+            signal: AbortSignal.any([AbortSignal.timeout(5_000), ...(signal ? [signal] : [])])
+        });
         if (!response.ok) throw new Error(`GET ${url} failed (${response.status})`);
         return await response.text();
     }
