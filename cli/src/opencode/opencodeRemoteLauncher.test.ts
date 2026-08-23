@@ -431,6 +431,34 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         inkHarness.lastRenderProps = null;
     });
 
+    it('holds the fork busy guard across an in-flight batch', async () => {
+        let resolvePrompt: (() => void) | null = null;
+        harness.promptImpl = () => new Promise<void>((resolve) => {
+            resolvePrompt = resolve;
+        });
+        const { session, rpcHandlers } = createSessionStub([
+            { message: 'in-flight prompt', mode: createMode() }
+        ]);
+
+        const launcherPromise = opencodeRemoteLauncher(session as never);
+        while (!harness.events.includes('prompt:start')) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+
+        const forkHandler = rpcHandlers.get('fork-conversation');
+        expect(forkHandler).toBeDefined();
+        await expect(forkHandler!({})).rejects.toThrow('Session is busy');
+
+        // The guard releases once the batch settles: the retry no longer hits
+        // the busy fence (it proceeds into the probe/fork path and fails on
+        // the unmocked loopback fetch instead).
+        resolvePrompt!();
+        await launcherPromise;
+        await expect(forkHandler!({})).rejects.toThrow(/^(?!Session is busy)/);
+        const backendModule = await import('./utils/opencodeBackend');
+        (backendModule.createOpencodeBackend as unknown as ReturnType<typeof vi.fn>).mockClear();
+    });
+
     it('reaches /clear only after the earlier prompt settles, without starting another OpenCode turn', async () => {
         let resolvePrompt: (() => void) | null = null;
         harness.promptImpl = () => new Promise<void>((resolve) => {
