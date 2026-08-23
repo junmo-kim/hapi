@@ -759,6 +759,10 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     nativeUserCount = await this.conversationHistory.getNativeUserMessageCount(waitSignal);
                 }
                 if (waitSignal.aborted || this.shouldExit) {
+                    // The aborted turn persisted nothing; allow a fresh count
+                    // attempt on the next prompt instead of staying locked out.
+                    this.nativeUserIndexCursor = null;
+                    this.nativeUserCountAttempted = false;
                     continue;
                 }
                 if (nativeUserCount === null) {
