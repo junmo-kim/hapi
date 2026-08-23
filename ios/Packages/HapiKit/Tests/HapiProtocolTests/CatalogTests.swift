@@ -240,6 +240,29 @@ struct CatalogTests {
 
     // MARK: - New-session catalogs (derived from the claude catalog data, #39)
 
+    @Test func claudeEffortOptionsFollowModelCapability() {
+        // Haiku supports no --effort, so its picker offers Auto only. A session
+        // pinned to `high` elsewhere must not be able to re-pin it from here.
+        #expect(ModelCatalog.claudeEffortOptions(currentEffort: "high", model: "haiku")
+            == [CatalogOption(value: nil, label: "Auto")])
+
+        // A family that does support effort keeps the full list.
+        let sonnet = ModelCatalog.claudeEffortOptions(currentEffort: "high", model: "sonnet")
+        #expect(sonnet.count == ClaudeEfforts.levels.count + 1)
+        #expect(sonnet.first == CatalogOption(value: nil, label: "Auto"))
+
+        // Unknown, Default and omitted selections stay permissive: nothing has
+        // said the model lacks effort.
+        #expect(ClaudeModels.supportsEffort(nil))
+        #expect(ClaudeModels.supportsEffort("auto"))
+        #expect(ClaudeModels.supportsEffort("default"))
+        #expect(ClaudeModels.supportsEffort("opusplan"))
+        #expect(!ClaudeModels.supportsEffort("haiku"))
+        // A suffixed id names the same family as its bare counterpart.
+        #expect(ModelCatalog.claudeEffortOptions(currentEffort: nil, model: "sonnet[1m]").count
+            == ClaudeEfforts.levels.count + 1)
+    }
+
     @Test func newSessionCatalogsMatchTheWebOptionLists() {
         // One deliberate divergence from the web offer list: Haiku. The web
         // picker drives its effort options from the model's advertised

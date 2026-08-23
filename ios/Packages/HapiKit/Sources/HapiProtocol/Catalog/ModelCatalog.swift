@@ -28,6 +28,22 @@ public enum ClaudeModels {
         "sonnet",
     ]
 
+    /// Families the catalog reports as supporting no `--effort` at all, ported
+    /// from `CLAUDE_MODEL_FALLBACK_OPTIONS`' `supportedEffortLevels` in
+    /// `shared/src/models.ts`. Anything absent here is treated as supporting
+    /// the full level set, which is also what an unknown or Default selection
+    /// gets: nothing has said otherwise.
+    private static let effortlessFamilies: Set<String> = ["haiku"]
+
+    /// Whether `--effort` means anything for this model. `[1m]` is stripped
+    /// because a suffixed id names the same family as its bare counterpart.
+    public static func supportsEffort(_ model: String?) -> Bool {
+        let trimmed = model?.trimmingCharacters(in: .whitespaces).lowercased() ?? ""
+        if trimmed.isEmpty || trimmed == "auto" || trimmed == "default" { return true }
+        let bare = trimmed.hasSuffix("[1m]") ? String(trimmed.dropLast(4)) : trimmed
+        return !effortlessFamilies.contains(bare)
+    }
+
     /// `CLAUDE_MODEL_LABELS`: recognition aliases, wider than the offer list.
     private static let labels: [String: String] = [
         "sonnet": "Sonnet",
@@ -120,7 +136,13 @@ public enum ModelCatalog {
 
     /// `getClaudeComposerEffortOptions`: Auto first, synthetic current, then
     /// the levels.
-    public static func claudeEffortOptions(currentEffort: String?) -> [CatalogOption] {
+    public static func claudeEffortOptions(currentEffort: String?, model: String? = nil) -> [CatalogOption] {
+        // A model that supports no effort offers Auto only, the same shape the
+        // web composer renders for it. Without this a session switched to Haiku
+        // elsewhere could be pinned back to `high` from here.
+        guard ClaudeModels.supportsEffort(model) else {
+            return [CatalogOption(value: nil, label: "Auto")]
+        }
         let normalized = normalizeClaudeEffort(currentEffort)
         var options = [CatalogOption(value: nil, label: "Auto")]
         if let normalized, !ClaudeEfforts.levels.contains(normalized) {

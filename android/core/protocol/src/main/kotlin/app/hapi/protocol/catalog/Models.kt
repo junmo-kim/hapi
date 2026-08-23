@@ -9,6 +9,26 @@ package app.hapi.protocol.catalog
  * come from `GET /api/sessions/:id/codex-models` per session.
  */
 object ClaudeModels {
+    /**
+     * Families the catalog reports as supporting no `--effort` at all, ported
+     * from `CLAUDE_MODEL_FALLBACK_OPTIONS`' `supportedEffortLevels` in
+     * `shared/src/models.ts`. Anything absent here is treated as supporting the
+     * full level set, which is also what an unknown or Default selection gets:
+     * nothing has said otherwise.
+     */
+    private val EFFORTLESS_FAMILIES: Set<String> = setOf("haiku")
+
+    /**
+     * Whether `--effort` means anything for this model. `[1m]` is stripped
+     * because a suffixed id names the same family as its bare counterpart.
+     */
+    fun supportsEffort(model: String?): Boolean {
+        val trimmed = model?.trim()?.lowercase().orEmpty()
+        if (trimmed.isEmpty() || trimmed == "auto" || trimmed == "default") return true
+        val bare = if (trimmed.endsWith("[1m]")) trimmed.removeSuffix("[1m]") else trimmed
+        return bare !in EFFORTLESS_FAMILIES
+    }
+
     /** `CLAUDE_MODEL_LABELS`: recognition aliases, wider than the offer list. */
     val LABELS: Map<String, String> = linkedMapOf(
         "sonnet" to "Sonnet",
@@ -102,7 +122,13 @@ object ModelCatalog {
     }
 
     /** `getClaudeComposerEffortOptions`: Auto first, synthetic current, then levels. */
-    fun claudeEffortOptions(currentEffort: String?): List<CatalogOption> {
+    fun claudeEffortOptions(currentEffort: String?, model: String? = null): List<CatalogOption> {
+        // A model that supports no effort offers Auto only, the same shape the
+        // web composer renders for it. Without this a session switched to Haiku
+        // elsewhere could be pinned back to `high` from here.
+        if (!ClaudeModels.supportsEffort(model)) {
+            return listOf(CatalogOption(value = null, label = "Auto"))
+        }
         val normalized = normalizeClaudeEffort(currentEffort)
         val options = mutableListOf(CatalogOption(value = null, label = "Auto"))
         if (normalized != null && normalized !in ClaudeEfforts.LEVELS) {
