@@ -56,6 +56,32 @@ export type RewindPlan = {
     dropsTurns: string[]
 }
 
+/** Native `--resume-session-at` truncation landed in Claude Code v2.1.223. */
+export const NATIVE_REWIND_MIN_VERSION = [2, 1, 223] as const
+
+export function parseClaudeVersion(versionOutput: string | null | undefined): number[] | null {
+    if (!versionOutput) return null
+    const match = /(\d+)\.(\d+)\.(\d+)/.exec(versionOutput)
+    if (!match) return null
+    return [Number(match[1]), Number(match[2]), Number(match[3])]
+}
+
+/**
+ * Whether the installed Claude Code supports resume-time truncation.
+ * `null`/unparseable output (detection failed) conservatively reports false so
+ * the rewind capability is not advertised against an unknown binary.
+ */
+export function supportsNativeRewind(versionOutput: string | null | undefined): boolean {
+    const version = parseClaudeVersion(versionOutput)
+    if (!version) return false
+    for (let i = 0; i < NATIVE_REWIND_MIN_VERSION.length; i++) {
+        const actual = version[i] ?? 0
+        const min = NATIVE_REWIND_MIN_VERSION[i]!
+        if (actual !== min) return actual > min
+    }
+    return true
+}
+
 /**
  * Build the resume flags to drop turns `[dropFromTurnIndex, turns.length)`.
  * The kept boundary is the last entry of the previous turn; dropping every

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { readNativeTurns, resolveRewindPlan } from './conversationHistory'
+import { readNativeTurns, resolveRewindPlan, supportsNativeRewind } from './conversationHistory'
 
 const CWD = '/tmp/rewind-fixture-project'
 
@@ -78,6 +78,22 @@ describe('readNativeTurns', () => {
         } finally {
             delete process.env.CLAUDE_CONFIG_DIR
         }
+    })
+})
+
+describe('supportsNativeRewind', () => {
+    it('accepts versions at or above 2.1.223', () => {
+        expect(supportsNativeRewind('2.1.240 (Claude Code)')).toBe(true)
+        expect(supportsNativeRewind('2.2.0 (Claude Code)')).toBe(true)
+        expect(supportsNativeRewind('3.0.1')).toBe(true)
+        expect(supportsNativeRewind('2.1.223 (Claude Code)')).toBe(true)
+    })
+
+    it('rejects older and undetectable binaries', () => {
+        expect(supportsNativeRewind('2.1.222 (Claude Code)')).toBe(false)
+        expect(supportsNativeRewind('2.0.55')).toBe(false)
+        expect(supportsNativeRewind(null)).toBe(false)
+        expect(supportsNativeRewind('Claude Code')).toBe(false)
     })
 })
 

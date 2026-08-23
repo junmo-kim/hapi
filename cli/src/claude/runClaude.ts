@@ -1,4 +1,6 @@
 import { logger } from '@/ui/logger';
+import { execFileSync } from 'node:child_process';
+import { getDefaultClaudeCodePath } from './sdk/utils';
 import { loop } from '@/claude/loop';
 import { AgentState, SessionEffort, SessionModel } from '@/api/types';
 import { EnhancedMode, PermissionMode } from './loop';
@@ -27,7 +29,7 @@ import {
     CLAUDE_CONVERSATION_HISTORY,
     toConversationHistoryCapabilities
 } from '@hapi/protocol/conversationHistory';
-import { readNativeTurns, resolveRewindPlan } from './conversationHistory';
+import { readNativeTurns, resolveRewindPlan, supportsNativeRewind } from './conversationHistory';
 import { listSkills, type SkillSummary } from '@/modules/common/skills';
 
 export interface StartOptions {
@@ -234,7 +236,23 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     registerKillSessionHandler(session.rpcHandlerManager, lifecycle);
     registerLocalHandoffHandler(session.rpcHandlerManager, lifecycle);
 
-    const conversationHistory = toConversationHistoryCapabilities(CLAUDE_CONVERSATION_HISTORY)
+    // Rewind needs native --resume-session-at (Claude Code v2.1.223+); fork
+    // current works on any version. Detect the actual binary version once at
+    // startup so the web UI only shows the Rewind affordance when it can work.
+    let claudeVersionOutput: string | null = null
+    try {
+        claudeVersionOutput = execFileSync(getDefaultClaudeCodePath(), ['--version'], {
+            encoding: 'utf8',
+            timeout: 10_000,
+            stdio: ['pipe', 'pipe', 'pipe']
+        }).trim()
+    } catch (error) {
+        logger.debug(`[claude] --version probe failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    const conversationHistory = toConversationHistoryCapabilities({
+        ...CLAUDE_CONVERSATION_HISTORY,
+        rewindToMessage: supportsNativeRewind(claudeVersionOutput) ? 'supported' : 'unsupported'
+    })
     session.updateMetadata((metadata) => ({
         ...metadata,
         path: metadata?.path ?? workingDirectory,
