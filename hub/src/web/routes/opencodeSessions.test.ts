@@ -344,11 +344,15 @@ describe('OpenCode session import', () => {
         })
         expect(response.status).toBe(200)
         const body = await response.json() as { results: Array<{ hapiSessionId?: string }> }
-        expect(body.results[0]?.hapiSessionId).toBeTruthy()
-        expect(applied).toEqual([{
-            sessionId: body.results[0]!.hapiSessionId,
-            config: { model: null, modelReasoningEffort: null, permissionMode: 'default' }
-        }])
+        const importedSessionId: string | undefined = body.results[0]?.hapiSessionId
+        if (!importedSessionId) throw new Error('expected hapiSessionId in import result')
+        const appliedCall = applied[0]
+        if (!appliedCall) throw new Error('expected applySessionConfig to be called')
+        expect(appliedCall.sessionId).toBe(importedSessionId)
+        expect(Object.keys(appliedCall!.config)).toEqual(['model', 'modelReasoningEffort', 'permissionMode'])
+        expect(appliedCall!.config.model).toBeNull()
+        expect(appliedCall!.config.modelReasoningEffort).toBeNull()
+        expect(appliedCall!.config.permissionMode).toBe('default')
     })
 
     it('does not touch launch config when the request omits the fields', async () => {
