@@ -49,6 +49,11 @@ export class OpencodeConversationHistory {
         this.publishCapabilities = fn
     }
 
+    /** Pushes current history points/indexes into session metadata (best-effort). */
+    async publish(): Promise<void> {
+        await this.publishCapabilities?.()
+    }
+
     setBusy(busy: boolean): void {
         this.busy = busy;
     }
