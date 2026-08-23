@@ -452,9 +452,9 @@ describe('claudeRemote /compact result reporting', () => {
             resultMessage
         ]);
 
-        expect(completionEvents).toContain('Compaction started');
+        expect(completionEvents).toContain('📦 Compaction started');
         expect(completionEvents.some((event) => event.includes('Not enough messages to compact.'))).toBe(true);
-        expect(completionEvents).not.toContain('Compaction completed');
+        expect(completionEvents).not.toContain('📦 Compacted');
     }, 15_000);
 
     it('still reports success when no failure status arrives', async () => {
@@ -469,7 +469,29 @@ describe('claudeRemote /compact result reporting', () => {
             resultMessage
         ]);
 
-        expect(completionEvents).toEqual(['Compaction started', 'Compaction completed']);
+        expect(completionEvents).toEqual(['📦 Compaction started', '📦 Compacted']);
+    }, 15_000);
+
+    it('reports the token delta from the compact_boundary metadata', async () => {
+        const completionEvents = await runCompact([
+            {
+                type: 'system',
+                subtype: 'status',
+                status: 'compacting',
+                session_id: 's-1',
+                uuid: 'u-1'
+            } as unknown as SDKMessage,
+            {
+                type: 'system',
+                subtype: 'compact_boundary',
+                compact_metadata: { trigger: 'manual', pre_tokens: 34492, post_tokens: 2082 },
+                session_id: 's-1',
+                uuid: 'u-2'
+            } as unknown as SDKMessage,
+            resultMessage
+        ]);
+
+        expect(completionEvents).toEqual(['📦 Compaction started', '📦 Compacted (34492 → 2082 tokens)']);
     }, 15_000);
 
     it('hands compact completion to the ready phase so the result carrier can flush first', async () => {
@@ -499,7 +521,7 @@ describe('claudeRemote /compact result reporting', () => {
                     if (message.type === 'result') queued.push('result');
                 },
                 onCompletionEvent: (message) => {
-                    if (message !== 'Compaction started') wireOrder.push(message);
+                    if (message !== '📦 Compaction started') wireOrder.push(message);
                 }
             });
         } finally {
@@ -507,6 +529,6 @@ describe('claudeRemote /compact result reporting', () => {
             querySpy.mockRestore();
         }
 
-        expect(wireOrder).toEqual(['result', 'Compaction completed', 'ready']);
+        expect(wireOrder).toEqual(['result', '📦 Compacted', 'ready']);
     }, 15_000);
 });

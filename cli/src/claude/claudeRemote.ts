@@ -12,6 +12,7 @@ import { PermissionResult } from "./sdk/types";
 import { getHapiBlobsDir } from "@/constants/uploadPaths";
 import { getDefaultClaudeCodePath } from "./sdk/utils";
 import { filterCatalogAffectingClaudeArgs } from "./sdk/metadataExtractor";
+import { buildCompactCompletionEvent } from "./utils/compactCompletion";
 
 export async function claudeRemote(opts: {
 
@@ -102,6 +103,11 @@ export async function claudeRemote(opts: {
     // reported, so an unseen or successful status keeps the success path.
     let isCompactCommand = false;
     let compactFailure: string | null = null;
+    // Token context size around the compaction, from the system/compact_boundary
+    // message's compact_metadata. The result that follows a compact reports all-zero
+    // usage (measured), so the boundary metadata is the only real source.
+    let compactTokensBefore: number | undefined;
+    let compactTokensAfter: number | undefined;
     let awaitingForkInit = forkSession;
 
     const messages = new PushableAsyncIterable<SDKUserMessage>();
@@ -140,7 +146,7 @@ export async function claudeRemote(opts: {
             logger.debug('[claudeRemote] /compact command detected - will process as normal but with compaction behavior');
             isCompactCommand = true;
             if (opts.onCompletionEvent) {
-                opts.onCompletionEvent('Compaction started');
+                opts.onCompletionEvent('📦 Compaction started');
             }
         }
 
@@ -337,6 +343,15 @@ export async function claudeRemote(opts: {
                 }
             }
 
+            // Capture the compaction token delta from the boundary metadata
+            // (pre_tokens/post_tokens are the context sizes on each side).
+            if (message.type === 'system' && message.subtype === 'compact_boundary' && isCompactCommand) {
+                const metadata = (message as any).compact_metadata;
+                if (typeof metadata?.pre_tokens === 'number') compactTokensBefore = metadata.pre_tokens;
+                if (typeof metadata?.post_tokens === 'number') compactTokensAfter = metadata.post_tokens;
+                logger.debug(`[claudeRemote] compact_boundary tokens: ${compactTokensBefore} -> ${compactTokensAfter}`);
+            }
+
             // Handle result messages
             if (message.type === 'result') {
                 resultSeq += 1;
@@ -352,12 +367,12 @@ export async function claudeRemote(opts: {
 
                 let completionEvent: string | undefined;
                 if (isCompactCommand) {
-                    completionEvent = compactFailure
-                        ? `Compaction failed: ${compactFailure}`
-                        : 'Compaction completed';
+                    completionEvent = buildCompactCompletionEvent(compactFailure, compactTokensBefore, compactTokensAfter);
                     logger.debug(`[claudeRemote] ${completionEvent}`);
                     isCompactCommand = false;
                     compactFailure = null;
+                    compactTokensBefore = undefined;
+                    compactTokensAfter = undefined;
                 }
 
                 // Flush the result carrier before completion, then announce ready.
