@@ -136,6 +136,29 @@ function resolveClaudeFallbackSupportedEffortLevels(modelValue: string | null | 
  * NewSession/index.tsx's launch form) agrees, instead of each re-deriving
  * the same checks inline.
  */
+/**
+ * Concrete family identifier behind a selection, for use against the static
+ * capability table. `findCatalogRowFor` resolves the Default selection to the
+ * catalog's `default` row, whose own `value` is the sentinel string and so
+ * matches nothing in the static list. When a concrete row shares that row's
+ * `resolvedModel`, its value is the family the sentinel actually points at.
+ * Falls through to the caller's value when there is no catalog, no row, or no
+ * concrete twin.
+ */
+function concreteFamilyValueFor(
+    modelValue: string | null | undefined,
+    availableModels: ClaudeModelSummary[]
+): string | null | undefined {
+    const row = findCatalogRowFor(modelValue, availableModels)
+    if (!row) return modelValue
+    if (row.value !== 'default') return row.value
+    if (!row.resolvedModel) return modelValue
+    const twin = availableModels.find((entry) => (
+        entry.value !== 'default' && entry.resolvedModel === row.resolvedModel
+    ))
+    return twin?.value ?? modelValue
+}
+
 export function resolveClaudeSupportedEffortLevels(
     modelValue: string | null | undefined,
     availableModels: ClaudeModelSummary[]
@@ -153,7 +176,7 @@ export function resolveClaudeSupportedEffortLevels(
     // supporting none and the other families as supporting all five, so both
     // readings land on the right answer. A model the table doesn't know stays
     // undefined, since nothing has confirmed anything about it.
-    return resolveClaudeFallbackSupportedEffortLevels(modelValue)
+    return resolveClaudeFallbackSupportedEffortLevels(concreteFamilyValueFor(modelValue, availableModels))
 }
 
 /**

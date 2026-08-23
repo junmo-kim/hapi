@@ -275,10 +275,35 @@ describe('resolveClaudeSupportedEffortLevels', () => {
             .toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
     })
 
-    it('stays undefined for a row the static table does not know either', () => {
-        // `default` is a catalog sentinel, not a family the static offer list
-        // carries, so nothing has confirmed anything about its capability.
-        expect(resolveClaudeSupportedEffortLevels('default', NO_EFFORT_FIELD_CATALOG)).toBeUndefined()
+    it('resolves a Haiku-backed Default selection through the catalog before the static lookup', () => {
+        // The `default` row's own value matches nothing in the static table, but
+        // the concrete row sharing its resolvedModel names the family it points
+        // at. Both surfaces pass a sentinel for Default -- 'auto' from New
+        // Session, null from the composer.
+        const haikuOnly = [
+            { value: 'default', displayName: 'Default (recommended)', resolvedModel: 'claude-haiku-4-5-20251001' },
+            { value: 'haiku', displayName: 'Haiku', resolvedModel: 'claude-haiku-4-5-20251001' }
+        ]
+        expect(resolveClaudeSupportedEffortLevels('auto', haikuOnly)).toEqual([])
+        expect(resolveClaudeSupportedEffortLevels(null, haikuOnly)).toEqual([])
+        expect(resolveClaudeModelChangeEffortClear({
+            currentEffort: 'high',
+            nextModelValue: 'auto',
+            availableModels: haikuOnly
+        })).toBeNull()
+    })
+
+    it('resolves the Default sentinel through its concrete twin', () => {
+        // This fixture's Default is backed by opus[1m], which the static table
+        // knows supports every level.
+        expect(resolveClaudeSupportedEffortLevels('default', NO_EFFORT_FIELD_CATALOG))
+            .toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
+    })
+
+    it('stays undefined for a model neither the catalog nor the static table can place', () => {
+        expect(resolveClaudeSupportedEffortLevels('opusplan', [
+            { value: 'opusplan', displayName: 'Opus Plan', resolvedModel: 'claude-opusplan-1' }
+        ])).toBeUndefined()
     })
 
     it('resolves undefined when the model value matches no row in the catalog', () => {
