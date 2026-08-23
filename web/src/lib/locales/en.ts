@@ -653,6 +653,7 @@ export default {
   'forkPreview.roleAssistant': 'Agent',
   'forkPreview.keptAbove': '↑ Copied into the new session',
   'forkPreview.emptyPrefix': 'The new session starts empty.',
+  'forkPreview.noTextPreview': 'Older messages are copied into the new session too · Not all of them are shown here',
   'forkPreview.boundaryBadge': 'Fork point',
   'forkPreview.newSessionStart': 'Not included in the new session',
   'forkPreview.below': 'The new session resumes just before this message · The original session is unchanged',

@@ -8,11 +8,14 @@ type ForkPreviewDialogProps = {
     kind: ForkPreviewKind
     keptTurns: ForkPreviewTurn[]
     boundaryText: string | null
+    /** True when older messages exist beyond the loaded window, so an empty
+     * prefix does not mean the child starts empty. */
+    prefixMayHaveMore?: boolean
     onCancel: () => void
     onConfirm: () => Promise<void>
 }
 
-export function ForkPreviewDialog({ isOpen, kind, keptTurns, boundaryText, onCancel, onConfirm }: ForkPreviewDialogProps) {
+export function ForkPreviewDialog({ isOpen, kind, keptTurns, boundaryText, prefixMayHaveMore = false, onCancel, onConfirm }: ForkPreviewDialogProps) {
     const { t } = useTranslation()
     const [pending, setPending] = useState(false)
     const [error, setError] = useState<string | null>(null)
@@ -51,7 +54,9 @@ export function ForkPreviewDialog({ isOpen, kind, keptTurns, boundaryText, onCan
                             </div>
                         </div>
                     ) : (
-                        <div className="text-center text-xs text-[var(--app-hint)]">{t('forkPreview.emptyPrefix')}</div>
+                        <div className="text-center text-xs text-[var(--app-hint)]">
+                            {t(prefixMayHaveMore ? 'forkPreview.noTextPreview' : 'forkPreview.emptyPrefix')}
+                        </div>
                     )}
                     {kind === 'historical' ? (
                         <>

@@ -652,6 +652,7 @@ export default {
   'forkPreview.roleAssistant': '代理',
   'forkPreview.keptAbove': '↑ 会复制到新会话中',
   'forkPreview.emptyPrefix': '新会话将从空会话开始。',
+  'forkPreview.noTextPreview': '更早的消息也会复制到新会话中 · 此处未全部显示',
   'forkPreview.boundaryBadge': '分叉点',
   'forkPreview.newSessionStart': '不会包含在新会话中',
   'forkPreview.below': '新会话将在这条消息之前继续 · 原会话保持不变',
