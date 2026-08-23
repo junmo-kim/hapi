@@ -8,7 +8,7 @@ const harness = vi.hoisted(() => ({
     promptCount: 0,
     promptContents: [] as unknown[],
     refreshSessionInfoCalls: [] as Array<{ sessionId: string; cwd: string }>,
-    bridgeOptions: null as { enableChangeTitle?: boolean; skillLookup?: { workingDirectory: string; flavor: string } } | null,
+    bridgeOptions: null as { onChangeTitle?: () => void; skillLookup?: { workingDirectory: string; flavor: string } } | null,
     events: [] as string[],
     cleanupEvents: [] as string[],
     setModelImpl: null as null | ((sessionId: string, modelId: string) => Promise<void>),
@@ -150,7 +150,7 @@ vi.mock('./utils/opencodeBackend', () => ({
 }));
 
 vi.mock('@/codex/utils/buildHapiMcpBridge', () => ({
-    buildHapiMcpBridge: async (_client: unknown, options?: { enableChangeTitle?: boolean; skillLookup?: { workingDirectory: string; flavor: string } }) => {
+    buildHapiMcpBridge: async (_client: unknown, options?: { onChangeTitle?: () => void; skillLookup?: { workingDirectory: string; flavor: string } }) => {
         harness.bridgeOptions = options ?? null;
         return {
             server: { stop: () => { harness.cleanupEvents.push('cleanup:server-stop'); if (harness.serverStopError) throw harness.serverStopError; } },

@@ -34,8 +34,30 @@ const harness = vi.hoisted(() => ({
     stderrErrorHandler: null as ((error: { type: string; message: string; raw?: string }) => void) | null,
     disconnectError: null as Error | null,
     overlayCleanup: null as ReturnType<typeof vi.fn> | null,
-    agentActivityListener: null as ((thinking: boolean) => void) | null
+    agentActivityListener: null as ((thinking: boolean) => void) | null,
+    titleSyncControllers: [] as unknown[],
+    titleSyncRegistered: [] as unknown[]
 }));
+
+vi.mock('@/agent/acpSessionTitle', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/agent/acpSessionTitle')>();
+    return {
+        ...actual,
+        createAcpSessionTitleSync: (...args: Parameters<typeof actual.createAcpSessionTitleSync>) => {
+            const controller = actual.createAcpSessionTitleSync(...args);
+            harness.titleSyncControllers.push(controller);
+            return controller;
+        },
+        registerAcpSessionTitleSync: (
+            backend: Parameters<typeof actual.registerAcpSessionTitleSync>[0],
+            client: Parameters<typeof actual.registerAcpSessionTitleSync>[1],
+            controller?: Parameters<typeof actual.registerAcpSessionTitleSync>[2]
+        ) => {
+            harness.titleSyncRegistered.push(controller ?? null);
+            return actual.registerAcpSessionTitleSync(backend, client, controller);
+        }
+    };
+});
 
 const legacyLauncher = vi.hoisted(() => vi.fn());
 
@@ -309,6 +331,8 @@ describe('cursorAcpRemoteLauncher', () => {
         harness.disconnectError = null;
         harness.overlayCleanup = null;
         harness.agentActivityListener = null;
+        harness.titleSyncControllers = [];
+        harness.titleSyncRegistered = [];
         legacyLauncher.mockClear();
         process.stdin.isTTY = false;
         process.stdout.isTTY = false;
@@ -594,6 +618,17 @@ describe('cursorAcpRemoteLauncher', () => {
         expect(createCursorAcpBackend).toHaveBeenCalled();
         expect(harness.backendArgs).toEqual({ command: 'agent', args: ['acp'] });
         expect(legacyLauncher).not.toHaveBeenCalled();
+    });
+
+    it('shares one title-sync controller across backend (re)creation paths', async () => {
+        const session = makeSession(null);
+        await cursorAcpRemoteLauncher(session);
+
+        expect(harness.titleSyncControllers).toHaveLength(1);
+        expect(harness.titleSyncRegistered.length).toBeGreaterThan(0);
+        for (const controller of harness.titleSyncRegistered) {
+            expect(controller).toBe(harness.titleSyncControllers[0]);
+        }
     });
 
     it('applies harness thinking transitions once per edge (#1470)', async () => {
