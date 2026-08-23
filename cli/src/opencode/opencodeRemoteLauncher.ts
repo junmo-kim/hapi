@@ -661,6 +661,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
 
             try {
                 this.conversationHistory.rememberPromptIndex(batch.items[0]?.localId, this.userPromptCounter++);
+                logger.debug(`[opencode-remote] history point: localId=${batch.items[0]?.localId} index=${this.userPromptCounter - 1} items=${batch.items.length}`);
                 void this.conversationHistory.publish().catch(() => {});
                 await backend.prompt(acpSessionId, promptContent, (message: AgentMessage) => {
                     this.handleAgentMessage(message);
