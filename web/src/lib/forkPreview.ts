@@ -6,10 +6,10 @@ export type ForkPreviewTurn = {
 }
 
 export type ForkPreview = {
-    /** Turns kept in the original session (shown above the boundary). */
+    /** Turns copied into the new session (shown above the fork point). */
     keptTurns: ForkPreviewTurn[]
-    /** Text of the message that starts the new session (below the boundary).
-     * Null for a current-tail fork where the new session starts empty. */
+    /** Text of the selected cutoff message, which is NOT copied into the
+     * new session. Null for a current-tail fork where nothing is excluded. */
     boundaryText: string | null
 }
 
@@ -36,9 +36,11 @@ function blockPreviewText(block: VisibleChatBlock): { role: 'user' | 'assistant'
 
 /**
  * Mirrors `hub/src/sync/forkTranscript.ts#selectForkTranscriptPrefix`:
- * a historical fork keeps everything BEFORE the boundary message and the
- * boundary message itself starts the new session; a current fork (no
- * `messageLocalId`) keeps the whole transcript and starts an empty child.
+ * a historical fork copies everything BEFORE the boundary message into the
+ * new session — the boundary message itself and anything after it stay out
+ * of the child; a current fork (no `messageLocalId`) copies the whole
+ * transcript. Queued rows (`invokedAt == null`) are never copied, matching
+ * the hub filter.
  */
 export function buildForkPreview(blocks: readonly VisibleChatBlock[], messageLocalId?: string): ForkPreview {
     let cutoff = blocks.length
@@ -52,6 +54,7 @@ export function buildForkPreview(blocks: readonly VisibleChatBlock[], messageLoc
 
     const turns: ForkPreviewTurn[] = []
     for (const block of blocks.slice(0, cutoff)) {
+        if (block.kind === 'user-text' && (block.invokedAt ?? null) === null) continue
         const entry = blockPreviewText(block)
         if (!entry) continue
         const previous = turns[turns.length - 1]

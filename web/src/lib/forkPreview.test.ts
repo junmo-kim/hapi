@@ -79,4 +79,14 @@ describe('buildForkPreview', () => {
         expect(preview.keptTurns).toEqual([])
         expect(preview.boundaryText).toBe('real question')
     })
+
+    it('omits queued (never-invoked) user blocks that the hub does not copy', () => {
+        const withQueued: VisibleChatBlock[] = [
+            user('answered question', 'u1'),
+            agent('answer'),
+            { ...user('queued prompt', 'u2'), invokedAt: null },
+        ]
+        const preview = buildForkPreview(withQueued)
+        expect(preview.keptTurns.map((turn) => turn.text)).toEqual(['answered question', 'answer'])
+    })
 })

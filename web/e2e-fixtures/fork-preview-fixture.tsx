@@ -34,7 +34,7 @@ function Fixture() {
         <ForkPreviewDialog
             isOpen={open}
             keptTurns={KEPT_TURNS}
-            boundaryText="third question — start of the new session"
+            boundaryText="third question — not copied into the new session"
             pending={false}
             onCancel={() => {
                 window.__forkPreviewE2E!.cancelled += 1

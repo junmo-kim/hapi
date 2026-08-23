@@ -48,6 +48,6 @@ test('localizes the dialog in Chinese', async ({ page }) => {
     await openFixture(page)
     const dialog = page.getByRole('dialog')
     await expect(dialog.getByRole('heading', { name: '从这里开始一个新会话' })).toBeVisible()
-    await expect(dialog.getByText('↑ 保留在原会话中')).toBeVisible()
+    await expect(dialog.getByText('↑ 会复制到新会话中')).toBeVisible()
     await expect(dialog.getByRole('button', { name: '在此分叉' })).toBeVisible()
 })
