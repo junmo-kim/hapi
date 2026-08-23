@@ -25,7 +25,7 @@ function asString(value: unknown): string | null {
     return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
-const FORK_PATH_MARKERS = ['session/{id}/fork', 'session/:id/fork'];
+const FORK_PATH_MARKERS = ['session/{sessionID}/fork', 'session/{id}/fork', 'session/:id/fork'];
 
 export class OpencodeConversationHistory {
     private states: ConversationHistoryCapabilityStates = { ...OPENCODE_CONVERSATION_HISTORY_INITIAL };
