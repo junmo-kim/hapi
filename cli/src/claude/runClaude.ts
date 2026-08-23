@@ -711,12 +711,13 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
                     // The just-completed turn is the tail of the active chain.
                     const turn = readNativeTurns(workingDirectory, sessionInstance.sessionId).at(-1)
                     if (!turn) return
-                    const newEntryIds: Record<string, string> = {}
-                    for (const localId of localIds) {
-                        promptUuidByLocalId.set(localId, turn.promptUuid)
-                        newEntryIds[localId] = turn.promptUuid
-                    }
-                    localIdsByPromptUuid.set(turn.promptUuid, localIds)
+                    // A joined batch is dropped natively as one turn: only its
+                    // FIRST local id is a rewind point. Advertising later ones
+                    // would let the hub truncate mid-batch while Claude drops
+                    // the whole batch, and the boundary must survive restarts.
+                    const boundaryLocalId = localIds[0]!
+                    promptUuidByLocalId.set(boundaryLocalId, turn.promptUuid)
+                    localIdsByPromptUuid.set(turn.promptUuid, [boundaryLocalId])
                     // Web renders the Rewind affordance from this per-message flag
                     // (same contract as codex/pi/grok); the hub scrubs truncated
                     // points and entry ids together with its message rows.
@@ -724,11 +725,11 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
                         ...metadata,
                         conversationHistoryPoints: {
                             ...metadata?.conversationHistoryPoints,
-                            ...Object.fromEntries(localIds.map((localId) => [localId, true as const]))
+                            [boundaryLocalId]: true as const
                         },
                         conversationHistoryEntryIds: {
                             ...metadata?.conversationHistoryEntryIds,
-                            ...newEntryIds
+                            [boundaryLocalId]: turn.promptUuid
                         }
                     }))
                 };

@@ -1,6 +1,8 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { getProjectPath } from './utils/path'
+import { isExternalUserMessage } from '@/api/apiSession'
+import type { RawJSONLines } from '@/claude/types'
 
 export type NativeTurn = {
     /** uuid of the user prompt entry that starts the turn. */
@@ -15,12 +17,6 @@ type TranscriptEntry = {
     parentUuid?: unknown
     isSidechain?: boolean
     message?: { content?: unknown }
-}
-
-function isPromptEntry(entry: TranscriptEntry): boolean {
-    const content = entry.message?.content
-    if (typeof content === 'string') return true
-    return Array.isArray(content) && content.some((block) => (block as { type?: string } | null)?.type === 'text')
 }
 
 /**
@@ -74,7 +70,10 @@ export function readNativeTurns(workingDirectory: string, sessionId: string): Na
         if (entry.type !== 'user' && entry.type !== 'assistant') continue
         const uuid = entry.uuid as string
         if (entry.type === 'user') {
-            if (!isPromptEntry(entry)) continue
+            // Reuse HAPI's classifier: Claude also writes system reminders, task
+            // notifications and command caveats as text-bearing user entries —
+            // those are not human turns and must not become rewind boundaries.
+            if (!isExternalUserMessage(entry as RawJSONLines)) continue
             turns.push({ promptUuid: uuid, endUuid: uuid })
         } else if (turns.length > 0) {
             turns[turns.length - 1]!.endUuid = uuid

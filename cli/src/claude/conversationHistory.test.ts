@@ -152,8 +152,16 @@ describe('readNativeTurns active chain', () => {
             line({ type: 'user', uuid: 'u2', parentUuid: 'as1', message: { role: 'user', content: 'Say TWO' } }),
             line({ type: 'assistant', uuid: 'as2', parentUuid: 'u2', message: { role: 'assistant', content: [{ type: 'text', text: 'TWO' }] } }),
             // new turn re-parented onto as1
+            line({
+                type: 'user',
+                uuid: 'inj',
+                parentUuid: 'as1',
+                isMeta: true,
+                message: { role: 'user', content: [{ type: 'text', text: '<system-reminder>context</system-reminder>' }] }
+            }),
             line({ type: 'user', uuid: 'u3', parentUuid: 'as1', message: { role: 'user', content: 'Say THREE' } }),
-            line({ type: 'assistant', uuid: 'as3', parentUuid: 'u3', message: { role: 'assistant', content: [{ type: 'text', text: 'THREE' }] } })
+            line({ type: 'user', uuid: 'u4', parentUuid: 'u3', message: { role: 'user', content: [{ type: 'text', text: '<task-notification>done</task-notification>' }] } }),
+            line({ type: 'assistant', uuid: 'as3', parentUuid: 'u4', message: { role: 'assistant', content: [{ type: 'text', text: 'THREE' }] } })
         ]
         try {
             writeLines(lines)
