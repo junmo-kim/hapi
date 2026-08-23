@@ -312,7 +312,7 @@ export class ApiClient {
         return await this.request<OpencodeLocalSessionsResponse>(`/api/opencode/sessions${query}`)
     }
 
-    async importOpencodeSessions(payload: { sessionIds: string[]; cwd?: string | null; machineId?: string | null }): Promise<OpencodeImportSessionsResponse> {
+    async importOpencodeSessions(payload: { sessionIds: string[]; cwd?: string | null; machineId?: string | null; model?: string | null; modelReasoningEffort?: string | null; permissionMode?: PermissionMode }): Promise<OpencodeImportSessionsResponse> {
         return await this.request<OpencodeImportSessionsResponse>('/api/opencode/import-sessions', {
             method: 'POST',
             body: JSON.stringify(payload)

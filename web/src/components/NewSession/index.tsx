@@ -1630,7 +1630,10 @@ export function NewSession(props: {
                 const result = await props.api.importOpencodeSessions({
                     sessionIds: [selectedOpencodeImportSession.id],
                     cwd: selectedOpencodeImportSession.cwd ?? trimmedDirectory,
-                    machineId: opencodeImportMachineId ?? machineId
+                    machineId: opencodeImportMachineId ?? machineId,
+                    model: resolvedModel ?? null,
+                    modelReasoningEffort: resolvedModelReasoningEffort ?? null,
+                    permissionMode: codexFamilyPermissionMode
                 })
                 const imported = result.results.find((item) => item.opencodeSessionId === selectedOpencodeImportSession.id)
                 if (imported?.error) {

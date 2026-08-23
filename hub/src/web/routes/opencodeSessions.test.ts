@@ -275,6 +275,60 @@ describe('OpenCode session import', () => {
         expect(store.messages.getAllMessages(first.hapiSessionId!)).toHaveLength(2)
     })
 
+    it('applies requested launch config to the imported session before reopen', async () => {
+        const { store } = setup()
+        const selectedMachine = machine('machine-1')
+        const applied: Array<Record<string, unknown>> = []
+        const engine = {
+            getOnlineMachinesByNamespace: () => [selectedMachine],
+            listOpencodeSessionsForMachine: async () => ({
+                success: true,
+                sessions: [transcript('native-launch', [userMessage('native-launch', 'msg-1', 'one', 1_000)])]
+            }),
+            applySessionConfig: async (sessionId: string, config: Record<string, unknown>) => {
+                applied.push({ sessionId, config })
+            },
+            recordSessionActivity: (sessionId: string, updatedAt: number) => {
+                store.sessions.touchSessionUpdatedAt(sessionId, updatedAt, 'default')
+            },
+            handleRealtimeEvent: () => {}
+        } as unknown as SyncEngine
+        const app = appWith(store, engine)
+
+        const response = await app.request('/api/opencode/import-sessions', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                sessionIds: ['native-launch'],
+                model: 'opengpt/5.2-max',
+                modelReasoningEffort: 'high',
+                permissionMode: 'yolo'
+            })
+        })
+        expect(response.status).toBe(200)
+        const body = await response.json() as { results: Array<{ hapiSessionId?: string }> }
+        const importedSessionId = body.results[0]?.hapiSessionId
+        expect(importedSessionId).toBeTruthy()
+        expect(applied).toEqual([{ sessionId: importedSessionId, config: { model: 'opengpt/5.2-max', modelReasoningEffort: 'high', permissionMode: 'yolo' } }])
+    })
+
+    it('rejects a permission mode that is not allowed for the opencode flavor', async () => {
+        const { store } = setup()
+        const selectedMachine = machine('machine-1')
+        const engine = {
+            getOnlineMachinesByNamespace: () => [selectedMachine],
+            listOpencodeSessionsForMachine: async () => ({ success: true, sessions: [] })
+        } as unknown as SyncEngine
+        const app = appWith(store, engine)
+
+        const response = await app.request('/api/opencode/import-sessions', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ sessionIds: ['native-x'], permissionMode: 'acceptEdits' })
+        })
+        expect(response.status).toBe(400)
+    })
+
     it('fails with session_active when the target session is active and new messages exist', () => {
         const { store, engine } = setup()
         const first = importOpencodeSession({

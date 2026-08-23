@@ -2,6 +2,8 @@ import { dirname } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { Hono } from 'hono'
 import type { OpencodeLocalSessionSummary, OpencodeLocalSessionWithMessages } from '@hapi/protocol/apiTypes'
+import { isPermissionModeAllowedForFlavor } from '@hapi/protocol/modes'
+import type { PermissionMode } from '@hapi/protocol/modes'
 import type { Metadata } from '@hapi/protocol/types'
 import type { Store, StoredMessage, StoredSession } from '../../store'
 import { ImportedMessageConflictError } from '../../store/messages'
@@ -296,6 +298,20 @@ export function createOpencodeSessionRoutes(options: {
             .filter((session): session is OpencodeLocalSessionWithMessages => 'messages' in session)
             .map((session) => [session.id, session]))
         const importedByOpencodeId = importedOpencodeSessionsById(options.store, namespace, machine.id)
+        const requestedModel = typeof body?.model === 'string' && body.model.trim().length > 0 ? body.model.trim() : null
+        const requestedModelReasoningEffort = typeof body?.modelReasoningEffort === 'string' && body.modelReasoningEffort.trim().length > 0
+            ? body.modelReasoningEffort.trim()
+            : null
+        const requestedPermissionMode = typeof body?.permissionMode === 'string' && body.permissionMode.trim().length > 0
+            ? body.permissionMode.trim()
+            : null
+        if (requestedPermissionMode && !isPermissionModeAllowedForFlavor(requestedPermissionMode as PermissionMode, 'opencode')) {
+            return c.json({ success: false, error: 'Invalid permission mode for OpenCode sessions', results: [] }, 400)
+        }
+        const launchConfig: Record<string, string> = {}
+        if (requestedModel) launchConfig.model = requestedModel
+        if (requestedModelReasoningEffort) launchConfig.modelReasoningEffort = requestedModelReasoningEffort
+        if (requestedPermissionMode && requestedPermissionMode !== 'default') launchConfig.permissionMode = requestedPermissionMode as PermissionMode
         const results: OpencodeImportResult[] = []
         for (const sessionId of uniqueSessionIds) {
             const transcript = byId.get(sessionId)
@@ -303,14 +319,18 @@ export function createOpencodeSessionRoutes(options: {
                 results.push({ opencodeSessionId: sessionId, error: { code: 'not_found', message: 'OpenCode session transcript not found' } })
                 continue
             }
-            results.push(await importWithLock(`${namespace}:${machine.id}:${sessionId}`, () => importOpencodeSession({
+            const result = await importWithLock(`${namespace}:${machine.id}:${sessionId}`, () => importOpencodeSession({
                 store: options.store,
                 engine,
                 namespace,
                 machine,
                 transcript,
                 existingSession: importedByOpencodeId.get(sessionId) ?? null
-            })))
+            }))
+            if (!result.error && result.hapiSessionId && Object.keys(launchConfig).length > 0) {
+                await engine.applySessionConfig(result.hapiSessionId, launchConfig)
+            }
+            results.push(result)
         }
         return c.json({ success: results.every((result) => !result.error), results, machineId: machine.id })
     })
