@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -106,21 +105,21 @@ function parseJson(value: unknown): JsonRecord | null {
     }
 }
 
-function collectTextParts(db: DatabaseLike, messageId: string): string[] {
-    let partRows: Array<{ data: unknown }> = []
+function collectTextParts(db: DatabaseLike, messageId: string): Array<{ id: string; text: string }> {
+    let partRows: Array<{ id: string; data: unknown }> = []
     try {
         partRows = db.query(
-            `SELECT data FROM part WHERE message_id = ? ORDER BY time_created ASC`
-        ).all(messageId) as Array<{ data: unknown }>
+            `SELECT id, data FROM part WHERE message_id = ? ORDER BY time_created ASC`
+        ).all(messageId) as Array<{ id: string; data: unknown }>
     } catch {
         return []
     }
-    const texts: string[] = []
+    const texts: Array<{ id: string; text: string }> = []
     for (const partRow of partRows) {
         const parsed = parseJson(partRow.data)
         if (parsed?.type !== 'text' || typeof parsed.text !== 'string') continue
         if (!parsed.text.trim()) continue
-        texts.push(parsed.text)
+        texts.push({ id: partRow.id, text: parsed.text })
     }
     return texts
 }
@@ -138,7 +137,8 @@ function extractLastUserMessage(db: DatabaseLike, sessionId: string): string | n
         const parsed = parseJson(messageRow.data)
         if (parsed?.role !== 'user') continue
         const text = collectTextParts(db, messageRow.id)
-            .filter((part) => !part.startsWith('<'))
+            .filter((part) => !part.text.startsWith('<'))
+            .map((part) => part.text)
             .join('')
             .trim()
         if (!text) continue
@@ -155,10 +155,10 @@ function importedUser(text: string): OpencodeImportedMessageContent {
     }
 }
 
-function importedAgent(text: string): OpencodeImportedMessageContent {
+function importedAgent(text: string, id: string): OpencodeImportedMessageContent {
     return {
         role: 'agent',
-        content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'message', message: text, id: randomUUID() } },
+        content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'message', message: text, id } },
         meta: { sentFrom: 'cli' }
     }
 }
@@ -184,11 +184,11 @@ async function buildSessionMessages(
             const role = typeof parsed?.role === 'string' ? parsed.role : null
             if (!role) continue
             createdAt = normalizeTimestamp(messageRow.time_created, createdAt)
-            for (const text of collectTextParts(db, messageRow.id)) {
+            for (const part of collectTextParts(db, messageRow.id)) {
                 messages.push({
-                    localId: `opencode:${summary.id}:${messageRow.id}:${randomUUID()}`,
+                    localId: `opencode:${summary.id}:${messageRow.id}:${part.id}`,
                     createdAt,
-                    content: role === 'user' ? importedUser(text) : importedAgent(text)
+                    content: role === 'user' ? importedUser(part.text) : importedAgent(part.text, part.id)
                 })
             }
         }
