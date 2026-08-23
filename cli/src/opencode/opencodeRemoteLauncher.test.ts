@@ -251,7 +251,7 @@ vi.mock('./utils/opencodeCompactBridge', () => ({
 
 const roundSummaryHarness = vi.hoisted(() => ({
     snapshotCalls: [] as Array<{ baseUrl: string; sessionId: string }>,
-    summaryCalls: [] as Array<{ promptText: string; durationMs: number }>,
+    summaryCalls: [] as Array<{ promptText: string; durationMs: number; snapshot: { messageIds: string[] } }>,
     snapshot: { messageIds: [] } as { messageIds: string[] } | null,
     snapshotImpl: null as null | (() => Promise<unknown>),
     summary: {
@@ -269,12 +269,17 @@ vi.mock('./utils/opencodeRoundSummary', () => ({
         if (roundSummaryHarness.snapshotImpl) return roundSummaryHarness.snapshotImpl();
         return roundSummaryHarness.snapshot;
     }),
-    fetchOpencodeRoundSummary: vi.fn(async (opts: { promptText: string; durationMs: number }) => {
+    fetchOpencodeRoundSummary: vi.fn(async (opts: { promptText: string; durationMs: number; snapshot: { messageIds: string[] } }) => {
         roundSummaryHarness.summaryCalls.push(opts);
-        if (roundSummaryHarness.summaryImpl) return roundSummaryHarness.summaryImpl();
-        return harness.events.lastIndexOf('prompt:start') > harness.events.lastIndexOf('prompt:end')
-            ? null
-            : roundSummaryHarness.summary;
+        const summary = roundSummaryHarness.summaryImpl
+            ? await roundSummaryHarness.summaryImpl()
+            : harness.events.lastIndexOf('prompt:start') > harness.events.lastIndexOf('prompt:end')
+                ? null
+                : roundSummaryHarness.summary;
+        return {
+            snapshot: { messageIds: [...opts.snapshot.messageIds, 'post-' + roundSummaryHarness.summaryCalls.length] },
+            summary
+        };
     })
 }));
 
@@ -2337,6 +2342,38 @@ describe('selectAbortStatusMessage', () => {
         expect(sentAgentMessages).toEqual([expect.objectContaining({ type: 'round-summary' })]);
         expect(sessionEvents).toEqual([{ type: 'ready' }]);
         expect(deliveryEvents).toEqual(['agent', 'ready']);
+    });
+
+    it('reuses the previous post-fetch snapshot instead of blocking a second prompt on another pre-fetch', async () => {
+        roundSummaryHarness.snapshotCalls = [];
+        roundSummaryHarness.summaryCalls = [];
+        const { session } = createSessionStub([
+            { message: 'first round', mode: createMode() },
+            { message: 'second round', mode: createMode() }
+        ]);
+
+        await opencodeRemoteLauncher(session as never);
+
+        expect(roundSummaryHarness.summaryCalls.map((call) => call.snapshot.messageIds)).toEqual([[], ['post-1']]);
+        expect(roundSummaryHarness.snapshotCalls).toHaveLength(1);
+        expect(roundSummaryHarness.summaryCalls).toHaveLength(2);
+    });
+
+    it('recaptures after an explicit compact invalidates the previous post-fetch snapshot', async () => {
+        roundSummaryHarness.snapshotCalls = [];
+        roundSummaryHarness.summaryCalls = [];
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        const { session } = createSessionStub([
+            { message: 'first round', mode: createMode('ollama/x') },
+            { message: '', mode: createCompactMode('ollama/x') },
+            { message: 'second round', mode: createMode('ollama/x') }
+        ]);
+
+        await opencodeRemoteLauncher(session as never);
+
+        expect(compactHarness.calls).toHaveLength(1);
+        expect(roundSummaryHarness.snapshotCalls).toHaveLength(2);
+        expect(roundSummaryHarness.summaryCalls.map((call) => call.snapshot.messageIds)).toEqual([[], []]);
     });
 
     it('keeps prompt completion and ready when post-fetch summary aggregation fails', async () => {

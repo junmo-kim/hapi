@@ -19,6 +19,11 @@ export type OpencodeRoundSummary = {
     durationMs: number;
 };
 
+export type OpencodeRoundSummaryResult = {
+    snapshot: OpencodeRoundSnapshot;
+    summary: OpencodeRoundSummary | null;
+};
+
 type OpencodeMessage = {
     info?: {
         id?: unknown;
@@ -163,7 +168,7 @@ export async function fetchOpencodeRoundSummary(options: RoundFetchOptions & {
     promptText: string;
     snapshot: OpencodeRoundSnapshot;
     durationMs: number;
-}): Promise<OpencodeRoundSummary | null> {
+}): Promise<OpencodeRoundSummaryResult | null> {
     if (finiteNonNegative(options.durationMs) === null) return null;
     const messages = await fetchMessages(options);
     if (!messages) return null;
@@ -171,16 +176,19 @@ export async function fetchOpencodeRoundSummary(options: RoundFetchOptions & {
     const before = new Set(options.snapshot.messageIds);
     if (before.size !== options.snapshot.messageIds.length) return null;
     const seen = new Set<string>();
+    const messageIds: string[] = [];
     const delta: OpencodeMessage[] = [];
     for (const message of messages) {
         const id = messageId(message);
         if (!id || seen.has(id)) return null;
         seen.add(id);
+        messageIds.push(id);
         if (!before.has(id)) delta.push(message);
     }
 
     const hasOriginalPrompt = delta.some((message) => message.info?.role === 'user' && messageText(message) === options.promptText);
     if (!hasOriginalPrompt) return null;
+    const snapshot = { messageIds };
 
     const usage: OpencodeRoundModelUsage = {
         inputTokens: 0,
@@ -194,7 +202,7 @@ export async function fetchOpencodeRoundSummary(options: RoundFetchOptions & {
     for (const message of delta) {
         if (message.info?.role !== 'assistant') continue;
         const parsed = parseAssistantUsage(message);
-        if (!parsed) return null;
+        if (!parsed) return { snapshot, summary: null };
         let perModel = modelUsage.get(parsed.key);
         if (!perModel) {
             perModel = {
@@ -205,17 +213,22 @@ export async function fetchOpencodeRoundSummary(options: RoundFetchOptions & {
             };
             modelUsage.set(parsed.key, perModel);
         }
-        if (!addUsage(perModel, parsed.usage) || !addUsage(usage, parsed.usage)) return null;
+        if (!addUsage(perModel, parsed.usage) || !addUsage(usage, parsed.usage)) return { snapshot, summary: null };
         totalCostUsd += parsed.cost;
         numTurns++;
     }
-    if (numTurns === 0 || !Number.isSafeInteger(numTurns) || !Number.isFinite(totalCostUsd)) return null;
+    if (numTurns === 0 || !Number.isSafeInteger(numTurns) || !Number.isFinite(totalCostUsd)) {
+        return { snapshot, summary: null };
+    }
 
     return {
-        usage,
-        modelUsage: Object.fromEntries(modelUsage),
-        ...(totalCostUsd > 0 ? { totalCostUsd } : {}),
-        numTurns,
-        durationMs: options.durationMs
+        snapshot,
+        summary: {
+            usage,
+            modelUsage: Object.fromEntries(modelUsage),
+            ...(totalCostUsd > 0 ? { totalCostUsd } : {}),
+            numTurns,
+            durationMs: options.durationMs
+        }
     };
 }

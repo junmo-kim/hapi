@@ -14,7 +14,7 @@ import type { OpencodeMode, PermissionMode } from './types';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { allocateFreePort, createOpencodeBackend } from './utils/opencodeBackend';
 import { captureCompactionMarkerSnapshot, fetchCompactionResult, splitProviderModel, triggerOpencodeCompact } from './utils/opencodeCompactBridge';
-import { captureOpencodeRoundSnapshot, fetchOpencodeRoundSummary } from './utils/opencodeRoundSummary';
+import { captureOpencodeRoundSnapshot, fetchOpencodeRoundSummary, type OpencodeRoundSnapshot } from './utils/opencodeRoundSummary';
 import { formatOpencodePromptError } from './utils/opencodeErrorText';
 import {
     formatOpencodeRetryStatus,
@@ -137,6 +137,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     // the launcher stays wedged until it eventually settles on its own.
     private compactAbortController: AbortController | null = null;
     private roundSummaryAbortController: AbortController | null = null;
+    /** Validated ID boundary returned by the previous post-prompt fetch; explicit history mutations clear it. */
+    private nextRoundSnapshot: OpencodeRoundSnapshot | null = null;
     // A plain Stop must keep waiting only while the summarize POST is
     // actually in flight. That POST can outlive a client-side abort while
     // continuing to mutate the shared OpenCode session, so advancing to a
@@ -603,6 +605,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     continue;
                 }
 
+                this.nextRoundSnapshot = null;
                 session.onThinkingChange(true);
                 try {
                     await this.runCompactOperation(acpSessionId, compactAbortController, compactLocalId);
@@ -624,13 +627,14 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             this.stallErrorReportedForPrompt = false;
             const roundSummaryAbortController = new AbortController();
             this.roundSummaryAbortController = roundSummaryAbortController;
-            const roundSnapshot = this.baseUrl
+            const roundSnapshot = this.nextRoundSnapshot ?? (this.baseUrl
                 ? await captureOpencodeRoundSnapshot({
                     baseUrl: this.baseUrl,
                     sessionId: acpSessionId,
                     signal: roundSummaryAbortController.signal
                 })
-                : null;
+                : null);
+            this.nextRoundSnapshot = null;
             if (
                 this.roundSummaryAbortController !== roundSummaryAbortController
                 || roundSummaryAbortController.signal.aborted
@@ -676,7 +680,7 @@ ${messageText}`;
                     && this.baseUrl
                     && roundSnapshot
                 ) {
-                    const summary = await settleRoundSummary(
+                    const result = await settleRoundSummary(
                         fetchOpencodeRoundSummary({
                             baseUrl: this.baseUrl,
                             sessionId: acpSessionId,
@@ -687,7 +691,10 @@ ${messageText}`;
                         }),
                         roundSummaryAbortController
                     );
-                    if (summary) this.handleAgentMessage({ type: 'round_summary', summary });
+                    if (result) {
+                        this.nextRoundSnapshot = result.snapshot;
+                        if (result.summary) this.handleAgentMessage({ type: 'round_summary', summary: result.summary });
+                    }
                 }
                 if (this.roundSummaryAbortController === roundSummaryAbortController) {
                     this.roundSummaryAbortController = null;

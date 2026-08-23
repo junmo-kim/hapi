@@ -22,7 +22,7 @@ describe('OpenCode round model key isolation', () => {
             ]), { status: 200 }))
         });
 
-        expect(result?.modelUsage).toEqual({
+        expect(result?.summary?.modelUsage).toEqual({
             '__proto__/__proto__': { inputTokens: 1, outputTokens: 2, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 }
         });
         expect(Object.prototype).not.toHaveProperty('inputTokens');

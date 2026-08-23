@@ -78,7 +78,11 @@ describe('fetchOpencodeRoundSummary', () => {
             })
         ];
 
-        await expect(fetchOpencodeRoundSummary(options(messages))).resolves.toEqual({
+        const result = await fetchOpencodeRoundSummary(options(messages));
+        expect(result?.snapshot.messageIds).toEqual([
+            'old-user', 'old-assistant', 'prompt-user', 'tool-step', 'stop-step', 'other-model'
+        ]);
+        expect(result?.summary).toEqual({
             usage: {
                 inputTokens: 220,
                 outputTokens: 44,
@@ -118,23 +122,37 @@ describe('fetchOpencodeRoundSummary', () => {
         ];
 
         const result = await fetchOpencodeRoundSummary(options(messages));
-        expect(result).toMatchObject({ numTurns: 3, usage: { inputTokens: 60, outputTokens: 9 } });
+        expect(result?.summary).toMatchObject({ numTurns: 3, usage: { inputTokens: 60, outputTokens: 9 } });
     });
 
     it('omits zero cost while preserving a valid free round', async () => {
         const messages = [user('old-user', 'earlier'), assistant('old-assistant', 'old-user'), user('prompt-user', 'original prompt'), assistant('new', 'prompt-user')];
         const result = await fetchOpencodeRoundSummary(options(messages));
-        expect(result).toMatchObject({ numTurns: 1 });
-        expect(result).not.toHaveProperty('totalCostUsd');
+        expect(result?.summary).toMatchObject({ numTurns: 1 });
+        expect(result?.summary).not.toHaveProperty('totalCostUsd');
+    });
+
+    it('returns the validated post-fetch snapshot when malformed usage omits only the summary', async () => {
+        const messages = [
+            user('old-user', 'earlier'),
+            assistant('old-assistant', 'old-user'),
+            user('prompt-user', 'original prompt'),
+            assistant('bad-model', 'prompt-user', { modelID: '' })
+        ];
+
+        await expect(fetchOpencodeRoundSummary(options(messages))).resolves.toEqual({
+            snapshot: { messageIds: ['old-user', 'old-assistant', 'prompt-user', 'bad-model'] },
+            summary: null
+        });
     });
 
     it('fails closed for missing original prompt, no assistant, malformed model/token shapes, unsafe counters, and non-finite numbers', async () => {
         const base = [user('old-user', 'earlier'), assistant('old-assistant', 'old-user')];
-        await expect(fetchOpencodeRoundSummary(options([...base, assistant('new', 'unknown')]))).resolves.toBeNull();
-        await expect(fetchOpencodeRoundSummary(options([...base, user('prompt-user', 'original prompt')]))).resolves.toBeNull();
-        await expect(fetchOpencodeRoundSummary(options([...base, user('prompt-user', 'original prompt'), assistant('bad-model', 'prompt-user', { modelID: '' })]))).resolves.toBeNull();
-        await expect(fetchOpencodeRoundSummary(options([...base, user('prompt-user', 'original prompt'), assistant('unsafe', 'prompt-user', { tokens: { input: Number.MAX_SAFE_INTEGER + 1, output: 2, reasoning: 0, cache: { read: 0, write: 0 } } })]))).resolves.toBeNull();
-        await expect(fetchOpencodeRoundSummary(options([...base, user('prompt-user', 'original prompt'), assistant('infinite-cost', 'prompt-user', { cost: Infinity })]))).resolves.toBeNull();
+        expect((await fetchOpencodeRoundSummary(options([...base, assistant('new', 'unknown')])))?.summary ?? null).toBeNull();
+        expect((await fetchOpencodeRoundSummary(options([...base, user('prompt-user', 'original prompt')])))?.summary ?? null).toBeNull();
+        expect((await fetchOpencodeRoundSummary(options([...base, user('prompt-user', 'original prompt'), assistant('bad-model', 'prompt-user', { modelID: '' })])))?.summary ?? null).toBeNull();
+        expect((await fetchOpencodeRoundSummary(options([...base, user('prompt-user', 'original prompt'), assistant('unsafe', 'prompt-user', { tokens: { input: Number.MAX_SAFE_INTEGER + 1, output: 2, reasoning: 0, cache: { read: 0, write: 0 } } })])))?.summary ?? null).toBeNull();
+        expect((await fetchOpencodeRoundSummary(options([...base, user('prompt-user', 'original prompt'), assistant('infinite-cost', 'prompt-user', { cost: Infinity })])))?.summary ?? null).toBeNull();
     });
 
     it('fails closed for a post-fetch API or parse failure without exposing the response body', async () => {
