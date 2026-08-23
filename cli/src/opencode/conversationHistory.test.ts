@@ -18,13 +18,8 @@ function createContext(baseUrl: string | null, sessionId: string | null) {
 describe('OpencodeConversationHistory probeCapabilities', () => {
     it('marks fork capabilities supported when the openapi doc contains the fork path', async () => {
         const fetchImpl: FetchLike = vi.fn(async (url: string) => {
-            expect(url).toBe('http://127.0.0.1:48273/openapi.json');
-            return jsonResponse({
-                paths: {
-                    '/session/{id}/fork': { post: {} },
-                    '/session/{id}/message': { get: {} }
-                }
-            });
+            expect(url).toBe('http://127.0.0.1:48273/doc');
+            return new Response('<html>session/{id}/fork POST</html>', { status: 200 });
         });
 
         const history = new OpencodeConversationHistory(createContext('http://127.0.0.1:48273', 'ses_1'), fetchImpl);
@@ -34,11 +29,15 @@ describe('OpencodeConversationHistory probeCapabilities', () => {
         expect(capabilities).toEqual({ forkCurrent: true, forkAtMessage: true });
     });
 
-    it('falls back to /doc when openapi.json fails and still detects the fork path', async () => {
+    it('falls through to /openapi.json when /doc serves a 200 body without the fork path', async () => {
         const fetchImpl: FetchLike = vi.fn(async (url: string) => {
-            if (url.endsWith('/openapi.json')) return new Response('not found', { status: 404 });
-            expect(url).toBe('http://127.0.0.1:48273/doc');
-            return new Response('<html>session/:id/fork POST</html>', { status: 200 });
+            if (url.endsWith('/doc')) return new Response('<html>app shell</html>', { status: 200 });
+            expect(url).toBe('http://127.0.0.1:48273/openapi.json');
+            return jsonResponse({
+                paths: {
+                    '/session/{id}/fork': { post: {} }
+                }
+            });
         });
 
         const history = new OpencodeConversationHistory(createContext('http://127.0.0.1:48273', 'ses_1'), fetchImpl);

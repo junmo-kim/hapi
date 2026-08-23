@@ -93,13 +93,17 @@ export class OpencodeConversationHistory {
         if (!baseUrl || !sessionId) return;
 
         try {
-            let bodyText: string | null = null;
-            try {
-                bodyText = await this.fetchDocText(`${baseUrl}/openapi.json`);
-            } catch {
-                bodyText = await this.fetchDocText(`${baseUrl}/doc`);
+            // `/openapi.json` serves an HTML app shell with HTTP 200 on some
+            // versions, so a marker miss must fall through to the next
+            // candidate rather than concluding "unsupported".
+            let forkSupported = false;
+            for (const url of [`${baseUrl}/doc`, `${baseUrl}/openapi.json`]) {
+                const bodyText = await this.fetchDocText(url);
+                if (bodyText !== null && FORK_PATH_MARKERS.some((marker) => bodyText.includes(marker))) {
+                    forkSupported = true;
+                    break;
+                }
             }
-            const forkSupported = bodyText !== null && FORK_PATH_MARKERS.some((marker) => bodyText.includes(marker));
             this.states = forkSupported
                 ? markSupported(markSupported(this.states, 'forkCurrent'), 'forkAtMessage')
                 : markUnsupported(markUnsupported(this.states, 'forkCurrent'), 'forkAtMessage');
