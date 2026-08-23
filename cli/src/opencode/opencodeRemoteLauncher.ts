@@ -245,10 +245,16 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         // load/new below): loop.ts seeds onSessionFound with the resume id
         // before ACP initialize, so the hub's exact-binding wait must not
         // succeed until this point (same fence as Pi).
+        if (strictForkResume && resumeSessionId && acpSessionId !== resumeSessionId) {
+            // OpenCode replaced the forked native id — binding readiness to a
+            // different session would report a successful fork for context
+            // the child never loaded.
+            throw new Error('OpenCode fork loaded a different native session');
+        }
+        session.onSessionFound(acpSessionId);
         if ((resumeSessionId || strictForkResume) && typeof session.client.emitSessionReady === 'function') {
             session.client.emitSessionReady();
         }
-        session.onSessionFound(acpSessionId);
         this.activeAcpSessionId = acpSessionId;
 
         // Upstream retries are announced only on the agent's own event
@@ -693,10 +699,20 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     session.onThinkingChange(true);
                     try {
                         await this.runCompactOperation(acpSessionId, compactAbortController, compactLocalId);
-                        // Compaction can change how many native user messages
-                        // exist; re-derive the fork index on the next prompt.
+                        // Compaction can reindex native history: old absolute
+                        // indexes and their locators are invalid afterwards.
+                        this.conversationHistory.clearPromptIndexes();
                         this.nativeUserIndexCursor = null;
                         this.nativeUserCountAttempted = false;
+                        try {
+                            session.client.updateMetadata((metadata) => ({
+                                ...metadata,
+                                conversationHistoryPoints: undefined,
+                                conversationHistoryIndexes: undefined
+                            }));
+                        } catch {
+                            // best-effort; transient hub disconnects must not crash the loop
+                        }
                     } finally {
                         session.onThinkingChange(false);
                         if (session.queue.size() === 0 && !this.shouldExit) {
@@ -736,9 +752,14 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 let nativeUserCount = this.nativeUserIndexCursor;
                 if (nativeUserCount === null && !this.nativeUserCountAttempted) {
                     // Try the native count exactly once: an endpoint that stalls
-                    // or fails must not re-add its timeout to every turn.
+                    // or fails must not re-add its timeout to every turn. The
+                    // lookup also honours the batch abort signal so a Stop that
+                    // lands mid-lookup still cancels the turn.
                     this.nativeUserCountAttempted = true;
-                    nativeUserCount = await this.conversationHistory.getNativeUserMessageCount();
+                    nativeUserCount = await this.conversationHistory.getNativeUserMessageCount(waitSignal);
+                }
+                if (waitSignal.aborted || this.shouldExit) {
+                    continue;
                 }
                 if (nativeUserCount === null) {
                     logger.warn('[opencode-remote] Native history unavailable; skipping fork point');

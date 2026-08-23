@@ -65,6 +65,11 @@ export class OpencodeConversationHistory {
         await this.publishCapabilities?.();
     }
 
+    /** Drops all persisted locators (e.g. compaction reindexes native history). */
+    clearPromptIndexes(): void {
+        this.promptIndexByLocalId.clear();
+    }
+
     setBusy(busy: boolean): void {
         this.busy = busy;
     }
@@ -222,7 +227,7 @@ export class OpencodeConversationHistory {
     }
 
     /** Number of user messages already in the native session, or null when unknown. */
-    async getNativeUserMessageCount(): Promise<number | null> {
+    async getNativeUserMessageCount(signal?: AbortSignal): Promise<number | null> {
         const { baseUrl, sessionId } = this.getContext();
         if (!baseUrl || !sessionId) return null;
         try {
@@ -230,7 +235,7 @@ export class OpencodeConversationHistory {
                 `${baseUrl}/session/${encodeURIComponent(sessionId)}/message`,
                 // Bounded wait: this lookup runs before every first prompt, so a
                 // stalled loopback endpoint must not block the turn forever.
-                { method: 'GET', signal: AbortSignal.timeout(5_000) }
+                { method: 'GET', signal: AbortSignal.any([AbortSignal.timeout(5_000), ...(signal ? [signal] : [])]) }
             );
             if (!response.ok) return null;
             const data: unknown = await response.json().catch(() => null);
