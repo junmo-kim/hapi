@@ -299,6 +299,9 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         if (historyDiverged) {
             // Drop stale locators and hide history affordances: the native
             // session no longer corresponds to the persisted HAPI transcript.
+            // The CLI refuses forks too (defense in depth alongside the hub's
+            // conversationHistoryDiverged gate).
+            void this.conversationHistory.disableFork().catch(() => {});
             try {
                 session.client.updateMetadata((metadata) => {
                     const capabilities = { ...metadata?.capabilities };
@@ -680,6 +683,9 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     session.onThinkingChange(true);
                     try {
                         await this.runCompactOperation(acpSessionId, compactAbortController, compactLocalId);
+                        // Compaction can change how many native user messages
+                        // exist; re-derive the fork index on the next prompt.
+                        this.nativeUserIndexCursor = null;
                     } finally {
                         session.onThinkingChange(false);
                         if (session.queue.size() === 0 && !this.shouldExit) {
@@ -732,6 +738,10 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     this.handleAgentMessage(message);
                 });
                 if (nativeUserCount !== null) {
+                    // Multi-message batches are joined into one native prompt, so
+                    // only the first item's localId becomes a fork point (same
+                    // merge semantics as grok); the cursor advances by one
+                    // because natively exactly one user message was added.
                     this.nativeUserIndexCursor = nativeUserCount + 1;
                     this.conversationHistory.rememberPromptIndex(batch.items[0]?.localId, nativeUserCount);
                     void this.conversationHistory.publish().catch(() => {});

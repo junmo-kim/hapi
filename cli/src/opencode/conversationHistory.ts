@@ -17,6 +17,11 @@ type OpencodeMessageEntry = {
     };
 };
 
+function isRouteMissing(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    return /\((404|405)\)/.test(message);
+}
+
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
     return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -46,12 +51,18 @@ export class OpencodeConversationHistory {
     private readonly fetchFn: FetchLike;
 
     setPublishCapabilities(fn: () => Promise<void>): void {
-        this.publishCapabilities = fn
+        this.publishCapabilities = fn;
     }
 
     /** Pushes current history points/indexes into session metadata (best-effort). */
     async publish(): Promise<void> {
         await this.publishCapabilities?.()
+    }
+
+    /** Permanently hides fork affordances (e.g. after native/HAPI divergence). */
+    async disableFork(): Promise<void> {
+        this.states = markUnsupported(markUnsupported(this.states, 'forkCurrent'), 'forkAtMessage');
+        await this.publishCapabilities?.();
     }
 
     setBusy(busy: boolean): void {
@@ -129,7 +140,7 @@ export class OpencodeConversationHistory {
     }
 
     private async fetchDocText(url: string): Promise<string> {
-        const response = await this.fetchFn(url, { method: 'GET' });
+        const response = await this.fetchFn(url, { method: 'GET', signal: AbortSignal.timeout(5_000) });
         if (!response.ok) throw new Error(`GET ${url} failed (${response.status})`);
         return await response.text();
     }
@@ -159,7 +170,8 @@ export class OpencodeConversationHistory {
                 {
                     method: 'POST',
                     headers: { 'content-type': 'application/json' },
-                    body: JSON.stringify(messageID ? { messageID } : {})
+                    body: JSON.stringify(messageID ? { messageID } : {}),
+                    signal: AbortSignal.timeout(10_000)
                 }
             );
             if (!response.ok) {
@@ -174,7 +186,9 @@ export class OpencodeConversationHistory {
             await this.publishCapabilities?.();
             return { nativeSessionId };
         } catch (error) {
-            if (!messageID) {
+            // Only a missing route hides the capability; transient network or
+            // server errors must not permanently disable an advertised fork.
+            if (!messageID && isRouteMissing(error)) {
                 this.states = markUnsupported(this.states, 'forkCurrent');
                 await this.publishCapabilities?.();
             }
@@ -185,7 +199,7 @@ export class OpencodeConversationHistory {
     private async resolveUserMessageID(baseUrl: string, sessionId: string, targetPromptIndex: number): Promise<string> {
         const response = await this.fetchFn(
             `${baseUrl}/session/${encodeURIComponent(sessionId)}/message`,
-            { method: 'GET' }
+            { method: 'GET', signal: AbortSignal.timeout(10_000) }
         );
         if (!response.ok) throw new Error(`OpenCode message lookup failed (${response.status})`);
         const data: unknown = await response.json().catch(() => null);
