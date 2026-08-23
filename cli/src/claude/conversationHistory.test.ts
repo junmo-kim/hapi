@@ -14,10 +14,11 @@ function prompt(uuid: string, text: string): string {
     return line({ type: 'user', uuid, message: { role: 'user', content: [{ type: 'text', text }] } })
 }
 
-function toolResult(uuid: string): string {
+function toolResult(uuid: string, parentUuid?: string): string {
     return line({
         type: 'user',
         uuid,
+        parentUuid,
         message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'ok' }] }
     })
 }
@@ -50,13 +51,13 @@ describe('readNativeTurns', () => {
         const root = writeTranscript([
             line({ type: 'queue-operation', uuid: 'q1' }),
             attachment('a0'),
-            prompt('u1', 'Say ONE'),
-            assistant('as1', 'ONE'),
-            toolResult('tr1'),
-            prompt('u2', 'Say TWO'),
-            assistant('as2', 'TWO'),
+            line({ type: 'user', uuid: 'u1', parentUuid: 'a0', message: { role: 'user', content: [{ type: 'text', text: 'Say ONE' }] } }),
+            line({ type: 'assistant', uuid: 'as1', parentUuid: 'u1', message: { role: 'assistant', content: [{ type: 'text', text: 'ONE' }] } }),
+            toolResult('tr1', 'as1'),
+            line({ type: 'user', uuid: 'u2', parentUuid: 'tr1', message: { role: 'user', content: [{ type: 'text', text: 'Say TWO' }] } }),
+            line({ type: 'assistant', uuid: 'as2', parentUuid: 'u2', message: { role: 'assistant', content: [{ type: 'text', text: 'TWO' }] } }),
             sidechain('sc1'),
-            prompt('u3', 'Say THREE')
+            line({ type: 'user', uuid: 'u3', parentUuid: 'as2', message: { role: 'user', content: [{ type: 'text', text: 'Say THREE' }] } })
         ])
         try {
             process.env.CLAUDE_CONFIG_DIR = root.replace(/\/projects$/, '')
@@ -105,14 +106,65 @@ describe('resolveRewindPlan', () => {
     ]
 
     it('keeps the previous turn boundary and drops the selected turn onward', () => {
-        expect(resolveRewindPlan(turns, 1)).toEqual({
+        expect(resolveRewindPlan(turns, 'u2')).toEqual({
             resumeSessionAt: 'as1',
             dropsTurns: ['u2', 'u3']
         })
     })
 
-    it('rejects dropping the first turn and out-of-range indexes', () => {
-        expect(() => resolveRewindPlan(turns, 0)).toThrow('Cannot rewind the first message')
-        expect(() => resolveRewindPlan(turns, 3)).toThrow('no native history')
+    it('rejects unknown prompts and dropping the first turn', () => {
+        expect(() => resolveRewindPlan(turns, 'nope')).toThrow('No native history point')
+        expect(() => resolveRewindPlan(turns, 'u1')).toThrow('Cannot rewind the first message')
+    })
+})
+
+describe('readNativeTurns active chain', () => {
+    function writeLines(lines: string[]): void {
+        const root = writeTranscript(lines)
+        process.env.CLAUDE_CONFIG_DIR = root.replace(/\/projects$/, '')
+    }
+
+    it('ignores orphaned branches left by a previous rewind', () => {
+        // u1 -> as1 -> (orphaned: u2 -> as2) ; after rewind the new turn re-parents onto as1
+        const lines = [
+            line({ type: 'user', uuid: 'u1', parentUuid: 'p0', message: { role: 'user', content: 'Say ONE' } }),
+            line({ type: 'assistant', uuid: 'as1', parentUuid: 'x0', message: { role: 'assistant', content: [{ type: 'text', text: 'ONE' }] } }),
+            line({ type: 'user', uuid: 'u2', parentUuid: 'as1', message: { role: 'user', content: 'Say TWO' } }),
+            line({ type: 'assistant', uuid: 'as2', parentUuid: 'u2', message: { role: 'assistant', content: [{ type: 'text', text: 'TWO' }] } })
+        ]
+        try {
+            writeLines(lines)
+            // tail is as2; walking parents from as2 only reaches the orphaned branch
+            expect(readNativeTurns(CWD, 'session-a')).toEqual([
+                { promptUuid: 'u2', endUuid: 'as2' }
+            ])
+        } finally {
+            delete process.env.CLAUDE_CONFIG_DIR
+        }
+    })
+
+    it('follows re-parented turns across a rewind boundary', () => {
+        const lines = [
+            line({ type: 'user', uuid: 'u1', parentUuid: 'p0', message: { role: 'user', content: 'Say ONE' } }),
+            line({ type: 'attachment', uuid: 'att', parentUuid: 'u1' }),
+            line({ type: 'assistant', uuid: 'as1', parentUuid: 'att', message: { role: 'assistant', content: [{ type: 'text', text: 'ONE' }] } }),
+            // orphaned branch
+            line({ type: 'user', uuid: 'u2', parentUuid: 'as1', message: { role: 'user', content: 'Say TWO' } }),
+            line({ type: 'assistant', uuid: 'as2', parentUuid: 'u2', message: { role: 'assistant', content: [{ type: 'text', text: 'TWO' }] } }),
+            // new turn re-parented onto as1
+            line({ type: 'user', uuid: 'u3', parentUuid: 'as1', message: { role: 'user', content: 'Say THREE' } }),
+            line({ type: 'assistant', uuid: 'as3', parentUuid: 'u3', message: { role: 'assistant', content: [{ type: 'text', text: 'THREE' }] } })
+        ]
+        try {
+            writeLines(lines)
+            const turns = readNativeTurns(CWD, 'session-a')
+            expect(turns.map((t) => t.promptUuid)).toEqual(['u1', 'u3'])
+            expect(resolveRewindPlan(turns, 'u3')).toEqual({
+                resumeSessionAt: 'as1',
+                dropsTurns: ['u3']
+            })
+        } finally {
+            delete process.env.CLAUDE_CONFIG_DIR
+        }
     })
 })

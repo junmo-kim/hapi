@@ -36,6 +36,12 @@ interface PermissionsField {
 // is dropped, so a later unrelated failure gets its own fresh budget. Only
 // the one message is given up on -- the session/process itself is not ended.
 const MAX_IMMEDIATE_RESPAWN_FAILURES = 3;
+/**
+ * A rewind respawn emits no system/init until its first prompt, but a rejected
+ * resume exits within moments of spawn. If the new attempt survives this long,
+ * the resume flags were accepted and the truncation is treated as applied.
+ */
+const REWIND_CONFIRM_MS = 8_000;
 
 function getRespawnBackoffMs(): number {
     const raw = process.env.CLAUDE_REMOTE_RESPAWN_BACKOFF_MS;
@@ -167,6 +173,13 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
 
         const handleSessionFound = (sessionId: string) => {
             sdkToLogConverter.updateSessionId(sessionId);
+            // Rewind restart: system/init means the respawned process started
+            // with the resume flags accepted — the native truncation is real.
+            if (session.rewindAck) {
+                const ack = session.rewindAck;
+                session.rewindAck = null;
+                ack(true);
+            }
         };
         this.handleSessionFound = handleSessionFound;
         session.addSessionFoundCallback(handleSessionFound);
@@ -350,6 +363,18 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                 }
 
                 previousSessionId = session.sessionId;
+                // Rewind confirmation: surviving this window means the resume
+                // flags were accepted (a rejected resume exits almost immediately).
+                let rewindConfirmTimer: ReturnType<typeof setTimeout> | null = null;
+                if (session.rewindAck) {
+                    rewindConfirmTimer = setTimeout(() => {
+                        if (session.rewindAck) {
+                            const ack = session.rewindAck;
+                            session.rewindAck = null;
+                            ack(true);
+                        }
+                    }, REWIND_CONFIRM_MS);
+                }
                 const controller = new AbortController();
                 this.abortController = controller;
                 this.abortFuture = new Future<void>();
@@ -552,6 +577,17 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                         signal: controller.signal,
                     });
 
+                    // Attempt finished cleanly: the resume flags were accepted.
+                    if (rewindConfirmTimer) {
+                        clearTimeout(rewindConfirmTimer);
+                        rewindConfirmTimer = null;
+                        if (session.rewindAck) {
+                            const ack = session.rewindAck;
+                            session.rewindAck = null;
+                            ack(true);
+                        }
+                    }
+
                     if (!this.exitReason && controller.signal.aborted) {
                         if (this.restartRequested) {
                             this.restartRequested = false;
@@ -587,6 +623,21 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                     }
                 } catch (e) {
                     logger.debug('[remote]: launch error', e);
+                    if (rewindConfirmTimer) {
+                        clearTimeout(rewindConfirmTimer);
+                        rewindConfirmTimer = null;
+                    }
+                    // A deterministic resume rejection means the native state is
+                    // unchanged — report failure immediately instead of letting
+                    // the rewind handler time out.
+                    if (session.rewindAck) {
+                        const detail0 = e instanceof Error ? e.message : String(e);
+                        if (/Resume rejected|resume-drops-turn|would discard/i.test(detail0)) {
+                            const ack = session.rewindAck;
+                            session.rewindAck = null;
+                            ack(false, detail0);
+                        }
+                    }
 
                     // Restores a message batch that was already
                     // dequeued+acked from the queue (see

@@ -276,9 +276,27 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         }
         return { nativeSessionId, forkSession: true as const }
     })
-    // Hub localIds of delivered user turns, one entry per native turn (a single
-    // batch of queued messages is joined into one prompt = one native turn).
-    const deliveredTurnLocalIds: string[][] = []
+    // Rewind bookkeeping. Delivered user-turn batches (one batch = one joined
+    // native prompt) are matched FIFO to native turns at rewind time; the
+    // localId → native prompt uuid map is mirrored into session metadata
+    // (`conversationHistoryEntryIds`) so it survives CLI restarts, and the hub
+    // scrubs truncated entries automatically via `conversationHistoryPoints`.
+    const pendingTurnBatches: string[][] = []
+    const committedTurnBatches: Array<{ localIds: string[]; promptUuid: string }> = []
+    const promptUuidByLocalId = new Map<string, string>()
+    const REWIND_ACK_TIMEOUT_MS = 60_000
+    const stripRewindFlags = (args: string[] | undefined): string[] | undefined => {
+        if (!args) return undefined
+        const filtered: string[] = []
+        for (let i = 0; i < args.length; i++) {
+            if ((args[i] === '--resume-session-at' || args[i] === '--resume-drops-turn') && i + 1 < args.length) {
+                i++
+                continue
+            }
+            filtered.push(args[i]!)
+        }
+        return filtered.length > 0 ? filtered : undefined
+    }
     session.rpcHandlerManager.registerHandler(RPC_METHODS.RewindConversation, async (payload: unknown) => {
         const rejected = (error: string) => ({ success: false as const, outcome: 'rejected' as const, error })
         if (!payload || typeof payload !== 'object' || typeof (payload as { messageLocalId?: unknown }).messageLocalId !== 'string') {
@@ -299,13 +317,40 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             // No metadata fallback: a stale id would truncate an unrelated native session.
             return rejected('Claude session id is not ready')
         }
-        const dropFromTurnIndex = deliveredTurnLocalIds.findIndex((batch) => batch.includes(messageLocalId))
-        if (dropFromTurnIndex < 0) {
+
+        // Flush delivered-but-unmapped batches against the active chain. The hub
+        // idle gate guarantees every delivered turn has completed by now.
+        const turns = readNativeTurns(workingDirectory, nativeSessionId)
+        const newEntryIds: Record<string, string> = {}
+        while (pendingTurnBatches.length > 0 && committedTurnBatches.length < turns.length) {
+            const turn = turns[committedTurnBatches.length]!
+            const batch = pendingTurnBatches.shift()!
+            for (const localId of batch) {
+                promptUuidByLocalId.set(localId, turn.promptUuid)
+                newEntryIds[localId] = turn.promptUuid
+            }
+            committedTurnBatches.push({ localIds: batch, promptUuid: turn.promptUuid })
+        }
+        if (Object.keys(newEntryIds).length > 0) {
+            claudeSession.client.updateMetadata((metadata) => ({
+                ...metadata,
+                conversationHistoryEntryIds: {
+                    ...metadata?.conversationHistoryEntryIds,
+                    ...newEntryIds
+                }
+            }))
+        }
+
+        const promptUuid = promptUuidByLocalId.get(messageLocalId)
+            ?? session.getMetadata()?.conversationHistoryEntryIds?.[messageLocalId]
+            ?? sessionInfo.metadata?.conversationHistoryEntryIds?.[messageLocalId]
+            ?? null
+        if (!promptUuid) {
             return rejected(`No native history point for message ${messageLocalId}`)
         }
         let plan
         try {
-            plan = resolveRewindPlan(readNativeTurns(workingDirectory, nativeSessionId), dropFromTurnIndex)
+            plan = resolveRewindPlan(turns, promptUuid)
         } catch (error) {
             return rejected(error instanceof Error ? error.message : String(error))
         }
@@ -316,9 +361,48 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         if (plan.resumeSessionAt) flags.push('--resume-session-at', plan.resumeSessionAt)
         for (const dropTurn of plan.dropsTurns) flags.push('--resume-drops-turn', dropTurn)
         claudeSession.claudeArgs = [...(claudeSession.claudeArgs ?? []), ...flags]
-        deliveredTurnLocalIds.length = 0
 
-        await claudeSession.requestRemoteRestart()
+        // The respawn starts Claude immediately with the resume flags. Claude
+        // emits no init until the first prompt, but a rejected resume exits
+        // within moments of spawn — so the launcher confirms application once
+        // the new attempt survives a short stability window, and reports
+        // failure immediately on a deterministic resume rejection. Until then
+        // the hub must not truncate its transcript.
+        const ackPromise = new Promise<{ applied: boolean; error?: string }>((resolve) => {
+            claudeSession.rewindAck = (applied, error) => resolve({ applied, error })
+        })
+        const timeoutPromise = new Promise<{ applied: boolean; error?: string }>((resolve) => {
+            setTimeout(() => resolve({ applied: false, error: 'unconfirmed' }), REWIND_ACK_TIMEOUT_MS)
+        })
+        try {
+            await claudeSession.requestRemoteRestart()
+            const result = await Promise.race([ackPromise, timeoutPromise])
+            if (!result.applied) {
+                // Disarm and strip any unconsumed flags so state stays "not rewound".
+                claudeSession.rewindAck = null
+                claudeSession.claudeArgs = stripRewindFlags(claudeSession.claudeArgs)
+                if (result.error === 'unconfirmed') {
+                    // Cannot prove either way; let the hub mark history diverged
+                    // instead of silently claiming the rewind did not happen.
+                    throw new Error('Rewind could not be confirmed; session history requires reconciliation')
+                }
+                return rejected(result.error ?? 'Rewind could not be applied')
+            }
+        } catch (error) {
+            claudeSession.rewindAck = null
+            claudeSession.claudeArgs = stripRewindFlags(claudeSession.claudeArgs)
+            return rejected(error instanceof Error ? error.message : String(error))
+        }
+
+        // Truncation confirmed: forget the dropped turns' mappings (the hub scrubs
+        // the persisted copies together with its truncated rows).
+        const dropPosition = committedTurnBatches.findIndex((batch) => batch.localIds.includes(messageLocalId))
+        if (dropPosition >= 0) {
+            for (const batch of committedTurnBatches.splice(dropPosition)) {
+                for (const localId of batch.localIds) promptUuidByLocalId.delete(localId)
+            }
+        }
+        pendingTurnBatches.length = 0
         return { success: true as const, truncateFromLocalId: messageLocalId }
     })
 
@@ -632,11 +716,29 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
                 currentSessionRef.current = sessionInstance;
                 resolveSessionReady(sessionInstance);
                 sessionInstance.onUserTurnDelivered = (localIds) => {
-                    if (localIds.length > 0) deliveredTurnLocalIds.push(localIds)
+                    if (localIds.length === 0) return
+                    pendingTurnBatches.push(localIds)
+                    // Web renders the Rewind affordance from this per-message flag
+                    // (same contract as codex/pi/grok); the native uuid mapping is
+                    // published at rewind time once the transcript entry exists.
+                    sessionInstance.client.updateMetadata((metadata) => ({
+                        ...metadata,
+                        conversationHistoryPoints: {
+                            ...metadata?.conversationHistoryPoints,
+                            ...Object.fromEntries(localIds.map((localId) => [localId, true as const]))
+                        }
+                    }))
                 };
                 sessionInstance.onNativeSessionReset = () => {
-                    // /clear drops the native session; turn-index tracking is no longer valid.
-                    deliveredTurnLocalIds.length = 0
+                    // /clear drops the native session; turn tracking is no longer valid.
+                    pendingTurnBatches.length = 0
+                    committedTurnBatches.length = 0
+                    promptUuidByLocalId.clear()
+                    sessionInstance.client.updateMetadata((metadata) => ({
+                        ...metadata,
+                        conversationHistoryPoints: {},
+                        conversationHistoryEntryIds: {}
+                    }))
                 };
                 if (nativeSkills) {
                     sessionInstance.setNativeSkillNames(nativeSkills.map((skill) => skill.name));

@@ -5,13 +5,14 @@ import { getProjectPath } from './utils/path'
 export type NativeTurn = {
     /** uuid of the user prompt entry that starts the turn. */
     promptUuid: string
-    /** uuid of the last user/assistant entry belonging to the turn. */
+    /** uuid of the last user/assistant entry belonging to the turn on the active chain. */
     endUuid: string
 }
 
 type TranscriptEntry = {
     type?: string
-    uuid?: string
+    uuid?: unknown
+    parentUuid?: unknown
     isSidechain?: boolean
     message?: { content?: unknown }
 }
@@ -24,13 +25,19 @@ function isPromptEntry(entry: TranscriptEntry): boolean {
 
 /**
  * Parse the native Claude transcript for a session into ordered turns.
- * The transcript is append-only; rewinds re-parent new turns, so dropped
- * entries remain in the file. Only completed prompt turns are reported.
+ *
+ * The transcript is append-only: rewinds re-parent new turns, so dropped
+ * entries remain in the file as orphaned branches. Turns are therefore
+ * resolved over the ACTIVE parentUuid chain — the one reachable backwards
+ * from the last entry in the file — never over raw file order.
  */
 export function readNativeTurns(workingDirectory: string, sessionId: string): NativeTurn[] {
     const file = join(getProjectPath(workingDirectory), `${sessionId}.jsonl`)
     if (!existsSync(file)) return []
-    const turns: NativeTurn[] = []
+
+    type Node = { entry: TranscriptEntry; parent: string | null }
+    const byUuid = new Map<string, Node>()
+    let tailUuid: string | null = null
     for (const line of readFileSync(file, 'utf-8').split('\n')) {
         if (!line.trim()) continue
         let entry: TranscriptEntry
@@ -40,12 +47,37 @@ export function readNativeTurns(workingDirectory: string, sessionId: string): Na
             continue
         }
         if (entry.isSidechain) continue
-        if ((entry.type !== 'user' && entry.type !== 'assistant') || typeof entry.uuid !== 'string') continue
+        if (typeof entry.uuid !== 'string') continue
+        byUuid.set(entry.uuid, {
+            entry,
+            parent: typeof entry.parentUuid === 'string' ? entry.parentUuid : null
+        })
+        tailUuid = entry.uuid
+    }
+    if (!tailUuid) return []
+
+    // Walk parents from the tail; entries not on this chain are orphaned branches.
+    const chain: TranscriptEntry[] = []
+    const visited = new Set<string>()
+    let cursor: string | null = tailUuid
+    while (cursor && !visited.has(cursor)) {
+        visited.add(cursor)
+        const node = byUuid.get(cursor)
+        if (!node) break
+        chain.push(node.entry)
+        cursor = node.parent
+    }
+    chain.reverse()
+
+    const turns: NativeTurn[] = []
+    for (const entry of chain) {
+        if (entry.type !== 'user' && entry.type !== 'assistant') continue
+        const uuid = entry.uuid as string
         if (entry.type === 'user') {
             if (!isPromptEntry(entry)) continue
-            turns.push({ promptUuid: entry.uuid, endUuid: entry.uuid })
+            turns.push({ promptUuid: uuid, endUuid: uuid })
         } else if (turns.length > 0) {
-            turns[turns.length - 1]!.endUuid = entry.uuid
+            turns[turns.length - 1]!.endUuid = uuid
         }
     }
     return turns
@@ -83,19 +115,21 @@ export function supportsNativeRewind(versionOutput: string | null | undefined): 
 }
 
 /**
- * Build the resume flags to drop turns `[dropFromTurnIndex, turns.length)`.
- * The kept boundary is the last entry of the previous turn; dropping every
- * turn including the first is not representable and is rejected.
+ * Build the resume flags to drop the turn started by `promptUuid` and every
+ * turn after it on the active chain. The kept boundary is the last entry of
+ * the previous turn; dropping every turn including the first is not
+ * representable and is rejected.
  */
-export function resolveRewindPlan(turns: NativeTurn[], dropFromTurnIndex: number): RewindPlan {
-    if (dropFromTurnIndex < 0 || dropFromTurnIndex >= turns.length) {
-        throw new Error('Selected message has no native history to drop')
+export function resolveRewindPlan(turns: NativeTurn[], dropFromPromptUuid: string): RewindPlan {
+    const index = turns.findIndex((turn) => turn.promptUuid === dropFromPromptUuid)
+    if (index < 0) {
+        throw new Error(`No native history point for message prompt ${dropFromPromptUuid}`)
     }
-    if (dropFromTurnIndex === 0) {
+    if (index === 0) {
         throw new Error('Cannot rewind the first message')
     }
     return {
-        resumeSessionAt: turns[dropFromTurnIndex - 1]!.endUuid,
-        dropsTurns: turns.slice(dropFromTurnIndex).map((turn) => turn.promptUuid)
+        resumeSessionAt: turns[index - 1]!.endUuid,
+        dropsTurns: turns.slice(index).map((turn) => turn.promptUuid)
     }
 }
