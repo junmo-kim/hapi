@@ -459,6 +459,25 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         (backendModule.createOpencodeBackend as unknown as ReturnType<typeof vi.fn>).mockClear();
     });
 
+    it('records no fork point when native history is unavailable', async () => {
+        const { OpencodeConversationHistory } = await import('./conversationHistory');
+        const countSpy = vi.spyOn(OpencodeConversationHistory.prototype, 'getNativeUserMessageCount')
+            .mockResolvedValue(null);
+        const rememberSpy = vi.spyOn(OpencodeConversationHistory.prototype, 'rememberPromptIndex');
+        const { session } = createSessionStub([
+            { message: 'hello', mode: createMode() }
+        ]);
+
+        try {
+            await opencodeRemoteLauncher(session as never);
+            expect(countSpy).toHaveBeenCalled();
+            expect(rememberSpy).not.toHaveBeenCalled();
+        } finally {
+            countSpy.mockRestore();
+            rememberSpy.mockRestore();
+        }
+    });
+
     it('reaches /clear only after the earlier prompt settles, without starting another OpenCode turn', async () => {
         let resolvePrompt: (() => void) | null = null;
         harness.promptImpl = () => new Promise<void>((resolve) => {

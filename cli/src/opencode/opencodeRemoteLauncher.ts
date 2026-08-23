@@ -135,9 +135,6 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     /** Subscription to the agent's own server event stream; null until the ACP session id is known, closed in cleanup(). */
     private eventStream: OpencodeEventSubscription | null = null;
     private stallErrorReportedForPrompt = false;
-    // Counts real prompt batches (0-based) for conversation history fork points;
-    // compact/clear batches never increment it.
-    private userPromptCounter = 0;
     private readonly conversationHistory = new OpencodeConversationHistory(() => ({
         baseUrl: this.baseUrl,
         sessionId: this.activeAcpSessionId
@@ -676,16 +673,20 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 this.stallErrorReportedForPrompt = false;
                 session.onThinkingChange(true);
 
-                try {
-                    // Derive the fork-point index from native history rather than a
-                    // launcher-local counter: resumes and local→remote handoffs can
-                    // hold native prompts this process never indexed.
-                    const nativeUserCount = await this.conversationHistory.getNativeUserMessageCount();
-                    const promptIndex = nativeUserCount ?? this.userPromptCounter;
-                    this.userPromptCounter = promptIndex + 1;
-                    this.conversationHistory.rememberPromptIndex(batch.items[0]?.localId, promptIndex);
-                    logger.debug(`[opencode-remote] history point: localId=${batch.items[0]?.localId} index=${promptIndex} items=${batch.items.length}`);
+            try {
+                // Derive the fork-point index from native history rather than a
+                // launcher-local counter: resumes and local→remote handoffs can
+                // hold native prompts this process never indexed. When native
+                // history is unavailable, record nothing rather than guessing —
+                // a synthetic index would fork at the wrong boundary forever.
+                const nativeUserCount = await this.conversationHistory.getNativeUserMessageCount();
+                if (nativeUserCount === null) {
+                    logger.warn('[opencode-remote] Native history unavailable; skipping fork point');
+                } else {
+                    this.conversationHistory.rememberPromptIndex(batch.items[0]?.localId, nativeUserCount);
                     void this.conversationHistory.publish().catch(() => {});
+                }
+                logger.debug(`[opencode-remote] history point: localId=${batch.items[0]?.localId} index=${nativeUserCount} items=${batch.items.length}`);
                     await backend.prompt(acpSessionId, promptContent, (message: AgentMessage) => {
                         this.handleAgentMessage(message);
                     });
