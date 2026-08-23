@@ -142,8 +142,14 @@ function classifyImportDelta(
         message.localId,
         truncateOversizedMessageContent(message.content)
     ]))
+    const sourceIds = transcript.messages.map((message) => message.localId)
     const storedImported = existing
         .filter((message) => message.localId?.startsWith(importedPrefix(transcript.id)))
+    for (let index = 0; index < storedImported.length; index += 1) {
+        if (sourceIds[index] !== storedImported[index]!.localId) {
+            return { messages: [], error: `Local OpenCode transcript changed or dropped imported entry ${storedImported[index]!.localId}` }
+        }
+    }
     for (const message of storedImported) {
         const source = sourceByLocalId.get(message.localId!)
         if (!source || !isDeepStrictEqual(source, message.content)) {
@@ -151,7 +157,11 @@ function classifyImportDelta(
         }
     }
     const imported = new Set(storedImported.map((message) => message.localId!))
-    return { messages: transcript.messages.filter((message) => !imported.has(message.localId)) }
+    const delta = transcript.messages.filter((message) => !imported.has(message.localId))
+    if (existing.length > storedImported.length && delta.length > 0) {
+        return { messages: [], error: 'The HAPI session continued past the imported history; re-importing would duplicate or reorder messages' }
+    }
+    return { messages: delta }
 }
 
 function importedPrefix(sessionId: string): string {

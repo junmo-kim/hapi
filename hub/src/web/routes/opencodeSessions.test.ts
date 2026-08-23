@@ -216,6 +216,65 @@ describe('OpenCode session import', () => {
         })
     })
 
+    it('fails when new native entries are inserted ahead of the imported boundary', () => {
+        const { store, engine } = setup()
+        const first = importOpencodeSession({
+            store,
+            engine,
+            namespace: 'default',
+            machine: machine('machine-1'),
+            transcript: transcript('native-insert', [
+                userMessage('native-insert', 'msg-1', 'one', 1_000),
+                userMessage('native-insert', 'msg-2', 'two', 2_000)
+            ])
+        })
+        expect(first).toMatchObject({ action: 'created' })
+
+        const reordered = importOpencodeSession({
+            store,
+            engine,
+            namespace: 'default',
+            machine: machine('machine-1'),
+            transcript: transcript('native-insert', [
+                userMessage('native-insert', 'msg-new', 'new', 500),
+                userMessage('native-insert', 'msg-1', 'one', 1_000),
+                userMessage('native-insert', 'msg-2', 'two', 2_000)
+            ])
+        })
+        expect(reordered.error?.code).toBe('transcript_diverged')
+    })
+
+    it('fails closed when HAPI continuation happened after an import and native history advanced', () => {
+        const { store, engine } = setup()
+        const first = importOpencodeSession({
+            store,
+            engine,
+            namespace: 'default',
+            machine: machine('machine-1'),
+            transcript: transcript('native-tail', [userMessage('native-tail', 'msg-1', 'one', 1_000)])
+        })
+        expect(first.hapiSessionId).toBeTruthy()
+        const continuation = store.messages.addImportedMessage(first.hapiSessionId!, {
+            role: 'user',
+            content: { type: 'text', text: 'live follow-up' },
+            meta: { sentFrom: 'web' as const }
+        }, 'hapi-live-msg-1', 5_000)
+        expect(continuation.inserted).toBe(true)
+
+        const extended = importOpencodeSession({
+            store,
+            engine,
+            namespace: 'default',
+            machine: machine('machine-1'),
+            transcript: transcript('native-tail', [
+                userMessage('native-tail', 'msg-1', 'one', 1_000),
+                userMessage('native-tail', 'msg-2', 'two', 2_000)
+            ])
+        })
+        expect(extended.error?.code).toBe('transcript_diverged')
+        expect(store.messages.getAllMessages(first.hapiSessionId!)).toHaveLength(2)
+    })
+
     it('fails with session_active when the target session is active and new messages exist', () => {
         const { store, engine } = setup()
         const first = importOpencodeSession({
