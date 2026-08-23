@@ -291,7 +291,12 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 // best-effort; transient hub disconnects must not crash the loop
             }
         });
-        if (startedFreshAfterResumeFailure) {
+        // A persisted divergence flag must survive later launches too — the
+        // hub rejects history actions for diverged sessions, so republished
+        // capabilities would only surface controls that cannot succeed.
+        const historyDiverged = startedFreshAfterResumeFailure
+            || currentMetadata?.conversationHistoryDiverged === true;
+        if (historyDiverged) {
             // Drop stale locators and hide history affordances: the native
             // session no longer corresponds to the persisted HAPI transcript.
             try {
@@ -323,7 +328,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 : undefined;
             return await this.conversationHistory.fork(messageLocalId);
         });
-        if (!startedFreshAfterResumeFailure) {
+        if (!historyDiverged) {
             void this.conversationHistory.probeCapabilities().catch(() => {});
         }
 

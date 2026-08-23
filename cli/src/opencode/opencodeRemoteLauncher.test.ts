@@ -592,6 +592,25 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         expect((divergedUpdate!.capabilities as Record<string, unknown>).conversationHistory).toBeUndefined();
     });
 
+    it('keeps history disabled on a later launch when divergence was persisted', async () => {
+        harness.clientMetadata = { conversationHistoryDiverged: true };
+        const probeSpy = vi.spyOn(
+            (await import('./conversationHistory')).OpencodeConversationHistory.prototype,
+            'probeCapabilities'
+        );
+        const { session } = createSessionStub([
+            { message: 'hello', mode: createMode() }
+        ]);
+        (session as { sessionId: string | null }).sessionId = 'ses_diverged';
+
+        try {
+            await opencodeRemoteLauncher(session as never);
+            expect(probeSpy).not.toHaveBeenCalled();
+        } finally {
+            probeSpy.mockRestore();
+        }
+    });
+
     it.each(['permission', 'server'] as const)('aborts clear when %s cleanup fails', async (stage) => {
         if (stage === 'permission') harness.permissionCancelError = new Error('permission cleanup failed');
         else harness.serverStopError = new Error('server cleanup failed');
