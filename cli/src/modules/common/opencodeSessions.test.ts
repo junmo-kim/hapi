@@ -117,6 +117,25 @@ if (scenario === 'sessions') {
     ])
     const sessions = await listLocalOpencodeSessionsWithMessagesByIds(new Set(['session-stream']))
     console.log(JSON.stringify({ sessions }))
+} else if (scenario === 'queryfail') {
+    const root = mkdtempSync(join(tmpdir(), 'opencode-queryfail-'))
+    process.env.OPENCODE_HOME = root
+    const dbPath = join(root, 'opencode.db')
+    createDb(root)
+    const db = new Database(dbPath)
+    db.query('INSERT INTO session (id, title, directory, time_updated) VALUES (?, ?, ?, ?)').run('session-qf', 'QueryFail', '/tmp/project', 7000)
+    insertMessages(dbPath, [
+        { id: 'mq-u', sessionId: 'session-qf', role: 'user', timeCreated: 7100 },
+        { id: 'mq-a', sessionId: 'session-qf', role: 'assistant', timeCreated: 7200 }
+    ], [
+        { messageId: 'mq-u', type: 'text', text: 'question' },
+        { messageId: 'mq-a', type: 'text', text: 'answer', extra: { time: { end: 7300 } } }
+    ])
+    // Simulate a transient SQLite failure reading parts of later messages.
+    db.exec('DROP TABLE part')
+    db.close()
+    const out = await listLocalOpencodeSessionsWithMessagesByIds(new Set(['session-qf']))
+    console.log(JSON.stringify({ sessions: out }))
 } else if (scenario === 'failclosed') {
     const missingRoot = mkdtempSync(join(tmpdir(), 'opencode-missing-'))
     process.env.OPENCODE_HOME = missingRoot
@@ -213,6 +232,13 @@ describe('local opencode sessions', () => {
                 meta: { sentFrom: 'cli' }
             }
         })
+    })
+
+    it('never surfaces a holey partial transcript when parts are unreadable', () => {
+        const output = runScenario('queryfail') as any
+        // Missing part table short-circuits the read entirely — the caller
+        // sees an empty result, never a transcript with a hole in the middle.
+        expect(output.sessions).toEqual([])
     })
 
     it('fails closed when the db or required tables are missing', () => {

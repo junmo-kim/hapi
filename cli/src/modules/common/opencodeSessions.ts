@@ -199,8 +199,10 @@ async function buildSessionMessages(
             }
         }
     } catch (error) {
-        if (messages.length === 0 && error instanceof Error && /no such table/i.test(error.message)) {
-            // Fresh installations without the message/part tables: empty history.
+        if (messages.length === 0 && error instanceof Error && /no such table: message/i.test(error.message)) {
+            // Fresh installations without the message table yet: empty history.
+            // Anything else (including a missing part table mid-transcript)
+            // must propagate so callers never persist a partial snapshot.
             return { ...summary, messages }
         }
         throw error
