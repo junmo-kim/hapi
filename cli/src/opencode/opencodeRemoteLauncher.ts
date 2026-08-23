@@ -718,15 +718,20 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 if (nativeUserCount === null) {
                     logger.warn('[opencode-remote] Native history unavailable; skipping fork point');
                 } else {
-                    this.nativeUserIndexCursor = nativeUserCount + 1;
                     this.conversationHistory.rememberPromptIndex(batch.items[0]?.localId, nativeUserCount);
                     void this.conversationHistory.publish().catch(() => {});
                 }
                 logger.debug(`[opencode-remote] history point: localId=${batch.items[0]?.localId} index=${nativeUserCount} items=${batch.items.length}`);
-                    await backend.prompt(acpSessionId, promptContent, (message: AgentMessage) => {
-                        this.handleAgentMessage(message);
-                    });
-                    void backend.refreshSessionInfo(acpSessionId, session.path);
+                // Commit the cursor advance only after OpenCode accepted the
+                // prompt — a failed turn persists no user message, so bumping
+                // early would skew every later fork boundary.
+                await backend.prompt(acpSessionId, promptContent, (message: AgentMessage) => {
+                    this.handleAgentMessage(message);
+                });
+                if (nativeUserCount !== null) {
+                    this.nativeUserIndexCursor = nativeUserCount + 1;
+                }
+                void backend.refreshSessionInfo(acpSessionId, session.path);
                 } catch (error) {
                     logger.warn('[opencode-remote] prompt failed', error);
                     this.reportPromptFailure(error);
