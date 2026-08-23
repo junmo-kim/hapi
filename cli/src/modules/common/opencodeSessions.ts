@@ -100,14 +100,11 @@ function parseJson(value: unknown): JsonRecord | null {
 }
 
 function collectTextParts(db: DatabaseLike, messageId: string, role: string): Array<{ id: string; text: string }> {
-    let partRows: Array<{ id: string; data: unknown }> = []
-    try {
-        partRows = db.query(
-            `SELECT id, data FROM part WHERE message_id = ? ORDER BY time_created ASC`
-        ).all(messageId) as Array<{ id: string; data: unknown }>
-    } catch {
-        return []
-    }
+    // Query failures must propagate: a swallowed error here would yield a
+    // partial transcript that the hub later rejects as transcript_diverged.
+    const partRows = db.query(
+        `SELECT id, data FROM part WHERE message_id = ? ORDER BY time_created ASC`
+    ).all(messageId) as Array<{ id: string; data: unknown }>
     const texts: Array<{ id: string; text: string }> = []
     for (const partRow of partRows) {
         const parsed = parseJson(partRow.data)
@@ -137,11 +134,16 @@ function extractLastUserMessage(db: DatabaseLike, sessionId: string): string | n
     for (const messageRow of messageRows) {
         const parsed = parseJson(messageRow.data)
         if (parsed?.role !== 'user') continue
-        const text = collectTextParts(db, messageRow.id, 'user')
-            .filter((part) => !part.text.startsWith('<'))
-            .map((part) => part.text)
-            .join('')
-            .trim()
+        let text: string
+        try {
+            text = collectTextParts(db, messageRow.id, 'user')
+                .filter((part) => !part.text.startsWith('<'))
+                .map((part) => part.text)
+                .join('')
+                .trim()
+        } catch {
+            continue
+        }
         if (!text) continue
         return truncateText(text, LAST_USER_MESSAGE_MAX_LENGTH)
     }
@@ -185,6 +187,9 @@ async function buildSessionMessages(
             const role = typeof parsed?.role === 'string' ? parsed.role : null
             if (!role) continue
             createdAt = normalizeTimestamp(messageRow.time_created, createdAt)
+            // No silent catch here either: a mid-transcript query failure must
+            // fail the whole read instead of returning a partial snapshot that
+            // the hub would permanently reject as transcript_diverged later.
             for (const part of collectTextParts(db, messageRow.id, role)) {
                 messages.push({
                     localId: `opencode:${summary.id}:${messageRow.id}:${part.id}`,
@@ -193,8 +198,12 @@ async function buildSessionMessages(
                 })
             }
         }
-    } catch {
-        // fall through with whatever was collected
+    } catch (error) {
+        if (messages.length === 0 && error instanceof Error && /no such table/i.test(error.message)) {
+            // Fresh installations without the message/part tables: empty history.
+            return { ...summary, messages }
+        }
+        throw error
     }
     return { ...summary, messages }
 }
