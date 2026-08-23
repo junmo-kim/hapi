@@ -378,9 +378,14 @@ export class ApiMachineClient {
                     }
                 }
                 const requestedIds = parsed.data.sessionIds ? new Set(parsed.data.sessionIds) : null
-                const allSessions = requestedIds
-                    ? await listLocalOpencodeSessionsWithMessagesByIds(requestedIds)
-                    : await listLocalOpencodeSessionSummaries()
+                let allSessions
+                try {
+                    allSessions = requestedIds
+                        ? await listLocalOpencodeSessionsWithMessagesByIds(requestedIds)
+                        : await listLocalOpencodeSessionSummaries()
+                } catch (error) {
+                    return { success: false, error: error instanceof Error ? error.message : 'Failed to read local OpenCode sessions' }
+                }
                 const sessions = []
                 for (const session of allSessions) {
                     if (await this.isLocalSessionWithinWorkspaceRoots(session)) sessions.push(session)

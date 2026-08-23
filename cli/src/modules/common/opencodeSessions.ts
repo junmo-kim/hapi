@@ -40,13 +40,11 @@ let cachedOpener: OpencodeDatabaseOpener | null = null
 async function getDefaultOpener(): Promise<OpencodeDatabaseOpener> {
     if (!cachedOpener) {
         cachedOpener = async (dbPath: string) => {
-            try {
-                const { Database } = await import('bun:sqlite')
-                if (!existsSync(dbPath)) return null
-                return new Database(dbPath, { readonly: true }) as unknown as DatabaseLike
-            } catch {
-                return null
-            }
+            const { Database } = await import('bun:sqlite')
+            if (!existsSync(dbPath)) return null
+            const db = new Database(dbPath, { readonly: true }) as unknown as DatabaseLike & { exec?: (sql: string) => void }
+            try { db.exec?.('PRAGMA busy_timeout = 5000') } catch {}
+            return db
         }
     }
     return cachedOpener
@@ -75,11 +73,7 @@ function truncateText(value: string, maxLength: number): string {
 
 async function openDb(dbPath: string, opener?: OpencodeDatabaseOpener): Promise<DatabaseLike | null> {
     const resolveOpener = opener ?? await getDefaultOpener()
-    try {
-        return await resolveOpener(dbPath)
-    } catch {
-        return null
-    }
+    return await resolveOpener(dbPath)
 }
 
 function hasRequiredTables(db: DatabaseLike): boolean {
@@ -222,7 +216,7 @@ export async function listLocalOpencodeSessionSummaries(
             lastUserMessage: extractLastUserMessage(db, row.id),
             cwd: row.directory ?? null,
             file: dbPath,
-            modifiedAt: Number(row.time_updated)
+            modifiedAt: normalizeTimestamp(row.time_updated, Date.now())
         }))
     } finally {
         db.close()
@@ -257,7 +251,7 @@ export async function listLocalOpencodeSessionsWithMessagesByIds(
                 lastUserMessage: extractLastUserMessage(db, row.id),
                 cwd: row.directory ?? null,
                 file: dbPath,
-                modifiedAt: Number(row.time_updated)
+                modifiedAt: normalizeTimestamp(row.time_updated, Date.now())
             }
             sessions.push(await buildSessionMessages(db, summary))
         }

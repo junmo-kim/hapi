@@ -1258,7 +1258,7 @@ export function NewSession(props: {
                 cwd: trimmedDirectory || null,
                 machineId: opencodeImportMachineId ?? machineId
             })
-            const importedCount = result.results.filter((item) => item.hapiSessionId && !item.error).length
+            const importedCount = result.results.filter((item) => item.hapiSessionId && !item.error && (item.action === 'created' || (item.appended ?? 0) > 0)).length
             const failed = result.results.filter((item) => item.error)
             if (importedCount > 0) {
                 addToast({

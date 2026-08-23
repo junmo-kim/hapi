@@ -144,7 +144,7 @@ describe('local opencode sessions', () => {
             id: 'session-1',
             title: 'Normal session',
             cwd: '/tmp/project',
-            modifiedAt: 2000,
+            modifiedAt: 2_000_000,
             lastUserMessage: 'hello world'
         })
         // tool part skipped; malformed-JSON user row yields null lastUserMessage
