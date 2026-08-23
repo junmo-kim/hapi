@@ -830,6 +830,11 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
      */
     protected onLeavingRemote(): void {
         this.options.onCompactAvailabilityChange?.(false);
+        // Withdraw history affordances for the teardown window and any
+        // subsequent local mode: the loopback server is going away, so forks
+        // can no longer be served (same lifecycle as /compact above).
+        this.conversationHistory.setBusy(true);
+        void this.conversationHistory.disableFork().catch(() => {});
     }
 
     protected async cleanup(): Promise<void> {
