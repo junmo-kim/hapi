@@ -697,8 +697,15 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     }
 
                     session.onThinkingChange(true);
+                    let nativeHistoryMayHaveChanged = false;
                     try {
-                        await this.runCompactOperation(acpSessionId, compactAbortController, compactLocalId);
+                        await this.runCompactOperation(
+                            acpSessionId,
+                            compactAbortController,
+                            compactLocalId,
+                            () => { nativeHistoryMayHaveChanged = true; }
+                        );
+                        if (!nativeHistoryMayHaveChanged) continue;
                         // Compaction can reindex native history: old absolute
                         // indexes and their locators are invalid afterwards.
                         this.conversationHistory.clearPromptIndexes();
@@ -1025,7 +1032,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     private async runCompactOperation(
         acpSessionId: string,
         compactAbortController: AbortController,
-        localId?: string
+        localId?: string,
+        onMutationIssued?: () => void
     ): Promise<void> {
         const session = this.session;
         session.sendSessionEvent({ type: 'message', message: '📦 Compaction started' });
@@ -1090,6 +1098,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             // client abort, so a plain Stop deliberately waits only in this
             // phase. It has no deadline because real compaction can take minutes.
             this.compactOperationPhase = 'summarize';
+            onMutationIssued?.();
             const requestResult = await backend.suppressUpdatesDuring(async () => {
                 try {
                     return await triggerOpencodeCompact({
