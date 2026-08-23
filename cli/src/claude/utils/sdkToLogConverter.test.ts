@@ -115,6 +115,28 @@ describe('SDKToLogConverter', () => {
 
             expect(converter.convert(sdkMessage)?.isMeta).toBeUndefined()
         })
+
+        it.each([
+            '<local-command-name>/compact</local-command-name>',
+            '<local-command-stdout>Compacted </local-command-stdout>',
+            '<local-command-stderr>boom</local-command-stderr>'
+        ])('should mark local-command tag user messages as meta (%s)', (content) => {
+            // Claude Code echoes slash-command bookkeeping back over the SDK as
+            // plain user-role messages. They are CLI plumbing, not chat content,
+            // so they must ride the same isMeta filter as injected turns.
+            const sdkMessage: SDKUserMessage = {
+                type: 'user',
+                message: {
+                    role: 'user',
+                    content
+                }
+            }
+
+            const logMessage = converter.convert(sdkMessage)
+
+            expect(logMessage?.type).toBe('user')
+            expect(logMessage?.isMeta).toBe(true)
+        })
     })
 
     describe('Assistant messages', () => {
