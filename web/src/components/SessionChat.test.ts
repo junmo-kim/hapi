@@ -9,6 +9,7 @@ import {
     resolvePiContextWindow,
     resolveLatestCompletedBoundaryIdForView,
     shouldAutoClearPendingSchedule,
+    resolveClaudeCatalogCwd,
     shouldDriveClaudeCatalog,
     shouldRouteToScratchlist,
 } from './SessionChat'
@@ -48,6 +49,26 @@ describe('applyModelChangeWithReasoningRollback', () => {
         expect(setModelReasoningEffort).toHaveBeenCalledOnce()
         expect(setModelReasoningEffort).toHaveBeenCalledWith(null)
         expect(setModel).toHaveBeenCalledWith('gpt-next')
+    })
+})
+
+describe('resolveClaudeCatalogCwd', () => {
+    it('probes the repo root for a worktree session, not the generated worktree path', () => {
+        // The worktree path is outside a workspace root configured as the repo,
+        // so probing it would be rejected and the pickers would fall back.
+        expect(resolveClaudeCatalogCwd({
+            path: '/home/u/proj-worktrees/feature-x',
+            worktree: { basePath: '/home/u/proj' }
+        })).toBe('/home/u/proj')
+    })
+
+    it('uses the session path when there is no worktree', () => {
+        expect(resolveClaudeCatalogCwd({ path: '/home/u/proj' })).toBe('/home/u/proj')
+    })
+
+    it('returns null when neither is present', () => {
+        expect(resolveClaudeCatalogCwd(null)).toBeNull()
+        expect(resolveClaudeCatalogCwd({ worktree: null })).toBeNull()
     })
 })
 

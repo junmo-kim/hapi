@@ -146,6 +146,24 @@ export function resolvePiContextWindow(
  * on controlledByUser would leave locally-controlled sessions stuck on the
  * static preset list.
  */
+/**
+ * Directory to run the Claude model-catalog probe in.
+ *
+ * A HAPI-created worktree lives in a sibling `<repo>-worktrees/` directory
+ * (cli/src/runner/worktree.ts), which is outside a workspace root configured as
+ * the repo itself -- the machine RPC rejects such a cwd, and the pickers would
+ * silently drop to the static list for every worktree session. The repo root the
+ * worktree was cut from is inside that root, and the probe runs with
+ * `--setting-sources user`, so the catalog it reports does not depend on which
+ * of the two directories it ran in. Sessions without a worktree keep using their
+ * own path.
+ */
+export function resolveClaudeCatalogCwd(
+    metadata: { path?: string | null, worktree?: { basePath?: string | null } | null } | null | undefined
+): string | null {
+    return metadata?.worktree?.basePath ?? metadata?.path ?? null
+}
+
 export function shouldDriveClaudeCatalog(agentFlavor: string | null, sessionActive: boolean): boolean {
     return agentFlavor === 'claude' && sessionActive
 }
@@ -980,10 +998,11 @@ function SessionChatInner(props: SessionChatProps) {
     // hub's Claude model/effort routes accept locally-controlled sessions
     // too, so the catalog has to cover the same set of sessions those
     // routes actually let through.
+    const claudeCatalogCwd = resolveClaudeCatalogCwd(props.session.metadata)
     const claudeModelsState = useClaudeModelsForCwd({
         api: props.api,
         machineId: props.session.metadata?.machineId ?? null,
-        cwd: props.session.metadata?.path ?? null,
+        cwd: claudeCatalogCwd,
         enabled: shouldDriveClaudeCatalog(agentFlavor, props.session.active)
     })
     const claudeModelOptions = useMemo(() => (
