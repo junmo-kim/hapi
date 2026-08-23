@@ -37,6 +37,7 @@ const harness = vi.hoisted(() => ({
     newSessionImpl: null as null | (() => Promise<string>),
     loadSessionImpl: null as null | (() => Promise<string>),
     clientMetadata: undefined as undefined | Record<string, unknown>,
+    metadataUpdates: [] as Array<Record<string, unknown>>,
     disconnectImpl: null as null | (() => Promise<void>),
     permissionCancelError: null as Error | null,
     serverStopError: null as Error | null,
@@ -325,6 +326,11 @@ function createSessionStub(
         getMetadata() {
             return harness.clientMetadata;
         },
+        updateMetadata(handler: (metadata: Record<string, unknown>) => Record<string, unknown>) {
+            const next = handler(harness.clientMetadata ?? {});
+            harness.clientMetadata = { ...harness.clientMetadata, ...next };
+            harness.metadataUpdates.push(next);
+        },
         rpcHandlerManager: {
             registerHandler(method: string, handler: (params: unknown) => unknown) {
                 rpcHandlers.set(method, handler);
@@ -423,6 +429,7 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         harness.newSessionImpl = null;
         harness.loadSessionImpl = null;
         harness.clientMetadata = undefined;
+        harness.metadataUpdates.length = 0;
         harness.disconnectImpl = null;
         harness.permissionCancelError = null;
         harness.serverStopError = null;
@@ -560,6 +567,29 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         const backend = (backendModule.createOpencodeBackend as unknown as ReturnType<typeof vi.fn>).mock.results[0]?.value;
         expect(backend.newSession).toHaveBeenCalled();
         (backendModule.createOpencodeBackend as unknown as ReturnType<typeof vi.fn>).mockClear();
+    });
+
+    it('marks history diverged and drops stale locators after a resume falls back to a fresh native session', async () => {
+        harness.clientMetadata = {
+            capabilities: { conversationHistory: { forkCurrent: true, forkAtMessage: true } },
+            conversationHistoryPoints: { local1: true },
+            conversationHistoryIndexes: { local1: 0 }
+        };
+        harness.loadSessionImpl = async () => {
+            throw new Error('load failed');
+        };
+        const { session } = createSessionStub([
+            { message: 'hello', mode: createMode() }
+        ]);
+        (session as { sessionId: string | null }).sessionId = 'ses_plain';
+
+        await opencodeRemoteLauncher(session as never);
+
+        const divergedUpdate = harness.metadataUpdates.find((update) => update.conversationHistoryDiverged === true);
+        expect(divergedUpdate).toBeDefined();
+        expect(divergedUpdate!.conversationHistoryPoints).toBeUndefined();
+        expect(divergedUpdate!.conversationHistoryIndexes).toBeUndefined();
+        expect((divergedUpdate!.capabilities as Record<string, unknown>).conversationHistory).toBeUndefined();
     });
 
     it.each(['permission', 'server'] as const)('aborts clear when %s cleanup fails', async (stage) => {

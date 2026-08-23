@@ -135,6 +135,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     /** Subscription to the agent's own server event stream; null until the ACP session id is known, closed in cleanup(). */
     private eventStream: OpencodeEventSubscription | null = null;
     private stallErrorReportedForPrompt = false;
+    /** Next native user-message index for fork points; null until the first successful count. */
+    private nativeUserIndexCursor: number | null = null;
     private readonly conversationHistory = new OpencodeConversationHistory(() => ({
         baseUrl: this.baseUrl,
         sessionId: this.activeAcpSessionId
@@ -202,6 +204,10 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             ? session.client.getMetadata()
             : undefined;
         const strictForkResume = currentMetadata?.forkedFrom != null;
+        // A resume that fell back to a blank native session invalidates every
+        // persisted history locator: old local ids would resolve to unrelated
+        // native turns. History stays disabled for such sessions.
+        let startedFreshAfterResumeFailure = false;
         const mcpServerList = toAcpMcpServers(mcpServers);
         let acpSessionId: string;
         if (resumeSessionId) {
@@ -216,6 +222,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     throw error;
                 }
                 logger.warn('[opencode-remote] resume failed, starting new session', error);
+                startedFreshAfterResumeFailure = true;
                 session.sendSessionEvent({
                     type: 'message',
                     message: 'OpenCode resume failed; starting a new session.'
@@ -284,11 +291,31 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 // best-effort; transient hub disconnects must not crash the loop
             }
         });
-        this.conversationHistory.restorePromptIndexes(
-            typeof session.client.getMetadata === 'function'
-                ? session.client.getMetadata()?.conversationHistoryIndexes
-                : undefined
-        );
+        if (startedFreshAfterResumeFailure) {
+            // Drop stale locators and hide history affordances: the native
+            // session no longer corresponds to the persisted HAPI transcript.
+            try {
+                session.client.updateMetadata((metadata) => {
+                    const capabilities = { ...metadata?.capabilities };
+                    delete capabilities.conversationHistory;
+                    return {
+                        ...metadata,
+                        capabilities,
+                        conversationHistoryPoints: undefined,
+                        conversationHistoryIndexes: undefined,
+                        conversationHistoryDiverged: true
+                    };
+                });
+            } catch {
+                // best-effort; transient hub disconnects must not crash the loop
+            }
+        } else {
+            this.conversationHistory.restorePromptIndexes(
+                typeof session.client.getMetadata === 'function'
+                    ? session.client.getMetadata()?.conversationHistoryIndexes
+                    : undefined
+            );
+        }
         session.client.rpcHandlerManager.registerHandler(RPC_METHODS.ForkConversation, async (payload: unknown) => {
             const messageLocalId = payload !== null && typeof payload === 'object' && !Array.isArray(payload)
                 && typeof (payload as Record<string, unknown>).messageLocalId === 'string'
@@ -296,7 +323,9 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 : undefined;
             return await this.conversationHistory.fork(messageLocalId);
         });
-        void this.conversationHistory.probeCapabilities().catch(() => {});
+        if (!startedFreshAfterResumeFailure) {
+            void this.conversationHistory.probeCapabilities().catch(() => {});
+        }
 
         // Seed currentBackendModel from the ACP session metadata so the first
         // batch — whose model the hub mirrors from the just-discovered session —
@@ -676,13 +705,20 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             try {
                 // Derive the fork-point index from native history rather than a
                 // launcher-local counter: resumes and local→remote handoffs can
-                // hold native prompts this process never indexed. When native
-                // history is unavailable, record nothing rather than guessing —
-                // a synthetic index would fork at the wrong boundary forever.
-                const nativeUserCount = await this.conversationHistory.getNativeUserMessageCount();
+                // hold native prompts this process never indexed. The count is
+                // fetched once and then advanced locally — re-reading the full
+                // transcript before every prompt would cost quadratic transfer
+                // on long sessions. When native history is unavailable, record
+                // nothing rather than guessing: a synthetic index would fork at
+                // the wrong boundary forever.
+                let nativeUserCount = this.nativeUserIndexCursor;
+                if (nativeUserCount === null) {
+                    nativeUserCount = await this.conversationHistory.getNativeUserMessageCount();
+                }
                 if (nativeUserCount === null) {
                     logger.warn('[opencode-remote] Native history unavailable; skipping fork point');
                 } else {
+                    this.nativeUserIndexCursor = nativeUserCount + 1;
                     this.conversationHistory.rememberPromptIndex(batch.items[0]?.localId, nativeUserCount);
                     void this.conversationHistory.publish().catch(() => {});
                 }
