@@ -84,6 +84,29 @@ describe('OpencodeConversationHistory probeCapabilities', () => {
     });
 });
 
+describe('OpencodeConversationHistory.getNativeUserMessageCount', () => {
+    it('counts user messages from the native session', async () => {
+        const fetchImpl: FetchLike = vi.fn(async (url: string) => {
+            expect(url).toBe('http://127.0.0.1:48273/session/ses_1/message');
+            return jsonResponse([
+                { info: { id: 'msg_1', role: 'user' } },
+                { info: { id: 'msg_2', role: 'assistant' } },
+                { info: { id: 'msg_3', role: 'user' } }
+            ]);
+        });
+
+        const history = new OpencodeConversationHistory(createContext('http://127.0.0.1:48273', 'ses_1'), fetchImpl);
+        await expect(history.getNativeUserMessageCount()).resolves.toBe(2);
+    });
+
+    it('returns null on request failure instead of throwing', async () => {
+        const fetchImpl: FetchLike = vi.fn(async () => new Response('nope', { status: 500 }));
+
+        const history = new OpencodeConversationHistory(createContext('http://127.0.0.1:48273', 'ses_1'), fetchImpl);
+        await expect(history.getNativeUserMessageCount()).resolves.toBeNull();
+    });
+});
+
 describe('OpencodeConversationHistory fork', () => {
     it('forks the current session with an empty body and returns the native id', async () => {
         const fetchImpl: FetchLike = vi.fn(async (url: string, init?: RequestInit) => {

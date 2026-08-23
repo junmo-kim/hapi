@@ -35,6 +35,8 @@ const harness = vi.hoisted(() => ({
     // reproduced via the terminal UI's onExit/onSwitchToLocal callbacks,
     // not rpcHandlers.
     newSessionImpl: null as null | (() => Promise<string>),
+    loadSessionImpl: null as null | (() => Promise<string>),
+    clientMetadata: undefined as undefined | Record<string, unknown>,
     disconnectImpl: null as null | (() => Promise<void>),
     permissionCancelError: null as Error | null,
     serverStopError: null as Error | null,
@@ -74,7 +76,12 @@ vi.mock('./utils/opencodeBackend', () => ({
             }
             return 'acp-session-1';
         }),
-        loadSession: vi.fn(async () => 'acp-session-1'),
+        loadSession: vi.fn(async () => {
+            if (harness.loadSessionImpl) {
+                return harness.loadSessionImpl();
+            }
+            return 'acp-session-1';
+        }),
         setModel: vi.fn(async (sessionId: string, modelId: string, opts?: { flavor?: string }) => {
             harness.events.push(`setModel:${modelId}`);
             harness.setModelArgs.push({ sessionId, modelId, flavor: opts?.flavor });
@@ -315,6 +322,9 @@ function createSessionStub(
     const thinkingChangeCalls: boolean[] = [];
 
     const client = {
+        getMetadata() {
+            return harness.clientMetadata;
+        },
         rpcHandlerManager: {
             registerHandler(method: string, handler: (params: unknown) => unknown) {
                 rpcHandlers.set(method, handler);
@@ -411,6 +421,8 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         harness.sessionModelsMetadata = undefined;
         harness.cancelPromptImpl = null;
         harness.newSessionImpl = null;
+        harness.loadSessionImpl = null;
+        harness.clientMetadata = undefined;
         harness.disconnectImpl = null;
         harness.permissionCancelError = null;
         harness.serverStopError = null;
@@ -466,6 +478,40 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         expect(onClearCleanupComplete).not.toHaveBeenCalled();
         expect(onClearCleanupFailed).toHaveBeenCalledTimes(1);
         const backendModule = await import('./utils/opencodeBackend');
+        (backendModule.createOpencodeBackend as unknown as ReturnType<typeof vi.fn>).mockClear();
+    });
+
+    it('never starts a blank native session when a fork child fails to load its native session', async () => {
+        harness.clientMetadata = { forkedFrom: 'parent-session' };
+        harness.loadSessionImpl = async () => {
+            throw new Error('load failed');
+        };
+        const { session } = createSessionStub([
+            { message: 'hello', mode: createMode(), localId: 'local-1' }
+        ]);
+        (session as { sessionId: string | null }).sessionId = 'ses_child';
+
+        await expect(opencodeRemoteLauncher(session as never)).rejects.toThrow('load failed');
+        const backendModule = await import('./utils/opencodeBackend');
+        const backend = (backendModule.createOpencodeBackend as unknown as ReturnType<typeof vi.fn>).mock.results[0]?.value;
+        expect(backend.newSession).not.toHaveBeenCalled();
+        (backendModule.createOpencodeBackend as unknown as ReturnType<typeof vi.fn>).mockClear();
+    });
+
+    it('falls back to a new native session when a plain resume fails', async () => {
+        harness.loadSessionImpl = async () => {
+            throw new Error('load failed');
+        };
+        const { session } = createSessionStub([
+            { message: 'hello', mode: createMode() }
+        ]);
+        (session as { sessionId: string | null }).sessionId = 'ses_plain';
+
+        const result = await opencodeRemoteLauncher(session as never);
+        expect(result).toBe('exit');
+        const backendModule = await import('./utils/opencodeBackend');
+        const backend = (backendModule.createOpencodeBackend as unknown as ReturnType<typeof vi.fn>).mock.results[0]?.value;
+        expect(backend.newSession).toHaveBeenCalled();
         (backendModule.createOpencodeBackend as unknown as ReturnType<typeof vi.fn>).mockClear();
     });
 

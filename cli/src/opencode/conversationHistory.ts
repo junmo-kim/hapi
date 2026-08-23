@@ -202,4 +202,26 @@ export class OpencodeConversationHistory {
         }
         throw new Error(`OpenCode has no user message at index ${targetPromptIndex}`);
     }
+
+    /** Number of user messages already in the native session, or null when unknown. */
+    async getNativeUserMessageCount(): Promise<number | null> {
+        const { baseUrl, sessionId } = this.getContext();
+        if (!baseUrl || !sessionId) return null;
+        try {
+            const response = await this.fetchFn(
+                `${baseUrl}/session/${encodeURIComponent(sessionId)}/message`,
+                { method: 'GET' }
+            );
+            if (!response.ok) return null;
+            const data: unknown = await response.json().catch(() => null);
+            if (!Array.isArray(data)) return null;
+            let count = 0;
+            for (const entry of data as OpencodeMessageEntry[]) {
+                if (entry?.info?.role === 'user') count++;
+            }
+            return count;
+        } catch {
+            return null;
+        }
+    }
 }

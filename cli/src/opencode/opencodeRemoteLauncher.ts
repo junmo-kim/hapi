@@ -198,6 +198,13 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         await backend.initialize();
 
         const resumeSessionId = session.sessionId;
+        // A fork child's transcript already lives on the hub; silently
+        // falling back to a blank native session would show inherited
+        // messages the model cannot actually see (same fence as grok).
+        const currentMetadata = typeof session.client.getMetadata === 'function'
+            ? session.client.getMetadata()
+            : undefined;
+        const strictForkResume = currentMetadata?.forkedFrom != null;
         const mcpServerList = toAcpMcpServers(mcpServers);
         let acpSessionId: string;
         if (resumeSessionId) {
@@ -208,6 +215,9 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     mcpServers: mcpServerList
                 });
             } catch (error) {
+                if (strictForkResume) {
+                    throw error;
+                }
                 logger.warn('[opencode-remote] resume failed, starting new session', error);
                 session.sendSessionEvent({
                     type: 'message',
@@ -660,8 +670,14 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             session.onThinkingChange(true);
 
             try {
-                this.conversationHistory.rememberPromptIndex(batch.items[0]?.localId, this.userPromptCounter++);
-                logger.debug(`[opencode-remote] history point: localId=${batch.items[0]?.localId} index=${this.userPromptCounter - 1} items=${batch.items.length}`);
+                // Derive the fork-point index from native history rather than a
+                // launcher-local counter: resumes and local→remote handoffs can
+                // hold native prompts this process never indexed.
+                const nativeUserCount = await this.conversationHistory.getNativeUserMessageCount();
+                const promptIndex = nativeUserCount ?? this.userPromptCounter;
+                this.userPromptCounter = promptIndex + 1;
+                this.conversationHistory.rememberPromptIndex(batch.items[0]?.localId, promptIndex);
+                logger.debug(`[opencode-remote] history point: localId=${batch.items[0]?.localId} index=${promptIndex} items=${batch.items.length}`);
                 void this.conversationHistory.publish().catch(() => {});
                 await backend.prompt(acpSessionId, promptContent, (message: AgentMessage) => {
                     this.handleAgentMessage(message);
