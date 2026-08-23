@@ -99,7 +99,7 @@ function parseJson(value: unknown): JsonRecord | null {
     }
 }
 
-function collectTextParts(db: DatabaseLike, messageId: string): Array<{ id: string; text: string }> {
+function collectTextParts(db: DatabaseLike, messageId: string, role: string): Array<{ id: string; text: string }> {
     let partRows: Array<{ id: string; data: unknown }> = []
     try {
         partRows = db.query(
@@ -113,6 +113,13 @@ function collectTextParts(db: DatabaseLike, messageId: string): Array<{ id: stri
         const parsed = parseJson(partRow.data)
         if (parsed?.type !== 'text' || typeof parsed.text !== 'string') continue
         if (!parsed.text.trim()) continue
+        // Mirror the live scanner gate: assistant text parts are mutable while
+        // the response is still streaming; only finished (or synthetic/user)
+        // parts are stable enough to import.
+        if (role !== 'user' && parsed.synthetic !== true) {
+            const time = asRecord(parsed.time)
+            if (typeof time?.end !== 'number') continue
+        }
         texts.push({ id: partRow.id, text: parsed.text })
     }
     return texts
@@ -130,7 +137,7 @@ function extractLastUserMessage(db: DatabaseLike, sessionId: string): string | n
     for (const messageRow of messageRows) {
         const parsed = parseJson(messageRow.data)
         if (parsed?.role !== 'user') continue
-        const text = collectTextParts(db, messageRow.id)
+        const text = collectTextParts(db, messageRow.id, 'user')
             .filter((part) => !part.text.startsWith('<'))
             .map((part) => part.text)
             .join('')
@@ -178,7 +185,7 @@ async function buildSessionMessages(
             const role = typeof parsed?.role === 'string' ? parsed.role : null
             if (!role) continue
             createdAt = normalizeTimestamp(messageRow.time_created, createdAt)
-            for (const part of collectTextParts(db, messageRow.id)) {
+            for (const part of collectTextParts(db, messageRow.id, role)) {
                 messages.push({
                     localId: `opencode:${summary.id}:${messageRow.id}:${part.id}`,
                     createdAt,

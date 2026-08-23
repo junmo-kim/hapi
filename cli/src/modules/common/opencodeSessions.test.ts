@@ -34,7 +34,11 @@ function insertMessages(dbPath, messages, parts) {
         let i = 0
         for (const p of parts) {
             i += 1
-            const data = p.text === undefined ? { type: p.type } : { type: p.type, text: p.text }
+            const data = Object.assign(
+                { type: p.type },
+                p.text === undefined ? {} : { text: p.text },
+                p.extra ?? {}
+            )
             db.query('INSERT INTO part (id, message_id, data, time_created) VALUES (?, ?, ?, ?)')
                 .run('part-' + i, p.messageId, JSON.stringify(data), i)
         }
@@ -62,7 +66,7 @@ if (scenario === 'sessions') {
     ], [
         { messageId: 'm1-a', type: 'tool' },
         { messageId: 'm1-u', type: 'text', text: 'hello world' },
-        { messageId: 'm1-a', type: 'text', text: 'hi there' },
+        { messageId: 'm1-a', type: 'text', text: 'hi there', extra: { time: { end: 1250 } } },
         { messageId: 'm2-u', type: 'text', text: '<system-reminder>internal</system-reminder>' }
     ])
     {
@@ -95,6 +99,24 @@ if (scenario === 'sessions') {
     ])
     const summaries = await listLocalOpencodeSessionSummaries()
     console.log(JSON.stringify({ summaries }))
+} else if (scenario === 'streaming') {
+    const root = mkdtempSync(join(tmpdir(), 'opencode-streaming-'))
+    process.env.OPENCODE_HOME = root
+    const dbPath = join(root, 'opencode.db')
+    createDb(root)
+    const db = new Database(dbPath)
+    db.query('INSERT INTO session (id, title, directory, time_updated) VALUES (?, ?, ?, ?)').run('session-stream', 'Streaming', '/tmp/project', 6000)
+    db.close()
+    insertMessages(dbPath, [
+        { id: 'ms-u', sessionId: 'session-stream', role: 'user', timeCreated: 6100 },
+        { id: 'ms-a', sessionId: 'session-stream', role: 'assistant', timeCreated: 6200 }
+    ], [
+        { messageId: 'ms-u', type: 'text', text: 'question' },
+        { messageId: 'ms-a', type: 'text', text: 'finished answer', extra: { time: { end: 6300 } } },
+        { messageId: 'ms-a', type: 'text', text: 'partial answer being generated' }
+    ])
+    const sessions = await listLocalOpencodeSessionsWithMessagesByIds(new Set(['session-stream']))
+    console.log(JSON.stringify({ sessions }))
 } else if (scenario === 'failclosed') {
     const missingRoot = mkdtempSync(join(tmpdir(), 'opencode-missing-'))
     process.env.OPENCODE_HOME = missingRoot
@@ -177,6 +199,20 @@ describe('local opencode sessions', () => {
         const lastUserMessage = output.summaries[0]?.lastUserMessage as string | undefined
         expect(lastUserMessage).toHaveLength(140)
         expect(lastUserMessage?.endsWith('…')).toBe(true)
+    })
+
+    it('skips unfinished assistant text parts that are still streaming', () => {
+        const output = runScenario('streaming') as any
+        const messages = output.sessions[0]?.messages ?? []
+        expect(messages).toHaveLength(2)
+        expect(messages[0]).toMatchObject({ content: { role: 'user', content: { type: 'text', text: 'question' } } })
+        expect(messages[1]).toMatchObject({
+            content: {
+                role: 'agent',
+                content: { type: 'codex', data: { type: 'message', message: 'finished answer' } },
+                meta: { sentFrom: 'cli' }
+            }
+        })
     })
 
     it('fails closed when the db or required tables are missing', () => {

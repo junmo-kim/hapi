@@ -308,10 +308,15 @@ export function createOpencodeSessionRoutes(options: {
         if (requestedPermissionMode && !isPermissionModeAllowedForFlavor(requestedPermissionMode as PermissionMode, 'opencode')) {
             return c.json({ success: false, error: 'Invalid permission mode for OpenCode sessions', results: [] }, 400)
         }
-        const launchConfig: Record<string, string> = {}
-        if (requestedModel) launchConfig.model = requestedModel
-        if (requestedModelReasoningEffort) launchConfig.modelReasoningEffort = requestedModelReasoningEffort
-        if (requestedPermissionMode && requestedPermissionMode !== 'default') launchConfig.permissionMode = requestedPermissionMode as PermissionMode
+        type LaunchConfig = Parameters<SyncEngine['applySessionConfig']>[1]
+        const launchConfig: LaunchConfig = {}
+        const hasLaunchKey = (key: string): boolean => Object.prototype.hasOwnProperty.call(body ?? {}, key)
+        // Property presence matters: applySessionConfig only resets a persisted
+        // value when the key is present, so explicit nulls / 'default' must be
+        // preserved to clear stale selections on re-import.
+        if (hasLaunchKey('model')) launchConfig.model = requestedModel
+        if (hasLaunchKey('modelReasoningEffort')) launchConfig.modelReasoningEffort = requestedModelReasoningEffort
+        if (requestedPermissionMode) launchConfig.permissionMode = requestedPermissionMode as PermissionMode
         const results: OpencodeImportResult[] = []
         for (const sessionId of uniqueSessionIds) {
             const transcript = byId.get(sessionId)
