@@ -1,6 +1,25 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { Metadata } from '../api/types';
 import { createAcpSessionTitleSync, registerAcpSessionTitleSync } from './acpSessionTitle';
 import type { AcpSessionInfoUpdate } from './backends/acp/AcpSdkBackend';
+
+type TitleClient = Parameters<typeof createAcpSessionTitleSync>[0];
+
+function makeClient(metadata: Partial<Metadata> = {}) {
+    const state = { ...metadata } as Metadata;
+    const sendClaudeSessionMessage = vi.fn();
+    return {
+        client: {
+            getMetadata: () => ({ ...state }),
+            updateMetadata: (handler: (metadata: Metadata) => Metadata) => {
+                Object.assign(state, handler(state));
+            },
+            sendClaudeSessionMessage
+        } satisfies TitleClient,
+        sendClaudeSessionMessage,
+        state
+    };
+}
 
 describe('registerAcpSessionTitleSync', () => {
     it('forwards normalized unique ACP titles as HAPI summaries', () => {
@@ -10,9 +29,9 @@ describe('registerAcpSessionTitleSync', () => {
                 listener = next;
             }
         };
-        const sendClaudeSessionMessage = vi.fn();
+        const { client, sendClaudeSessionMessage } = makeClient();
 
-        registerAcpSessionTitleSync(backend, { sendClaudeSessionMessage });
+        registerAcpSessionTitleSync(backend, client);
 
         listener!({ sessionId: 'session-1', title: '  Native Cursor Title  ' });
         listener!({ sessionId: 'session-1', title: 'Native Cursor Title' });
@@ -31,8 +50,8 @@ describe('registerAcpSessionTitleSync', () => {
     });
 
     it('stops syncing native titles after a manual title is set', () => {
-        const sendClaudeSessionMessage = vi.fn();
-        const controller = createAcpSessionTitleSync({ sendClaudeSessionMessage });
+        const { client, sendClaudeSessionMessage } = makeClient();
+        const controller = createAcpSessionTitleSync(client);
 
         controller.syncNativeTitle('Native Title');
         controller.markManualTitle();
@@ -44,5 +63,20 @@ describe('registerAcpSessionTitleSync', () => {
             summary: 'Native Title',
             leafUuid: expect.any(String)
         });
+    });
+
+    it('persists manual precedence in metadata and honors it after controller recreation', () => {
+        const first = makeClient();
+        const firstController = createAcpSessionTitleSync(first.client);
+        firstController.syncNativeTitle('Native Title');
+        firstController.markManualTitle();
+
+        expect(first.state.acpManualTitle).toBe(true);
+
+        const second = makeClient(first.state);
+        const secondController = createAcpSessionTitleSync(second.client);
+        secondController.syncNativeTitle('Newer Native Title');
+
+        expect(second.sendClaudeSessionMessage).not.toHaveBeenCalled();
     });
 });

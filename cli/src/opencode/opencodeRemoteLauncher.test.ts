@@ -321,6 +321,10 @@ function createSessionStub(
             }
         },
         sendAgentMessage(_message: unknown) {},
+        getMetadata() {
+            return null;
+        },
+        updateMetadata(_handler: (metadata: unknown) => unknown) {},
         sendClaudeSessionMessage(message: unknown) {
             claudeSessionMessages.push(message);
         },

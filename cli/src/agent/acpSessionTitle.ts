@@ -4,7 +4,10 @@ import type { AcpSdkBackend } from '@/agent/backends/acp';
 import { normalizeNativeSessionTitle } from '@/agent/nativeSessionTitle';
 
 type AcpSessionTitleBackend = Pick<AcpSdkBackend, 'setSessionInfoUpdateListener'>;
-type AcpSessionTitleClient = Pick<ApiSessionClient, 'sendClaudeSessionMessage'>;
+type AcpSessionTitleClient = Pick<
+    ApiSessionClient,
+    'sendClaudeSessionMessage' | 'getMetadata' | 'updateMetadata'
+>;
 
 export interface AcpSessionTitleController {
     syncNativeTitle: (title: unknown) => void;
@@ -14,7 +17,9 @@ export interface AcpSessionTitleController {
 /** Creates a normalized, deduplicated native-title sink for a HAPI session. */
 export function createAcpSessionTitleSync(client: AcpSessionTitleClient): AcpSessionTitleController {
     let lastTitle: string | null = null;
-    let manual = false;
+    // Survives launcher recreation / session resume via session metadata, so a
+    // manual change_title rename is not overwritten by later native titles.
+    let manual = client.getMetadata()?.acpManualTitle === true;
 
     return {
         syncNativeTitle: (title) => {
@@ -33,7 +38,14 @@ export function createAcpSessionTitleSync(client: AcpSessionTitleClient): AcpSes
             });
         },
         markManualTitle: () => {
+            if (manual) {
+                return;
+            }
             manual = true;
+            client.updateMetadata((metadata) => ({
+                ...metadata,
+                acpManualTitle: true
+            }));
         }
     };
 }
