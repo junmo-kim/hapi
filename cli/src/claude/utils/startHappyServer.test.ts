@@ -118,6 +118,28 @@ describe('startHappyServer skill_lookup', () => {
         ])
     })
 
+    it('invokes onChangeTitle when change_title succeeds', async () => {
+        sendAgentMessage = vi.fn()
+        const sessionClient = {
+            updateMetadata: vi.fn(),
+            sendAgentMessage,
+            sendClaudeSessionMessage: vi.fn()
+        } as unknown as ApiSessionClient
+        const onChangeTitle = vi.fn()
+        const server = await startHappyServer(sessionClient, { onChangeTitle })
+        stopServer = server.stop
+        const mcp = new Client({ name: 'hapi-test', version: '1.0.0' })
+        client = mcp
+        await mcp.connect(new StreamableHTTPClientTransport(new URL(server.url)))
+
+        await mcp.callTool({
+            name: 'change_title',
+            arguments: { title: 'Manual Title' }
+        })
+
+        expect(onChangeTitle).toHaveBeenCalledWith('Manual Title')
+    })
+
     it('describes display_image as user output rather than image input', async () => {
         const mcp = await connect(false)
         const tools = await mcp.listTools()

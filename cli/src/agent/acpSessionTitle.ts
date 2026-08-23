@@ -6,32 +6,47 @@ import { normalizeNativeSessionTitle } from '@/agent/nativeSessionTitle';
 type AcpSessionTitleBackend = Pick<AcpSdkBackend, 'setSessionInfoUpdateListener'>;
 type AcpSessionTitleClient = Pick<ApiSessionClient, 'sendClaudeSessionMessage'>;
 
-/** Creates a normalized, deduplicated native-title sink for a HAPI session. */
-function createSessionTitleSync(client: AcpSessionTitleClient): (title: unknown) => void {
-    let lastTitle: string | null = null;
+export interface AcpSessionTitleController {
+    syncNativeTitle: (title: unknown) => void;
+    markManualTitle: () => void;
+}
 
-    return (title) => {
-        const normalizedTitle = normalizeNativeSessionTitle(title);
-        if (!normalizedTitle || normalizedTitle === lastTitle) {
-            return;
+/** Creates a normalized, deduplicated native-title sink for a HAPI session. */
+export function createAcpSessionTitleSync(client: AcpSessionTitleClient): AcpSessionTitleController {
+    let lastTitle: string | null = null;
+    let manual = false;
+
+    return {
+        syncNativeTitle: (title) => {
+            if (manual) {
+                return;
+            }
+            const normalizedTitle = normalizeNativeSessionTitle(title);
+            if (!normalizedTitle || normalizedTitle === lastTitle) {
+                return;
+            }
+            lastTitle = normalizedTitle;
+            client.sendClaudeSessionMessage({
+                type: 'summary',
+                summary: normalizedTitle,
+                leafUuid: randomUUID()
+            });
+        },
+        markManualTitle: () => {
+            manual = true;
         }
-        lastTitle = normalizedTitle;
-        client.sendClaudeSessionMessage({
-            type: 'summary',
-            summary: normalizedTitle,
-            leafUuid: randomUUID()
-        });
     };
 }
 
 /** Syncs agent-generated ACP session titles into HAPI session metadata. */
 export function registerAcpSessionTitleSync(
     backend: AcpSessionTitleBackend,
-    client: AcpSessionTitleClient
+    client: AcpSessionTitleClient,
+    controller?: AcpSessionTitleController
 ): void {
-    const syncTitle = createSessionTitleSync(client);
+    const titleSync = controller ?? createAcpSessionTitleSync(client);
 
     backend.setSessionInfoUpdateListener(({ title }) => {
-        syncTitle(title);
+        titleSync.syncNativeTitle(title);
     });
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { registerAcpSessionTitleSync } from './acpSessionTitle';
+import { createAcpSessionTitleSync, registerAcpSessionTitleSync } from './acpSessionTitle';
 import type { AcpSessionInfoUpdate } from './backends/acp/AcpSdkBackend';
 
 describe('registerAcpSessionTitleSync', () => {
@@ -26,6 +26,22 @@ describe('registerAcpSessionTitleSync', () => {
         expect(sendClaudeSessionMessage).toHaveBeenCalledWith({
             type: 'summary',
             summary: 'Native Cursor Title',
+            leafUuid: expect.any(String)
+        });
+    });
+
+    it('stops syncing native titles after a manual title is set', () => {
+        const sendClaudeSessionMessage = vi.fn();
+        const controller = createAcpSessionTitleSync({ sendClaudeSessionMessage });
+
+        controller.syncNativeTitle('Native Title');
+        controller.markManualTitle();
+        controller.syncNativeTitle('Newer Native Title');
+
+        expect(sendClaudeSessionMessage).toHaveBeenCalledTimes(1);
+        expect(sendClaudeSessionMessage).toHaveBeenCalledWith({
+            type: 'summary',
+            summary: 'Native Title',
             leafUuid: expect.any(String)
         });
     });
