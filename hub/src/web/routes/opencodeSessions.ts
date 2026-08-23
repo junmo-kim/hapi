@@ -333,7 +333,17 @@ export function createOpencodeSessionRoutes(options: {
                 existingSession: importedByOpencodeId.get(sessionId) ?? null
             }))
             if (!result.error && result.hapiSessionId && Object.keys(launchConfig).length > 0) {
-                await engine.applySessionConfig(result.hapiSessionId, launchConfig)
+                // The transcript is already persisted here; a config failure
+                // must stay scoped to this session's result instead of turning
+                // into an unstructured 500 that aborts the rest of a bulk run.
+                try {
+                    await engine.applySessionConfig(result.hapiSessionId, launchConfig)
+                } catch (error) {
+                    result.error = {
+                        code: 'config_failed',
+                        message: error instanceof Error ? error.message : 'Failed to apply OpenCode launch config'
+                    }
+                }
             }
             results.push(result)
         }

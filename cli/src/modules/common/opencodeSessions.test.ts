@@ -251,4 +251,34 @@ describe('local opencode sessions', () => {
         expect(output.missingTables.summaries).toEqual([])
         expect(output.missingTables.byIds).toEqual([])
     })
+
+    it('rejects instead of returning a partial transcript when a middle part query fails', async () => {
+        const { listLocalOpencodeSessionsWithMessagesByIds } = await import('./opencodeSessions')
+        let partReads = 0
+        const stmt = (rows: unknown[]) => ({ all: () => rows, get: () => rows[0] })
+        const fakeDb = {
+            query(sql: string) {
+                if (/FROM part WHERE/.test(sql)) {
+                    partReads += 1
+                    if (partReads === 2) {
+                        return { all: () => { throw new Error('injected part read failure') }, get: () => undefined }
+                    }
+                }
+                if (/sqlite_master/.test(sql)) return stmt([{ name: 'x' }])
+                if (/FROM session WHERE id/.test(sql)) {
+                    return stmt([{ id: 's1', title: 'T', directory: '/tmp', time_updated: 7000 }])
+                }
+                if (/FROM message WHERE session_id/.test(sql)) {
+                    return stmt([
+                        { id: 'm1', data: JSON.stringify({ role: 'user' }), time_created: 7100 },
+                        { id: 'm2', data: JSON.stringify({ role: 'assistant' }), time_created: 7200 }
+                    ])
+                }
+                return stmt([])
+            },
+            close: () => {}
+        }
+        await expect(listLocalOpencodeSessionsWithMessagesByIds(new Set(['s1']), async () => fakeDb))
+            .rejects.toThrow('injected part read failure')
+    })
 })

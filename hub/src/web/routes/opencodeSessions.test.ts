@@ -312,6 +312,37 @@ describe('OpenCode session import', () => {
         expect(applied).toEqual([{ sessionId: importedSessionId, config: { model: 'opengpt/5.2-max', modelReasoningEffort: 'high', permissionMode: 'yolo' } }])
     })
 
+    it('reports a per-session config_failed result instead of a 500 when applySessionConfig throws', async () => {
+        const { store } = setup()
+        const selectedMachine = machine('machine-1')
+        const engine = {
+            getOnlineMachinesByNamespace: () => [selectedMachine],
+            listOpencodeSessionsForMachine: async () => ({
+                success: true,
+                sessions: [transcript('native-cfgfail', [userMessage('native-cfgfail', 'msg-1', 'one', 1_000)])]
+            }),
+            applySessionConfig: async () => {
+                throw new Error('rpc timeout')
+            },
+            recordSessionActivity: (sessionId: string, updatedAt: number) => {
+                store.sessions.touchSessionUpdatedAt(sessionId, updatedAt, 'default')
+            },
+            handleRealtimeEvent: () => {}
+        } as unknown as SyncEngine
+        const app = appWith(store, engine)
+
+        const response = await app.request('/api/opencode/import-sessions', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ sessionIds: ['native-cfgfail'], permissionMode: 'yolo' })
+        })
+        expect(response.status).toBe(200)
+        const body = await response.json() as { success: boolean; results: Array<{ hapiSessionId?: string; error?: { code: string; message: string } }> }
+        expect(body.success).toBe(false)
+        expect(body.results[0]?.error).toMatchObject({ code: 'config_failed', message: 'rpc timeout' })
+        expect(body.results[0]?.hapiSessionId).toBeTruthy()
+    })
+
     it('resets persisted launch config when the picker sends explicit defaults', async () => {
         const { store } = setup()
         const selectedMachine = machine('machine-1')
