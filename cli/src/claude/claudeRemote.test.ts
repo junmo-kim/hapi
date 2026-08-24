@@ -402,10 +402,12 @@ describe('claudeRemote /compact result reporting', () => {
         session_id: 's-1'
     } as unknown as SDKMessage;
 
+    let lastForwarded: SDKMessage[] = [];
     async function runCompact(sdkMessages: SDKMessage[]): Promise<string[]> {
         const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
         const { claudeRemote } = await import('./claudeRemote');
         const completionEvents: string[] = [];
+        const forwarded: SDKMessage[] = [];
 
         queryMock.mockReturnValueOnce(createAsyncStream(sdkMessages));
 
@@ -432,7 +434,9 @@ describe('claudeRemote /compact result reporting', () => {
                 },
                 isAborted: () => false,
                 onSessionFound: () => {},
-                onMessage: () => {},
+                onMessage: (message) => {
+                    forwarded.push(message);
+                },
                 onCompletionEvent: (message) => {
                     completionEvents.push(message);
                 },
@@ -443,6 +447,7 @@ describe('claudeRemote /compact result reporting', () => {
             querySpy.mockRestore();
         }
 
+        lastForwarded = forwarded;
         return completionEvents;
     }
 
@@ -509,6 +514,33 @@ describe('claudeRemote /compact result reporting', () => {
         ]);
 
         expect(completionEvents).toEqual(['📦 Compaction started', '📦 Compacted (34492 → 2082 tokens)']);
+    }, 15_000);
+
+    it('does not relay the compact_boundary system message during a manual /compact', async () => {
+        // The boundary is already surfaced by the completion output (summary
+        // card or token-delta line). Relaying it too renders a second
+        // "Conversation compacted" event line next to it in the web chat.
+        await runCompact([
+            {
+                type: 'system',
+                subtype: 'status',
+                status: 'compacting',
+                session_id: 's-1',
+                uuid: 'u-1'
+            } as unknown as SDKMessage,
+            {
+                type: 'system',
+                subtype: 'compact_boundary',
+                compact_metadata: { trigger: 'manual', pre_tokens: 34492, post_tokens: 2082 },
+                session_id: 's-1',
+                uuid: 'u-2'
+            } as unknown as SDKMessage,
+            resultMessage
+        ]);
+
+        expect(
+            lastForwarded.some((m) => m.type === 'system' && (m as { subtype?: string }).subtype === 'compact_boundary')
+        ).toBe(false);
     }, 15_000);
 
     it('hands compact completion to the ready phase so the result carrier can flush first', async () => {

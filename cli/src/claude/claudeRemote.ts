@@ -321,8 +321,16 @@ export async function claudeRemote(opts: {
             );
             logger.debugLargeJson(`[claudeRemote] Message ${message.type}`, message);
 
-            // Handle messages
-            opts.onMessage(message);
+            // Handle messages. During a manual /compact the compact_boundary
+            // system message stays unrelayed: its only web rendering is a
+            // "Conversation compacted" status line, which would duplicate the
+            // completion output (summary card or token-delta line) right below
+            // it. Auto-compact boundaries keep relaying as before.
+            const isManualCompactBoundary =
+                isCompactCommand && message.type === 'system' && (message as { subtype?: string }).subtype === 'compact_boundary';
+            if (!isManualCompactBoundary) {
+                opts.onMessage(message);
+            }
 
             // Handle special system messages
             if (message.type === 'system' && message.subtype === 'init') {
