@@ -593,4 +593,25 @@ describe('unwrapOpencodeReadOutput', () => {
         expect(unwrapOpencodeReadOutput('plain text').path).toBeNull()
         expect(unwrapOpencodeReadOutput('plain text').isOpencodeRead).toBe(false)
     })
+
+    it('does not unwrap a plain Read whose file text contains a literal <content> element', async () => {
+        const { unwrapOpencodeReadOutput } = await import('@/components/ToolCard/views/_results')
+        const text = '1: const xml = \'<content>literal</content>\'\n2: export {}'
+        const out = unwrapOpencodeReadOutput(text)
+        expect(out.isOpencodeRead).toBe(false)
+        expect(out.body).toBe(text)
+    })
+
+    it('keeps an embedded </content> inside the wrapper body (greedy capture)', async () => {
+        const { unwrapOpencodeReadOutput } = await import('@/components/ToolCard/views/_results')
+        const out = unwrapOpencodeReadOutput('<path>/tmp/a.xml</path>\n<type>file</type>\n<content>\n1: <content>x</content>\n2: tail</content>')
+        expect(out.isOpencodeRead).toBe(true)
+        expect(out.body).toBe('1: <content>x</content>\n2: tail')
+    })
+
+    it('preserves real trailing whitespace in the unwrapped body', async () => {
+        const { unwrapOpencodeReadOutput } = await import('@/components/ToolCard/views/_results')
+        const out = unwrapOpencodeReadOutput('<path>/tmp/a.md</path>\n<type>file</type>\n<content>\n1: alpha\n2: beta\n\n</content>')
+        expect(out.body).toBe('1: alpha\n2: beta\n\n')
+    })
 })

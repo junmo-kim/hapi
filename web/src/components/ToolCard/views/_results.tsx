@@ -427,12 +427,11 @@ export function parseNumberedFileLines(text: string): { startLine: number; body:
 }
 
 export function unwrapOpencodeReadOutput(text: string): { path: string | null; body: string; isOpencodeRead: boolean } {
-    const pathMatch = text.match(/<path>([\s\S]*?)<\/path>/)
-    const contentMatch = text.match(/<content>\n?([\s\S]*?)<\/content>/)
-    if (!contentMatch) return { path: null, body: text, isOpencodeRead: false }
+    const wrapper = text.match(/^<path>([\s\S]*?)<\/path>\s*<type>file<\/type>\s*<content>\n?([\s\S]*)<\/content>\s*$/)
+    if (!wrapper) return { path: null, body: text, isOpencodeRead: false }
     return {
-        path: pathMatch?.[1]?.trim() ?? null,
-        body: contentMatch[1].replace(/\n\(End of file[^)]*\)\n?$/, '').trimEnd(),
+        path: wrapper[1].trim(),
+        body: wrapper[2].replace(/\n\(End of file[^)]*\)\n?$/, ''),
         isOpencodeRead: true
     }
 }
