@@ -525,3 +525,72 @@ describe('parseNumberedFileLines', () => {
         expect(parseNumberedFileLines('just some\nplain text')).toBeNull()
     })
 })
+
+describe('opencode native read result formatting', () => {
+    function renderToolResult(toolName: string, result: unknown, input: unknown) {
+        const ResultView = getToolResultViewComponent(toolName)
+        const block: ToolCallBlock = {
+            id: 'tool-read',
+            localId: null,
+            createdAt: 0,
+            kind: 'tool-call',
+            children: [],
+            tool: {
+                id: 'tool-read',
+                name: toolName,
+                state: 'completed',
+                input,
+                result,
+                createdAt: 0,
+                startedAt: null,
+                completedAt: 0,
+                execStartedAt: null,
+                execCompletedAt: null,
+                description: null,
+                nativeKind: null
+            }
+        }
+        return render(
+            <I18nProvider>
+                <ResultView block={block} metadata={null} surface="dialog" />
+            </I18nProvider>
+        )
+    }
+
+    it('routes lowercase opencode read to the file-content code block view', () => {
+        const result = '<path>/tmp/example.ts</path>\n<type>file</type> <content> 1: export type A = 1 2: export type B = 2 3: </content>'
+        const numbered = '1: export type A = 1\n2: export type B = 2\n3:'
+        const { container } = renderToolResult('read', numbered, { filePath: '/tmp/example.ts' })
+
+        const pre = container.querySelector('pre')
+        expect(pre).not.toBeNull()
+        expect(pre).toHaveTextContent('export type A = 1')
+        expect(container).toHaveTextContent('File content')
+    })
+
+    it('falls back to the raw opencode read payload as a code block when unnumbered', () => {
+        const result = '<path>/tmp/a.txt</path>\n<type>file</type> <content>hello</content>'
+        const { container } = renderToolResult('read', result, { filePath: '/tmp/a.txt' })
+
+        const pre = container.querySelector('pre')
+        expect(pre).not.toBeNull()
+        expect(pre).toHaveTextContent('hello')
+    })
+})
+
+describe('unwrapOpencodeReadOutput', () => {
+    it('strips the path/type/content wrapper and keeps numbered body', async () => {
+        const { unwrapOpencodeReadOutput } = await import('@/components/ToolCard/views/_results')
+        const out = unwrapOpencodeReadOutput('<path>/tmp/a.ts</path>\n<type>file</type>\n<content>\n1: alpha\n2: beta</content>')
+        expect(out.path).toBe('/tmp/a.ts')
+        expect(out.body).toBe('1: alpha\n2: beta')
+        expect(out.isOpencodeRead).toBe(true)
+    })
+
+    it('returns the text untouched when there is no content wrapper', async () => {
+        const { unwrapOpencodeReadOutput } = await import('@/components/ToolCard/views/_results')
+        expect(unwrapOpencodeReadOutput('plain text').body).toBe('plain text')
+        expect(unwrapOpencodeReadOutput('plain text').path).toBeNull()
+        expect(unwrapOpencodeReadOutput('plain text').isOpencodeRead).toBe(false)
+    })
+})
