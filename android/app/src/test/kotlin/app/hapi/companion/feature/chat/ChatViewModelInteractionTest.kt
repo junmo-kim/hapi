@@ -39,6 +39,7 @@ import app.hapi.protocol.wire.OptionalField
 import app.hapi.protocol.wire.QueuedStateResponse
 import app.hapi.protocol.wire.ReopenSessionResponse
 import app.hapi.protocol.wire.ResumeSessionResponse
+import app.hapi.protocol.wire.RetryIndeterminateMessageResponse
 import app.hapi.protocol.wire.SendMessageRequest
 import app.hapi.protocol.wire.Session
 import app.hapi.protocol.wire.SessionMetadata
@@ -204,6 +205,9 @@ private class RecordingChatApi : ChatSessionApi {
         cancelCalls.value = cancelCalls.value + messageId
         return cancelResult
     }
+
+    override suspend fun retryIndeterminateMessage(sessionId: String, messageId: String): RetryIndeterminateMessageResponse =
+        RetryIndeterminateMessageResponse(status = "retried", localId = messageId)
 
     override suspend fun steerMessage(sessionId: String, messageId: String): SteerQueuedMessageResponse {
         steerCalls.value = steerCalls.value + messageId

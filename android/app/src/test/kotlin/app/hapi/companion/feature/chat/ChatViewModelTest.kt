@@ -20,6 +20,7 @@ import app.hapi.protocol.wire.CodexModelsResponse
 import app.hapi.protocol.wire.DecryptedMessage
 import app.hapi.protocol.wire.HapiJson
 import app.hapi.protocol.wire.ResumeSessionResponse
+import app.hapi.protocol.wire.RetryIndeterminateMessageResponse
 import app.hapi.protocol.wire.SendMessageRequest
 import app.hapi.protocol.wire.SteerQueuedMessageResponse
 import app.hapi.protocol.wire.Machine
@@ -144,6 +145,9 @@ private class FakeMessagesApi : ChatSessionApi {
     override suspend fun sendMessage(sessionId: String, message: SendMessageRequest) {}
     override suspend fun cancelMessage(sessionId: String, messageId: String): CancelMessageResponse =
         CancelMessageResponse(status = "cancelled", localId = messageId)
+    override suspend fun retryIndeterminateMessage(sessionId: String, messageId: String): RetryIndeterminateMessageResponse =
+        RetryIndeterminateMessageResponse(status = "retried", localId = messageId)
+
     override suspend fun steerMessage(sessionId: String, messageId: String): SteerQueuedMessageResponse =
         SteerQueuedMessageResponse(status = "steered", localId = messageId)
     override suspend fun abortSession(sessionId: String) {}

@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { getAgentLaunchCommand } from '@/agent/agentLaunchCommand'
 import { AGY_MODEL_LABELS, AGY_MODEL_PRESETS } from '@hapi/protocol'
 import type { AgyModelsResponse } from '@hapi/protocol/apiTypes'
 
@@ -127,7 +128,7 @@ function buildAgyProbeEnv(): NodeJS.ProcessEnv {
 // unparseable output). An auth failure is surfaced so the UI can prompt sign-in.
 async function fetchAgyModels(): Promise<ListAgyModelsResponse> {
     return await new Promise((resolve) => {
-        const child = spawn('agy', ['models'], {
+        const child = spawn(getAgentLaunchCommand('agy'), ['models'], {
             stdio: ['ignore', 'pipe', 'pipe'],
             env: buildAgyProbeEnv(),
             windowsHide: process.platform === 'win32',

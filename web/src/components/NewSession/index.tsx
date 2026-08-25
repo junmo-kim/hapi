@@ -16,6 +16,7 @@ import { useClaudeModelsForCwd } from '@/hooks/queries/useClaudeModelsForCwd'
 import { useGrokModelsForCwd } from '@/hooks/queries/useGrokModelsForCwd'
 import { useCopilotModelsForCwd } from '@/hooks/queries/useCopilotModelsForCwd'
 import { usePiModelsForMachine } from '@/hooks/queries/usePiModelsForMachine'
+import { useAgentAvailability } from '@/hooks/queries/useAgentAvailability'
 import { useSessions } from '@/hooks/queries/useSessions'
 import { useActiveSuggestions, type Suggestion } from '@/hooks/useActiveSuggestions'
 import { useDirectorySuggestions } from '@/hooks/useDirectorySuggestions'
@@ -282,6 +283,24 @@ export function NewSession(props: {
         () => (machineId ? props.machines.find((machine) => machine.id === machineId) ?? null : null),
         [machineId, props.machines]
     )
+    const agentAvailability = useAgentAvailability({
+        api: props.api,
+        machineId,
+    })
+    const availableAgents = useMemo(
+        () => agentAvailability.agents
+            .filter((entry) => entry.available && entry.agent !== 'gemini')
+            .map((entry) => entry.agent as AgentType),
+        [agentAvailability.agents]
+    )
+    const selectedAgentAvailable = availableAgents.includes(agent)
+
+    useEffect(() => {
+        if (agentAvailability.isLoading || agentAvailability.error || availableAgents.length === 0) return
+        if (availableAgents.includes(agent)) return
+        preserveRestoredDraftRef.current = false
+        setAgent(availableAgents[0]!)
+    }, [agent, agentAvailability.error, agentAvailability.isLoading, availableAgents])
     const codexModelsState = useCodexModels({
         api: props.api,
         machineId,
@@ -510,7 +529,11 @@ export function NewSession(props: {
         [allPaths, deferredDirectory]
     )
 
-    const { pathExistence, checkPathsExists } = useMachinePathsExists(props.api, machineId, pathsToCheck)
+    const { pathExistence, outsideWorkspaceRoots, checkPathsExists } = useMachinePathsExists(
+        props.api,
+        machineId,
+        pathsToCheck
+    )
 
     const verifiedPaths = useMemo(
         () => allPaths.filter((path) => pathExistence[path]),
@@ -970,9 +993,20 @@ export function NewSession(props: {
     ])
 
     const currentDirectoryExists = trimmedDirectory ? pathExistence[trimmedDirectory] : undefined
-    const needsDirectoryCreationWarning = sessionType === 'simple' && trimmedDirectory !== '' && currentDirectoryExists === false
-    const missingWorktreeDirectory = sessionType === 'worktree' && trimmedDirectory !== '' && currentDirectoryExists === false
-    const directoryStatusMessage = missingWorktreeDirectory
+    const directoryOutsideWorkspaceRoots = trimmedDirectory
+        ? outsideWorkspaceRoots.has(trimmedDirectory)
+        : false
+    const needsDirectoryCreationWarning = !directoryOutsideWorkspaceRoots
+        && sessionType === 'simple'
+        && trimmedDirectory !== ''
+        && currentDirectoryExists === false
+    const missingWorktreeDirectory = !directoryOutsideWorkspaceRoots
+        && sessionType === 'worktree'
+        && trimmedDirectory !== ''
+        && currentDirectoryExists === false
+    const directoryStatusMessage = directoryOutsideWorkspaceRoots
+        ? t('newSession.directoryOutsideWorkspaceRoots')
+        : missingWorktreeDirectory
         ? t('session.directoryMissingWorktree')
         : needsDirectoryCreationWarning
             ? (
@@ -981,7 +1015,11 @@ export function NewSession(props: {
                     : t('session.directoryMissingSimple')
             )
             : null
-    const directoryStatusTone = missingWorktreeDirectory ? 'error' : needsDirectoryCreationWarning ? 'warning' : null
+    const directoryStatusTone = directoryOutsideWorkspaceRoots || missingWorktreeDirectory
+        ? 'error'
+        : needsDirectoryCreationWarning
+            ? 'warning'
+            : null
     const createLabel = needsDirectoryCreationWarning && directoryCreationConfirmed
         ? t('session.createAndCreateDirectory')
         : undefined
@@ -1518,8 +1556,18 @@ export function NewSession(props: {
         setIsCreating(true)
         setError(null)
         try {
+            if (!selectedAgentAvailable) {
+                haptic.notification('error')
+                setError(t('newSession.agentUnavailable'))
+                return
+            }
             const existsResult = await checkPathsExists([trimmedDirectory])
-            const directoryExists = existsResult[trimmedDirectory]
+            if (existsResult.outsideWorkspaceRoots?.includes(trimmedDirectory)) {
+                haptic.notification('error')
+                setError(t('newSession.directoryOutsideWorkspaceRoots'))
+                return
+            }
+            const directoryExists = existsResult.exists[trimmedDirectory]
 
             if (sessionType === 'worktree' && directoryExists === false) {
                 haptic.notification('error')
@@ -1646,7 +1694,7 @@ export function NewSession(props: {
                 model: resolvedModel,
                 effort: resolvedEffort,
                 modelReasoningEffort: resolvedModelReasoningEffort,
-                yolo: agent === 'grok' || usesCodexFamilyPermissions ? undefined : yoloMode,
+                yolo: agent === 'dsh' || agent === 'grok' || usesCodexFamilyPermissions ? undefined : yoloMode,
                 permissionMode: agent === 'grok'
                     ? grokPermissionMode
                     : usesCodexFamilyPermissions
@@ -1731,6 +1779,10 @@ export function NewSession(props: {
         && trimmedDirectory
         && !isFormDisabled
         && !missingWorktreeDirectory
+        && !directoryOutsideWorkspaceRoots
+        && !agentAvailability.isLoading
+        && !agentAvailability.error
+        && selectedAgentAvailable
         && !isLaunchPreferenceValidationPending
         && !fastModeSelectionPending
     )
@@ -1775,9 +1827,30 @@ export function NewSession(props: {
             />
             <AgentSelector
                 agent={agent}
-                isDisabled={isFormDisabled}
+                agents={availableAgents}
+                isDisabled={isFormDisabled || agentAvailability.isLoading || Boolean(agentAvailability.error)}
                 onAgentChange={handleAgentChange}
             />
+            {agentAvailability.isLoading ? (
+                <div className="px-3 py-2 text-xs text-[var(--app-hint)]">
+                    {t('newSession.agentAvailabilityLoading')}
+                </div>
+            ) : agentAvailability.error ? (
+                <div className="flex items-center justify-between gap-3 px-3 py-2 text-xs text-red-600">
+                    <span>
+                        {agentAvailability.upgradeRequired
+                            ? t('newSession.runnerUpgradeRequired')
+                            : t('newSession.agentAvailabilityFailed')}
+                    </span>
+                    <button type="button" className="underline" onClick={agentAvailability.refetch}>
+                        {t('button.retry')}
+                    </button>
+                </div>
+            ) : availableAgents.length === 0 ? (
+                <div className="px-3 py-2 text-xs text-red-600">
+                    {t('newSession.noAvailableAgents')}
+                </div>
+            ) : null}
             {agent === 'codex' ? (
                 <CodexImportActions
                     selectedSession={selectedCodexImportSession}
@@ -1804,7 +1877,7 @@ export function NewSession(props: {
                     onClear={() => setSelectedPiImportSessionId(null)}
                 />
             ) : null}
-            {agent === 'agy' ? (
+            {agent === 'dsh' ? null : agent === 'agy' ? (
                 <AgyModelSelector
                     machineId={machineId}
                     isLoading={agyModelsState.isLoading}

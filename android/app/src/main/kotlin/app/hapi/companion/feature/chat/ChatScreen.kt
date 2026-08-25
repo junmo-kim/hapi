@@ -352,6 +352,7 @@ fun ChatScreen(
                 QueuedMessagesBar(
                     rows = queuedRows,
                     onSteer = viewModel::steerQueuedMessage,
+                    onRetry = viewModel::retryIndeterminateMessage,
                     onEdit = viewModel::editQueuedMessage,
                     onCancel = viewModel::cancelQueuedMessage,
                 )

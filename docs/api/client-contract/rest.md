@@ -59,14 +59,15 @@ Optional for v1 (endpoints exist; the v1 native scope does not require them): `P
 
 ### Messages
 
-Source: `hub/src/web/routes/messages.ts`; schemas `MessagesQuerySchema`, `SendMessageRequestSchema`, `QueuedStateRequestSchema` (`shared/src/apiTypes.ts`), responses `CancelMessageResponseSchema`, `SteerQueuedMessageResponseSchema` (`shared/src/schemas.ts`).
+Source: `hub/src/web/routes/messages.ts`; schemas `MessagesQuerySchema`, `SendMessageRequestSchema`, `QueuedStateRequestSchema` (`shared/src/apiTypes.ts`), responses `CancelMessageResponseSchema`, `SteerQueuedMessageResponseSchema` (`shared/src/schemas.ts`). Unknown steer delivery is durable and user-resolvable; native clients must implement the same transitions.
 
 | Method & path | Request | Response |
 |---|---|---|
 | `GET /api/sessions/:id/messages` | Query: `limit?` (1–200, default 50), cursor pairs `beforeSeq+beforeAt` \| `afterSeq+afterAt` (+ optional `untilSeq+untilAt`, `epoch` with `after`) | `MessagesResponse` `{messages: DecryptedMessage[], page: {direction, limit, epoch, reset, nextBefore*/nextAfter*, snapshotHead*, hasMore}}` — full cursor semantics in [Pagination](./pagination.md) |
 | `POST /api/sessions/:id/messages` | `{text, localId?, attachments?, scheduledAt?, deliveryMode?: 'queue'\|'steer'}` — text or attachments required; `scheduledAt` requires `localId`, must be ≤ 7 days out, excludes attachments and steer | `{ok: true}` — the message itself arrives via SSE (`message-received`), reconciled by `localId` |
-| `DELETE /api/sessions/:id/messages/:messageId` | — | `{status: 'cancelled', localId}` \| `{status: 'invoked', message}` (cancel a queued message; `invoked` = too late) |
+| `DELETE /api/sessions/:id/messages/:messageId` | — | `{status: 'cancelled', localId}` \| `{status: 'invoked', message}` \| `{status: 'busy', localId}` (cancel; `busy` = steer still resolving) |
 | `POST /api/sessions/:id/messages/:messageId/steer` | — | `{status: 'steered', localId}` \| `{status: 'invoked', message}` \| `{status: 'failed', error, localId}` |
+| `POST /api/sessions/:id/messages/:messageId/retry` | — | `{status: 'retried', localId}` \| `{status: 'already-queued', localId}` \| `{status: 'retry-unavailable', localId}` \| `{status: 'invoked', message}` \| `{status: 'not-found'}` — explicit retry only; never automatic replay |
 | `POST /api/sessions/:id/messages/queued-state` | `{localIds: string[]}` (≤ 1000, deduped) | `{queuedLocalIds: string[], invokedLocalMessages: [{localId, invokedAt}]}` — resync optimistic sends after reconnect |
 
 The hub stamps `sentFrom: 'webapp'` on REST-sent messages server-side; the request body has no such field.
@@ -115,12 +116,21 @@ Source: `hub/src/web/routes/machines.ts`; schemas `SpawnSessionRequestSchema`, `
 |---|---|---|
 | `GET /api/machines` | — | `{machines: Machine[]}` (online machines in the caller's namespace) |
 | `PATCH /api/machines/:id` | `{displayName}` (trimmed; ≤ 64 chars; empty clears back to hostname) | `{ok: true}` |
-| `POST /api/machines/:id/spawn` | `{directory, agent?, model?, effort?, modelReasoningEffort?, yolo?, permissionMode?, sessionType?: 'simple'\|'worktree', worktreeName?, serviceTier?, collaborationMode?, copilotAgentMode?, startingMode?: 'remote'\|'pty'}` | `{type: 'success', sessionId}` \| `{type: 'error', message}` (agy accepts only `remote`) |
+| `GET /api/machines/:id/agent-availability` | — | `{agents: {agent, available, reason?: 'not_found'\|'invalid_configuration'}[]}`; 409 `runner_upgrade_required` on old runners |
+| `POST /api/machines/:id/spawn` | `{directory, agent?, model?, effort?, modelReasoningEffort?, yolo?, permissionMode?, sessionType?: 'simple'\|'worktree', worktreeName?, serviceTier?, collaborationMode?, copilotAgentMode?, startingMode?: 'remote'\|'pty'}` | `{type: 'success', sessionId}` \| `{type: 'error', message, code?, agent?}` (agy accepts only `remote`) |
 | `POST /api/machines/:id/list-directory` | `{path, includeHidden?}` | `{success, entries?: (DirectoryEntry & {isGitRepo?})[], error?}` |
-| `POST /api/machines/:id/paths/exists` | `{paths: string[]}` (≤ 1000) | `{exists: Record<string, boolean>}` |
+| `POST /api/machines/:id/paths/exists` | `{paths: string[]}` (≤ 1000) | `{exists: Record<string, boolean>, outsideWorkspaceRoots?: string[]}` |
 | `POST /api/machines/:id/restart-runner` | `{}` | `{message}`; errors carry `code: 'machine_not_found' \| 'machine_offline'` |
 
-Note the spawn response is discriminated on `type`, not HTTP status — a failed spawn is still HTTP 200.
+Note the spawn response is discriminated on `type`, not HTTP status — a failed
+spawn is still HTTP 200. Stable spawn failure codes are
+`agent_unavailable`, `runner_upgrade_required`, and
+`outside_workspace_roots`. Clients should fetch Agent availability when the
+machine is selected and use that result to drive the form. The runner performs
+the authoritative availability check as part of spawning, covering changes
+after the form-level query without requiring a duplicate client RPC.
+Availability checks executables and static runner configuration only; it does
+not execute the Agent or verify account/login state.
 
 ### Git & files (RPC-wrapped)
 

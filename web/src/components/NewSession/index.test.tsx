@@ -15,6 +15,9 @@ const mocks = vi.hoisted(() => ({
     onSuccess: vi.fn(),
     notification: vi.fn(),
     checkPathsExists: vi.fn(),
+    availableAgents: [
+        'agy', 'claude', 'codex', 'dsh', 'copilot', 'cursor', 'grok', 'kimi', 'opencode', 'pi'
+    ].map((agent) => ({ agent, available: true })),
     codexModelsLoading: false,
     agyModelsLoading: false,
     agyModels: [{ modelId: 'gemini-3.6-flash-low', name: 'Gemini 3.6 Flash (Low)' }],
@@ -63,7 +66,17 @@ vi.mock('@/hooks/useRecentPaths', () => ({
 vi.mock('@/hooks/useMachinePathsExists', () => ({
     useMachinePathsExists: () => ({
         pathExistence: { 'C:\\repo': mocks.directoryExists },
+        outsideWorkspaceRoots: new Set<string>(),
         checkPathsExists: mocks.checkPathsExists
+    })
+}))
+vi.mock('@/hooks/queries/useAgentAvailability', () => ({
+    useAgentAvailability: () => ({
+        agents: mocks.availableAgents,
+        isLoading: false,
+        error: null,
+        upgradeRequired: false,
+        refetch: vi.fn()
     })
 }))
 vi.mock('@/hooks/useDirectorySuggestions', () => ({
@@ -261,7 +274,15 @@ describe('NewSession launch preferences', () => {
         mocks.onSuccess.mockReset()
         mocks.notification.mockReset()
         mocks.checkPathsExists.mockReset()
-        mocks.checkPathsExists.mockImplementation(async () => ({ 'C:\\repo': mocks.directoryExists }))
+        mocks.checkPathsExists.mockImplementation(async () => ({
+            exists: { 'C:\\repo': mocks.directoryExists }
+        }))
+        mocks.availableAgents.splice(
+            0,
+            mocks.availableAgents.length,
+            ...['agy', 'claude', 'codex', 'dsh', 'copilot', 'cursor', 'grok', 'kimi', 'opencode', 'pi']
+                .map((agent) => ({ agent, available: true }))
+        )
         mocks.codexModelsLoading = false
         mocks.agyModelsLoading = false
         mocks.agyModels = [{ modelId: 'gemini-3.6-flash-low', name: 'Gemini 3.6 Flash (Low)' }]
@@ -280,6 +301,54 @@ describe('NewSession launch preferences', () => {
         mocks.refetchSessions.mockResolvedValue(undefined)
         mocks.addToast.mockReset()
         savePreferredAgent('codex')
+    })
+
+    it('hides unavailable Agents and falls back to the first available Agent', async () => {
+        savePreferredAgent('claude')
+        mocks.availableAgents.splice(
+            0,
+            mocks.availableAgents.length,
+            { agent: 'codex', available: true }
+        )
+
+        render(
+            <NewSession
+                api={api}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory="C:\\repo"
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        await waitFor(() => expect(screen.getByDisplayValue('codex')).toBeChecked())
+        expect(screen.queryByDisplayValue('claude')).not.toBeInTheDocument()
+    })
+
+    it('refuses a directory rejected by workspace-root validation', async () => {
+        mocks.checkPathsExists.mockImplementation(async ([path]: string[]) => ({
+            exists: { [path]: false },
+            outsideWorkspaceRoots: [path]
+        }))
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'unexpected' })
+
+        render(
+            <NewSession
+                api={api}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory="C:\\repo"
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
+        fireEvent.click(screen.getByTestId('create'))
+
+        await waitFor(() => expect(screen.getByText('newSession.directoryOutsideWorkspaceRoots')).toBeInTheDocument())
+        expect(mocks.spawnSession).not.toHaveBeenCalled()
     })
 
     it('restores the last successful model and reasoning effort for the machine and agent', async () => {
@@ -535,6 +604,21 @@ describe('NewSession launch preferences', () => {
         await waitFor(() => expect(screen.getByTestId('create')).toBeDisabled())
     })
 
+    it('does not forward the global YOLO preference to managed DSH ACP', async () => {
+        savePreferredAgent('dsh')
+        savePreferredYoloMode(true)
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'dsh-session' })
+        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+
+        fireEvent.click(screen.getByTestId('create'))
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('dsh-session'))
+        expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({
+            agent: 'dsh',
+            yolo: undefined,
+            permissionMode: undefined
+        }))
+    })
+
     it('keeps an explicit OpenCode Default selection instead of restoring a concrete model', async () => {
         savePreferredAgent('opencode')
         mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'opencode-session' })
@@ -586,7 +670,7 @@ describe('NewSession launch preferences', () => {
     })
 
     it('spawns only once when Create is activated twice during directory validation', async () => {
-        let finishDirectoryCheck!: (result: Record<string, boolean>) => void
+        let finishDirectoryCheck!: (result: { exists: Record<string, boolean> }) => void
         mocks.checkPathsExists.mockReturnValue(new Promise((resolve) => {
             finishDirectoryCheck = resolve
         }))
@@ -606,7 +690,7 @@ describe('NewSession launch preferences', () => {
         const create = screen.getByTestId('create')
         fireEvent.click(create)
         fireEvent.click(create)
-        finishDirectoryCheck({ 'C:\\repo': true })
+        finishDirectoryCheck({ exists: { 'C:\\repo': true } })
 
         await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('session-1'))
         expect(mocks.checkPathsExists).toHaveBeenCalledTimes(1)

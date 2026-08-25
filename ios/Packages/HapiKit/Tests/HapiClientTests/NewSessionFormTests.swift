@@ -86,6 +86,16 @@ struct NewSessionSpawnBodyTests {
         """)
     }
 
+    @Test func dshUsesManagedPermissionPolicyAndOmitsYolo() throws {
+        let body = try canonicalBody(
+            NewSessionForm(directory: "/repo", agent: .dsh, yolo: true),
+            codexFastTierVisible: false
+        )
+        #expect(body == """
+        {"agent":"dsh","directory":"/repo","sessionType":"simple"}
+        """)
+    }
+
     @Test func codexDefaultSelectionsSendNoOptionalFieldsAndHiddenFastTierNoServiceTier() throws {
         let body = try canonicalBody(
             NewSessionForm(directory: "/repo", agent: .codex, serviceTier: .fast),
@@ -143,6 +153,35 @@ struct NewSessionLogicTests {
                 query: NewSessionLogic.ParentQuery(parent: "/", prefix: "da"),
                 entries: [dir("data")]
             ) == ["/data"]
+        )
+    }
+
+    @Test func windowsDriveAndUNCAutocompletePreserveSeparators() {
+        #expect(
+            NewSessionLogic.parentQuery(for: "C:\\Users\\pro")
+                == NewSessionLogic.ParentQuery(parent: "C:\\Users", prefix: "pro", separator: "\\")
+        )
+        #expect(
+            NewSessionLogic.parentQuery(for: "C:\\Use")
+                == NewSessionLogic.ParentQuery(parent: "C:\\", prefix: "Use", separator: "\\")
+        )
+        #expect(
+            NewSessionLogic.parentQuery(for: "\\\\server\\share\\pro")
+                == NewSessionLogic.ParentQuery(
+                    parent: "\\\\server\\share",
+                    prefix: "pro",
+                    separator: "\\"
+                )
+        )
+        #expect(
+            NewSessionLogic.buildSuggestions(
+                query: NewSessionLogic.ParentQuery(
+                    parent: "C:\\Users",
+                    prefix: "pro",
+                    separator: "\\"
+                ),
+                entries: [dir("projects")]
+            ) == ["C:\\Users\\projects"]
         )
     }
 

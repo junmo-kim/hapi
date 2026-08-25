@@ -13,7 +13,7 @@ public struct ComposerState: Equatable, Sendable {
     /// A send (or its inactive-session resume) is in flight — spinner on the
     /// send button.
     public let isSending: Bool
-    /// A turn is active: long-press send offers Steer, and Abort is shown.
+    /// A turn is active: long-press send offers Steer; an empty draft shows Stop.
     public let canSteer: Bool
 
     public init(text: String, isSending: Bool, canSteer: Bool) {
@@ -35,6 +35,7 @@ public struct QueuedMessageRow: Equatable, Sendable, Identifiable {
     public let canAct: Bool
     /// Steer offered: turn active, not future-scheduled, actionable.
     public let canSteer: Bool
+    public let indeterminate: Bool
 
     public init(
         id: String,
@@ -43,7 +44,8 @@ public struct QueuedMessageRow: Equatable, Sendable, Identifiable {
         attachmentNames: [String],
         scheduledAt: Int?,
         canAct: Bool,
-        canSteer: Bool
+        canSteer: Bool,
+        indeterminate: Bool = false
     ) {
         self.id = id
         self.localId = localId
@@ -52,6 +54,7 @@ public struct QueuedMessageRow: Equatable, Sendable, Identifiable {
         self.scheduledAt = scheduledAt
         self.canAct = canAct
         self.canSteer = canSteer
+        self.indeterminate = indeterminate
     }
 }
 

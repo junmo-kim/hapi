@@ -42,6 +42,7 @@ export const MODEL_OPTIONS: Record<AgentType, { value: string; label: string }[]
     codex: [
         { value: 'auto', label: 'Default' },
     ],
+    dsh: [],
     cursor: [],
     kimi: [
         { value: 'auto', label: 'Default' },

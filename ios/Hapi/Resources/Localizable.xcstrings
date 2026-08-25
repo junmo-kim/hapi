@@ -4101,6 +4101,156 @@
         }
       }
     },
+    "Checking installed Agents…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在检查已安装的代理…"
+          }
+        }
+      }
+    },
+    "Choose Directory": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择目录"
+          }
+        }
+      }
+    },
+    "Current Directory": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前目录"
+          }
+        }
+      }
+    },
+    "Directory must be inside one of this machine's workspace roots.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "目录必须位于此机器配置的某个工作区根目录内。"
+          }
+        }
+      }
+    },
+    "Failed to browse directories": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "浏览目录失败"
+          }
+        }
+      }
+    },
+    "Failed to check installed Agents": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "检查已安装代理失败"
+          }
+        }
+      }
+    },
+    "No subdirectories": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有子目录"
+          }
+        }
+      }
+    },
+    "No supported Agents are installed on this machine.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此机器上没有安装受支持的代理。"
+          }
+        }
+      }
+    },
+    "Select": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择"
+          }
+        }
+      }
+    },
+    "Show Hidden": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示隐藏目录"
+          }
+        }
+      }
+    },
+    "Subdirectories": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "子目录"
+          }
+        }
+      }
+    },
+    "The selected Agent is not available on this machine.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "所选代理在此机器上不可用。"
+          }
+        }
+      }
+    },
+    "Up": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "上一级"
+          }
+        }
+      }
+    },
+    "Upgrade and restart this machine's HAPI runner before creating sessions.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "创建会话前，请升级并重启此机器上的 HAPI runner。"
+          }
+        }
+      }
+    },
+    "Workspace Roots": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "工作区根目录"
+          }
+        }
+      }
+    },
     "✓ Approved": {
       "localizations": {
         "zh-Hans": {

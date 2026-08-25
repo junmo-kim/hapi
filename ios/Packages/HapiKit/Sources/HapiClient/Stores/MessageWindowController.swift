@@ -434,6 +434,12 @@ public actor MessageWindowController {
         case .messagesConsumed(_, let eventSessionId, let localIds, let invokedAt)
             where eventSessionId == sessionId:
             markConsumed(localIds: localIds, invokedAt: invokedAt)
+        case .messagesIndeterminate(_, let eventSessionId, let localIds)
+            where eventSessionId == sessionId:
+            markIndeterminate(localIds: localIds)
+        case .messagesRequeued(_, let eventSessionId, let localIds)
+            where eventSessionId == sessionId:
+            markRequeued(localIds: localIds)
         case .messageCancelled(_, let eventSessionId, let messageId, _) where eventSessionId == sessionId:
             removeMessage(localIdOrId: messageId)
         case .messagesInvalidated(_, let eventSessionId) where eventSessionId == sessionId:
@@ -457,6 +463,16 @@ public actor MessageWindowController {
     public func markConsumed(localIds: [String], invokedAt: Int) {
         guard !localIds.isEmpty else { return }
         update { MessageWindowLogic.markConsumed($0, localIds: localIds, invokedAt: invokedAt) }
+        persist()
+    }
+
+    public func markIndeterminate(localIds: [String]) {
+        update { MessageWindowLogic.markIndeterminate($0, localIds: localIds) }
+        persist()
+    }
+
+    public func markRequeued(localIds: [String]) {
+        update { MessageWindowLogic.markRequeued($0, localIds: localIds) }
         persist()
     }
 
@@ -539,6 +555,7 @@ public actor MessageWindowController {
         let candidateLocalIds = queuedReconcileCandidateLocalIds()
         guard !candidateLocalIds.isEmpty else { return }
         var queuedLocalIds: [String] = []
+        var indeterminateLocalIds: [String] = []
         var invokedLocalMessages: [(localId: String, invokedAt: Int)] = []
         var start = 0
         while start < candidateLocalIds.count {
@@ -546,6 +563,7 @@ public actor MessageWindowController {
             let batch = Array(candidateLocalIds[start..<end])
             let response = try await provider.queuedState(sessionId: sessionId, localIds: batch)
             queuedLocalIds += response.queuedLocalIds
+            indeterminateLocalIds += response.indeterminateLocalIds ?? []
             invokedLocalMessages += response.invokedLocalMessages.map { ($0.localId, $0.invokedAt) }
             start = end
         }
@@ -558,7 +576,8 @@ public actor MessageWindowController {
         for invokedAt in timestamps {
             markConsumed(localIds: localIdsByTimestamp[invokedAt]!, invokedAt: invokedAt)
         }
-        reconcileQueuedLocalIds(candidateLocalIds: candidateLocalIds, queuedLocalIds: queuedLocalIds)
+        markIndeterminate(localIds: indeterminateLocalIds)
+        reconcileQueuedLocalIds(candidateLocalIds: candidateLocalIds, queuedLocalIds: queuedLocalIds + indeterminateLocalIds)
     }
 
     // MARK: - Lifecycle transitions

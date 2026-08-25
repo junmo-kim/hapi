@@ -17,6 +17,7 @@ type DecryptedMessage = {
   createdAt: number           // hub receive time (epoch ms)
   invokedAt?: number | null   // when the agent consumed it (null = still queued)
   scheduledAt?: number | null // future-scheduled sends
+  deliveryState?: 'indeterminate' // steer dispatched, outcome unproven; explicit retry/cancel required
 }
 ```
 
