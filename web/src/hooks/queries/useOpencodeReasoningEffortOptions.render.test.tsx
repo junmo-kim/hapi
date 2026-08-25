@@ -1,0 +1,47 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { renderHook, waitFor } from '@testing-library/react'
+import { createElement } from 'react'
+import { describe, expect, it, vi } from 'vitest'
+import { useOpencodeReasoningEffortOptions } from './useOpencodeReasoningEffortOptions'
+
+function sleep(ms: number) {
+    return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+describe('useOpencodeReasoningEffortOptions pending-switch polling', () => {
+    it('keeps polling while the backend reports the previous model, and continues after a model change', async () => {
+        const queryClient = new QueryClient()
+        const getSessionOpencodeReasoningEffortOptions = vi.fn(async () => ({
+            success: true,
+            options: [{ value: 'low', name: 'Low' }],
+            currentValue: 'low',
+            // Backend still reports the previous model → mismatch polling.
+            currentModelId: 'opencode/big-pickle'
+        }))
+        const api = { getSessionOpencodeReasoningEffortOptions } as never
+
+        const wrapper = ({ children }: { children: React.ReactNode }) =>
+            createElement(QueryClientProvider, { client: queryClient }, children)
+
+        const { rerender } = renderHook(
+            ({ model }) => useOpencodeReasoningEffortOptions({
+                api,
+                sessionId: 'session-1',
+                enabled: true,
+                sessionModel: model
+            }),
+            { wrapper, initialProps: { model: 'opencode/hy3-free' } }
+        )
+
+        await waitFor(() => expect(getSessionOpencodeReasoningEffortOptions).toHaveBeenCalledTimes(1))
+        await sleep(2300)
+        // Mismatch polling: at least two intervals' worth of refetches.
+        expect(getSessionOpencodeReasoningEffortOptions.mock.calls.length).toBeGreaterThanOrEqual(2)
+
+        const callsBeforeSwitch = getSessionOpencodeReasoningEffortOptions.mock.calls.length
+        rerender({ model: 'opencode-go/ox-alpha-free' })
+        await sleep(2300)
+        // Budget reset on model change: polling continues on the new model.
+        expect(getSessionOpencodeReasoningEffortOptions.mock.calls.length).toBeGreaterThan(callsBeforeSwitch)
+    })
+})

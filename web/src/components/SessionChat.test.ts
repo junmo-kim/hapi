@@ -7,6 +7,7 @@ import {
     isScratchlistToggleHotkey,
     isSelectAllTargetBlocked,
     mergeStagedAttachmentsInOrder,
+    opencodeEffortOptionsInvalidationKey,
     resolvePiContextWindow,
     resolveLatestCompletedBoundaryIdForView,
     shouldAutoClearPendingSchedule,
@@ -48,6 +49,22 @@ describe('applyModelChangeWithReasoningRollback', () => {
         expect(setModelReasoningEffort).toHaveBeenCalledOnce()
         expect(setModelReasoningEffort).toHaveBeenCalledWith(null)
         expect(setModel).toHaveBeenCalledWith('gpt-next')
+    })
+})
+
+describe('opencodeEffortOptionsInvalidationKey', () => {
+    it('returns the effort options query key for opencode sessions', () => {
+        expect(opencodeEffortOptionsInvalidationKey('opencode', 'session-1')).toEqual([
+            'session-opencode-reasoning-effort-options',
+            'session-1',
+        ])
+    })
+
+    it('returns null for other flavors and missing flavor', () => {
+        expect(opencodeEffortOptionsInvalidationKey('codex', 'session-1')).toBeNull()
+        expect(opencodeEffortOptionsInvalidationKey('grok', 'session-1')).toBeNull()
+        expect(opencodeEffortOptionsInvalidationKey(null, 'session-1')).toBeNull()
+        expect(opencodeEffortOptionsInvalidationKey(undefined, 'session-1')).toBeNull()
     })
 })
 

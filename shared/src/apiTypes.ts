@@ -777,6 +777,13 @@ export type OpencodeModelsResponse = {
 
 export type ListOpencodeModelsResponse = OpencodeModelsResponse
 
+/** Variant values keyed by `providerId/modelId` from the OpenCode server catalog. */
+export type OpencodeModelVariantsResponse = {
+    success: boolean
+    variants?: Record<string, string[]>
+    error?: string
+}
+
 export type GrokModelSummary = {
     modelId: string
     name?: string
@@ -828,6 +835,8 @@ export type OpencodeReasoningEffortResponse = {
     success: boolean
     options?: OpencodeReasoningEffortOption[]
     currentValue?: string | null
+    /** Backend-side model the options belong to — lets clients detect a pending model switch. */
+    currentModelId?: string | null
     error?: string
 }
 
