@@ -132,6 +132,13 @@ vi.mock('@/hooks/queries/useOpencodeModelsForCwd', () => ({
         refetch: vi.fn()
     })
 }))
+vi.mock('@/hooks/queries/useOpencodeModelVariants', () => ({
+    useOpencodeModelVariants: () => ({
+        variants: null,
+        isLoading: false,
+        error: null
+    })
+}))
 vi.mock('@/hooks/queries/useGrokModelsForCwd', () => ({
     useGrokModelsForCwd: () => ({
         availableModels: [],
