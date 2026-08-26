@@ -360,7 +360,17 @@ export async function claudeRemote(opts: {
             // it. Auto-compact boundaries keep relaying as before.
             const isManualCompactBoundary =
                 isCompactCommand && message.type === 'system' && (message as { subtype?: string }).subtype === 'compact_boundary';
-            if (!isManualCompactBoundary) {
+            // The stdout echo of the active /compact is CLI bookkeeping for
+            // this turn — suppress it here where the command state lives, so
+            // identical output from other slash commands stays visible.
+            const echo = message.type === 'user'
+                ? (message as SDKUserMessage).message?.content
+                : undefined;
+            const isManualCompactBookkeeping =
+                isCompactCommand &&
+                typeof echo === 'string' &&
+                /^<local-command-stdout>\s*Compacted\s*<\/local-command-stdout>$/.test(echo.trim());
+            if (!isManualCompactBoundary && !isManualCompactBookkeeping) {
                 opts.onMessage(message);
             }
 

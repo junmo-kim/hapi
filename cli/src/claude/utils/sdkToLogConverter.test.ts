@@ -118,33 +118,14 @@ describe('SDKToLogConverter', () => {
 
         it.each([
             '<local-command-stdout>Compacted </local-command-stdout>',
-            '<local-command-stdout>Compacted</local-command-stdout>'
-        ])('should mark the compact stdout bookkeeping user message as meta (%s)', (content) => {
-            // Claude Code echoes the /compact result back over the SDK as a
-            // plain user-role message. It is CLI plumbing, not chat content,
-            // so it must ride the same isMeta filter as injected turns.
-            const sdkMessage: SDKUserMessage = {
-                type: 'user',
-                message: {
-                    role: 'user',
-                    content
-                }
-            }
-
-            const logMessage = converter.convert(sdkMessage)
-
-            expect(logMessage?.type).toBe('user')
-            expect(logMessage?.isMeta).toBe(true)
-        })
-
-        it.each([
             '<local-command-name>/context</local-command-name>',
             '<local-command-stdout>context window usage</local-command-stdout>',
             '<local-command-stderr>boom</local-command-stderr>'
         ])('keeps other local-command CLI output visible for the client contract (%s)', (content) => {
-            // Non-compaction slash-command output is rendered intentionally as a
-            // CLI-output block (docs/api/client-contract/messages.md) — only the
-            // compact stdout echo is bookkeeping.
+            // Local-command output is rendered intentionally as a CLI-output
+            // block (docs/api/client-contract/messages.md). The compact stdout
+            // echo is suppressed upstream, in claudeRemote's stream loop, where
+            // the active-command state lives.
             const sdkMessage: SDKUserMessage = {
                 type: 'user',
                 message: {

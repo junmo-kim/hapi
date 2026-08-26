@@ -545,6 +545,78 @@ describe('claudeRemote /compact result reporting', () => {
         ).toBe(false);
     }, 15_000);
 
+    it('does not relay the Compacted stdout echo during a manual /compact', async () => {
+        // The stdout echo is CLI bookkeeping for the active compact only —
+        // scoping the suppression here (where the command state lives) keeps
+        // identical output from other slash commands visible.
+        await runCompact([
+            {
+                type: 'system',
+                subtype: 'status',
+                status: 'compacting',
+                session_id: 's-1',
+                uuid: 'u-1'
+            } as unknown as SDKMessage,
+            {
+                type: 'user',
+                message: { role: 'user', content: '<local-command-stdout>Compacted </local-command-stdout>' }
+            } as unknown as SDKMessage,
+            resultMessage
+        ]);
+
+        expect(
+            lastForwarded.some((m) =>
+                m.type === 'user' &&
+                (m as { message?: { content?: unknown } }).message?.content === '<local-command-stdout>Compacted </local-command-stdout>'
+            )
+        ).toBe(false);
+    }, 15_000);
+
+    it('keeps the Compacted stdout echo visible outside a compact turn', async () => {
+        const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
+        const { claudeRemote } = await import('./claudeRemote');
+        const forwarded: SDKMessage[] = [];
+        queryMock.mockReturnValueOnce(createAsyncStream([
+            {
+                type: 'user',
+                message: { role: 'user', content: '<local-command-stdout>Compacted </local-command-stdout>' }
+            } as unknown as SDKMessage,
+            resultMessage
+        ]));
+
+        let nextCallCount = 0;
+        try {
+            await claudeRemote({
+                sessionId: 'session-1', path: process.cwd(), mcpServers: {}, claudeEnvVars: {},
+                claudeArgs: [], allowedTools: [], hookSettingsPath: '/tmp/hook.json',
+                canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+                nextMessage: async () => {
+                    nextCallCount += 1;
+                    if (nextCallCount === 1) return { message: 'hi', mode: { permissionMode: 'default' } };
+                    return null;
+                },
+                onReady: () => {},
+                isAborted: () => false,
+                onSessionFound: () => {},
+                onMessage: (message) => {
+                    forwarded.push(message);
+                },
+                onCompletionEvent: () => {},
+                onSessionReset: () => {}
+            });
+        } finally {
+            queryMock.mockReset();
+            querySpy.mockRestore();
+        }
+
+        expect(
+            forwarded.some((m) =>
+                m.type === 'user' &&
+                (m as { message?: { content?: unknown } }).message?.content === '<local-command-stdout>Compacted </local-command-stdout>'
+            )
+        ).toBe(true);
+    }, 15_000);
+
     it('detects a /compact sent on a later turn, not just the initial one', async () => {
         const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
         const { claudeRemote } = await import('./claudeRemote');
