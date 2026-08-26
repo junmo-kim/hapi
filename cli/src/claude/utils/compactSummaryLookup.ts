@@ -54,6 +54,7 @@ export async function findLatestCompactSummary(
         attempts?: number;
         intervalMs?: number;
         sleep?: (ms: number) => Promise<void>;
+        signal?: AbortSignal;
         // Byte offset recorded before the compaction started. Rows below it
         // belong to earlier turns (e.g. a previous compaction's summary in a
         // resumed or second-compact session) and must not satisfy this lookup
@@ -64,8 +65,24 @@ export async function findLatestCompactSummary(
     const attempts = opts?.attempts ?? 10;
     const intervalMs = opts?.intervalMs ?? 500;
     const minBytes = opts?.minBytes ?? 0;
-    const sleep = opts?.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+    const signal = opts?.signal;
+    const sleep = opts?.sleep ?? ((ms: number) => new Promise<void>((resolve) => {
+        if (signal?.aborted) {
+            resolve();
+            return;
+        }
+        const onAbort = () => {
+            clearTimeout(timer);
+            resolve();
+        };
+        const timer = setTimeout(() => {
+            signal?.removeEventListener('abort', onAbort);
+            resolve();
+        }, ms);
+        signal?.addEventListener('abort', onAbort, { once: true });
+    }));
     for (let attempt = 0; attempt < attempts; attempt++) {
+        if (signal?.aborted) return null;
         let handle: FileHandle | undefined;
         try {
             // Range-read only the tail written after the baseline: the

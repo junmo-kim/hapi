@@ -123,4 +123,20 @@ describe('findLatestCompactSummary', () => {
             await rm(dir, { recursive: true, force: true });
         }
     });
+
+    it('stops polling when aborted', async () => {
+        const dir = await mkdtemp(join(tmpdir(), 'compact-summary-'));
+        try {
+            const controller = new AbortController();
+            const pending = findLatestCompactSummary(join(dir, 'missing.jsonl'), {
+                attempts: 10,
+                intervalMs: 10_000,
+                signal: controller.signal
+            });
+            controller.abort();
+            await expect(pending).resolves.toBeNull();
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
 });
