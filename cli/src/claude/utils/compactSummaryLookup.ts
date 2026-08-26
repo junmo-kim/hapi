@@ -75,7 +75,15 @@ export async function findLatestCompactSummary(
             const size = (await handle.stat()).size;
             if (size > minBytes) {
                 const buf = Buffer.alloc(size - minBytes);
-                await handle.read(buf, 0, buf.length, minBytes);
+                // FileHandle.read() may fulfill fewer bytes than requested —
+                // loop until the requested range is fully read (the session
+                // scanner's incremental reader follows the same contract).
+                let bytesRead = 0;
+                while (bytesRead < buf.length) {
+                    const result = await handle.read(buf, bytesRead, buf.length - bytesRead, minBytes + bytesRead);
+                    if (result.bytesRead === 0) break;
+                    bytesRead += result.bytesRead;
+                }
                 const summary = extractCompactSummaryFromTranscript(buf.toString('utf8'));
                 if (summary !== null) return summary;
             }
