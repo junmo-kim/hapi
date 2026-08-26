@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { open, type FileHandle } from 'node:fs/promises';
 import { RawJSONLinesSchema } from '../types';
 
 /**
@@ -66,13 +66,23 @@ export async function findLatestCompactSummary(
     const minBytes = opts?.minBytes ?? 0;
     const sleep = opts?.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
     for (let attempt = 0; attempt < attempts; attempt++) {
+        let handle: FileHandle | undefined;
         try {
-            const buf = await readFile(transcriptPath);
-            const content = buf.subarray(minBytes).toString('utf8');
-            const summary = extractCompactSummaryFromTranscript(content);
-            if (summary !== null) return summary;
+            // Range-read only the tail written after the baseline: the
+            // transcript is append-only and can be large, and this poll runs
+            // every attempt while the compaction result is already in flight.
+            handle = await open(transcriptPath, 'r');
+            const size = (await handle.stat()).size;
+            if (size > minBytes) {
+                const buf = Buffer.alloc(size - minBytes);
+                await handle.read(buf, 0, buf.length, minBytes);
+                const summary = extractCompactSummaryFromTranscript(buf.toString('utf8'));
+                if (summary !== null) return summary;
+            }
         } catch {
             // Missing or unreadable transcript: keep polling until attempts run out.
+        } finally {
+            await handle?.close().catch(() => {});
         }
         if (attempt < attempts - 1) await sleep(intervalMs);
     }
