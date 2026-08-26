@@ -62,7 +62,7 @@ export function ForkPreviewDialog({ isOpen, kind, keptTurns, boundaryText, prefi
                         <>
                             <div className="my-3 flex items-center gap-2" data-testid="fork-preview-boundary">
                                 <span className="h-px flex-1 bg-[var(--app-link)]" />
-                                <span className="rounded-full bg-[var(--app-link)] px-2 py-0.5 text-[10px] font-medium text-white">
+                                <span className="rounded-full bg-[var(--app-link)] px-2 py-0.5 text-[10px] font-medium text-[var(--app-bg)]">
                                     {t('forkPreview.boundaryBadge')}
                                 </span>
                                 <span className="h-px flex-1 bg-[var(--app-link)]" />
@@ -100,7 +100,7 @@ export function ForkPreviewDialog({ isOpen, kind, keptTurns, boundaryText, prefi
                         onClick={() => { void handleConfirm() }}
                         disabled={pending}
                         data-testid="fork-preview-confirm"
-                        className="flex-1 rounded-lg bg-[var(--app-link)] px-3 py-2 text-sm font-medium text-white hover:opacity-90"
+                        className="flex-1 rounded-lg bg-[var(--app-link)] px-3 py-2 text-sm font-medium text-[var(--app-bg)] hover:opacity-90"
                     >
                         {t('forkPreview.confirm')}
                     </button>
