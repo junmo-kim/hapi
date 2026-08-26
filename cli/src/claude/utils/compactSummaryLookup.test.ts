@@ -48,6 +48,49 @@ describe('extractCompactSummaryFromTranscript', () => {
 });
 
 describe('findLatestCompactSummary', () => {
+    it('ignores summaries written before the baseline offset', async () => {
+        const dir = await mkdtemp(join(tmpdir(), 'compact-summary-'));
+        try {
+            const filePath = join(dir, 's-1.jsonl');
+            const stale = entry('stale summary from a previous compaction') + '\n';
+            await writeFile(filePath, stale);
+            const baselineBytes = Buffer.byteLength(stale, 'utf8');
+            // A resumed or second-compact session already carries a summary row.
+            // With the baseline recorded before the new compaction started, the
+            // stale row must not satisfy the lookup while the new row is delayed.
+            const pending = findLatestCompactSummary(filePath, {
+                attempts: 3,
+                intervalMs: 5,
+                sleep: async () => {},
+                minBytes: baselineBytes
+            });
+            await new Promise((r) => setTimeout(r, 20));
+            expect(await pending).toBeNull();
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+
+    it('returns only the summary written after the baseline offset', async () => {
+        const dir = await mkdtemp(join(tmpdir(), 'compact-summary-'));
+        try {
+            const filePath = join(dir, 's-1.jsonl');
+            const stale = entry('stale summary') + '\n';
+            await writeFile(filePath, stale);
+            const baselineBytes = Buffer.byteLength(stale, 'utf8');
+            const pending = findLatestCompactSummary(filePath, {
+                attempts: 5,
+                intervalMs: 5,
+                sleep: async () => {},
+                minBytes: baselineBytes
+            });
+            await writeFile(filePath, stale + entry('fresh summary') + '\n');
+            await expect(pending).resolves.toBe('fresh summary');
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+
     it('resolves the summary once the transcript contains an isCompactSummary entry', async () => {
         const dir = await mkdtemp(join(tmpdir(), 'compact-summary-'));
         try {

@@ -2,6 +2,7 @@ import { EnhancedMode, PermissionMode } from "./loop";
 import { query, type QueryOptions as Options, type SDKMessage, type SDKSystemMessage, AbortError, SDKUserMessage } from '@/claude/sdk'
 import { claudeCheckSession } from "./utils/claudeCheckSession";
 import { join } from 'node:path';
+import { stat } from 'node:fs/promises';
 import { parseSpecialCommand } from "@/parsers/specialCommands";
 import { logger } from "@/lib";
 import { PushableAsyncIterable } from "@/utils/PushableAsyncIterable";
@@ -115,6 +116,12 @@ export async function claudeRemote(opts: {
     // usage (measured), so the boundary metadata is the only real source.
     let compactTokensBefore: number | undefined;
     let compactTokensAfter: number | undefined;
+    // Transcript byte size recorded when the /compact command is detected.
+    // Summary rows below this offset belong to earlier turns (a previous
+    // compaction's summary survives in resumed / second-compact sessions) and
+    // must not satisfy the summary lookup while the fresh row is still being
+    // flushed to disk.
+    let compactTranscriptBaseline = 0;
     // The local transcript is keyed by the live session id (updated on init),
     // not opts.sessionId which can be stale for forked sessions.
     let currentSessionId = startFrom;
@@ -125,11 +132,31 @@ export async function claudeRemote(opts: {
     // Success-only: a failed compaction keeps its failure line, an unknown
     // session id or any transcript read problem falls back to the plain
     // completion line. Never propagates errors into the result flow.
+    const getTranscriptBytes = async (): Promise<number> => {
+        if (!currentSessionId) return 0;
+        try {
+            return (await stat(join(getProjectPath(opts.path), `${currentSessionId}.jsonl`))).size;
+        } catch {
+            return 0;
+        }
+    };
+    const beginCompactCommand = () => {
+        logger.debug('[claudeRemote] /compact command detected - will process as normal but with compaction behavior');
+        // Set the flag and emit synchronously: the boundary message and the
+        // result can arrive while the baseline stat below is still in flight.
+        isCompactCommand = true;
+        if (opts.onCompletionEvent) {
+            opts.onCompletionEvent('📦 Compaction started');
+        }
+        void getTranscriptBytes().then((bytes) => {
+            compactTranscriptBaseline = bytes;
+        });
+    };
     const lookupCompactSummary = async (failure: string | null): Promise<CompactSummaryPayload | undefined> => {
         if (failure !== null || !currentSessionId) return undefined;
         try {
             const transcriptPath = join(getProjectPath(opts.path), `${currentSessionId}.jsonl`);
-            const summary = await findLatestCompactSummary(transcriptPath);
+            const summary = await findLatestCompactSummary(transcriptPath, { minBytes: compactTranscriptBaseline });
             if (summary === null) return undefined;
             return { summary, tokensBefore: compactTokensBefore, tokensAfter: compactTokensAfter };
         } catch (e) {
@@ -169,11 +196,7 @@ export async function claudeRemote(opts: {
             return null;
         }
         if (specialCommand.type === 'compact') {
-            logger.debug('[claudeRemote] /compact command detected - will process as normal but with compaction behavior');
-            isCompactCommand = true;
-            if (opts.onCompletionEvent) {
-                opts.onCompletionEvent('📦 Compaction started');
-            }
+            beginCompactCommand();
         }
 
         mode = next.mode;
@@ -288,6 +311,13 @@ export async function claudeRemote(opts: {
                     return;
                 }
                 mode = next.mode;
+                specialCommand = parseSpecialCommand(next.message);
+                if (specialCommand.type === 'compact') {
+                    // /compact can arrive on any turn, not just the initial
+                    // one — arm the compaction tracking here too so later
+                    // turns get the same summary/token completion output.
+                    beginCompactCommand();
+                }
                 messages.push({ type: 'user', message: { role: 'user', content: next.message } });
                 logger.debug(
                     `${debugPrefix} nextMessage resolved fetchId=${fetchId} elapsedMs=${Date.now() - startedAt} ` +

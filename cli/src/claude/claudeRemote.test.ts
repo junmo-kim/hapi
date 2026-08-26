@@ -543,6 +543,54 @@ describe('claudeRemote /compact result reporting', () => {
         ).toBe(false);
     }, 15_000);
 
+    it('detects a /compact sent on a later turn, not just the initial one', async () => {
+        const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
+        const { claudeRemote } = await import('./claudeRemote');
+        const completionEvents: string[] = [];
+        queryMock.mockReturnValueOnce(createAsyncStream([
+            resultMessage,
+            {
+                type: 'system',
+                subtype: 'compact_boundary',
+                compact_metadata: { trigger: 'manual', pre_tokens: 100, post_tokens: 10 },
+                session_id: 's-1',
+                uuid: 'u-2'
+            } as unknown as SDKMessage,
+            resultMessage
+        ]));
+
+        let nextCallCount = 0;
+        try {
+            await claudeRemote({
+                sessionId: 'session-1', path: process.cwd(), mcpServers: {}, claudeEnvVars: {},
+                claudeArgs: [], allowedTools: [], hookSettingsPath: '/tmp/hook.json',
+                canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+                nextMessage: async () => {
+                    nextCallCount += 1;
+                    if (nextCallCount === 1) return { message: 'hi', mode: { permissionMode: 'default' } };
+                    if (nextCallCount === 2) return { message: '/compact', mode: { permissionMode: 'default' } };
+                    return null;
+                },
+                onReady: (completionEvent) => {
+                    if (completionEvent) completionEvents.push(completionEvent);
+                },
+                isAborted: () => false,
+                onSessionFound: () => {},
+                onMessage: () => {},
+                onCompletionEvent: (message) => {
+                    completionEvents.push(message);
+                },
+                onSessionReset: () => {}
+            });
+        } finally {
+            queryMock.mockReset();
+            querySpy.mockRestore();
+        }
+
+        expect(completionEvents).toContain('📦 Compaction started');
+        expect(completionEvents).toContain('📦 Compacted (100 → 10 tokens)');
+    }, 15_000);
+
     it('hands compact completion to the ready phase so the result carrier can flush first', async () => {
         const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
         const { claudeRemote } = await import('./claudeRemote');
@@ -668,7 +716,8 @@ describe('claudeRemote compact summary promotion', () => {
         const { completionEvents, readyPayloads } = await runCompactWithSummary('The conversation was about X');
 
         expect(findLatestCompactSummaryMock).toHaveBeenCalledWith(
-            expect.stringContaining(join(getProjectPath(process.cwd()), 's-9.jsonl').slice(-40))
+            expect.stringContaining(join(getProjectPath(process.cwd()), 's-9.jsonl').slice(-40)),
+            expect.objectContaining({ minBytes: expect.any(Number) })
         );
         expect(readyPayloads).toEqual([
             { summary: 'The conversation was about X', tokensBefore: 34492, tokensAfter: 2082 }

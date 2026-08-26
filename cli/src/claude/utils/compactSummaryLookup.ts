@@ -54,14 +54,21 @@ export async function findLatestCompactSummary(
         attempts?: number;
         intervalMs?: number;
         sleep?: (ms: number) => Promise<void>;
+        // Byte offset recorded before the compaction started. Rows below it
+        // belong to earlier turns (e.g. a previous compaction's summary in a
+        // resumed or second-compact session) and must not satisfy this lookup
+        // while the fresh row is still being flushed.
+        minBytes?: number;
     }
 ): Promise<string | null> {
     const attempts = opts?.attempts ?? 10;
     const intervalMs = opts?.intervalMs ?? 500;
+    const minBytes = opts?.minBytes ?? 0;
     const sleep = opts?.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
     for (let attempt = 0; attempt < attempts; attempt++) {
         try {
-            const content = await readFile(transcriptPath, 'utf8');
+            const buf = await readFile(transcriptPath);
+            const content = buf.subarray(minBytes).toString('utf8');
             const summary = extractCompactSummaryFromTranscript(content);
             if (summary !== null) return summary;
         } catch {
