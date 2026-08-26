@@ -666,12 +666,13 @@ describe('claudeRemote compact summary promotion', () => {
 
     async function runCompactWithSummary(
         mockSummary: string | null
-    ): Promise<{ completionEvents: string[]; readyPayloads: Array<Record<string, unknown> | undefined> }> {
+    ): Promise<{ completionEvents: string[]; readyPayloads: Array<Record<string, unknown> | undefined>; contextTokens: Array<number | undefined> }> {
         findLatestCompactSummaryMock.mockImplementation(async () => mockSummary);
         const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
         const { claudeRemote } = await import('./claudeRemote');
         const completionEvents: string[] = [];
         const readyPayloads: Array<Record<string, unknown> | undefined> = [];
+        const contextTokens: Array<number | undefined> = [];
 
         // The baseline capture stats the transcript at /compact detection; a
         // missing file makes the lookup skip promotion, so tests that exercise
@@ -711,9 +712,10 @@ describe('claudeRemote compact summary promotion', () => {
                     }
                     return null;
                 },
-                onReady: (completionEvent, compactSummary) => {
+                onReady: (completionEvent, compactSummary, compactContextTokens) => {
                     if (completionEvent) completionEvents.push(completionEvent);
                     readyPayloads.push(compactSummary as Record<string, unknown> | undefined);
+                    contextTokens.push(compactContextTokens);
                 },
                 isAborted: () => false,
                 onSessionFound: () => {},
@@ -728,11 +730,11 @@ describe('claudeRemote compact summary promotion', () => {
             querySpy.mockRestore();
         }
 
-        return { completionEvents, readyPayloads };
+        return { completionEvents, readyPayloads, contextTokens };
     }
 
     it('promotes the transcript summary into a structured compact-summary payload', async () => {
-        const { completionEvents, readyPayloads } = await runCompactWithSummary('The conversation was about X');
+        const { completionEvents, readyPayloads, contextTokens } = await runCompactWithSummary('The conversation was about X');
 
         expect(findLatestCompactSummaryMock).toHaveBeenCalledWith(
             expect.stringContaining(join(getProjectPath(transcriptDir!), 's-9.jsonl').slice(-40)),
@@ -741,6 +743,7 @@ describe('claudeRemote compact summary promotion', () => {
         expect(readyPayloads).toEqual([
             { summary: 'The conversation was about X', tokensBefore: 34492, tokensAfter: 2082 }
         ]);
+        expect(contextTokens).toEqual([2082]);
         expect(completionEvents).toEqual(['📦 Compaction started']);
     }, 15_000);
 
@@ -801,7 +804,7 @@ describe('claudeRemote compact summary promotion', () => {
     }, 15_000);
 
     it('keeps the token delta fallback line when the transcript never yields a summary', async () => {
-        const { completionEvents, readyPayloads } = await runCompactWithSummary(null);
+        const { completionEvents, readyPayloads, contextTokens } = await runCompactWithSummary(null);
 
         expect(readyPayloads).toEqual([undefined]);
         expect(completionEvents).toEqual(['📦 Compaction started', '📦 Compacted (34492 → 2082 tokens)']);

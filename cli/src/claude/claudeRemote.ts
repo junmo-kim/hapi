@@ -39,7 +39,7 @@ export async function claudeRemote(opts: {
 
     // Dynamic parameters
     nextMessage: () => Promise<{ message: string, mode: EnhancedMode } | null>,
-    onReady: (completionEvent?: string, compactSummary?: CompactSummaryPayload) => void | Promise<void>,
+    onReady: (completionEvent?: string, compactSummary?: CompactSummaryPayload, compactContextTokens?: number) => void | Promise<void>,
     isAborted: (toolCallId: string) => boolean,
 
     // Callbacks
@@ -434,12 +434,18 @@ export async function claudeRemote(opts: {
 
                 let completionEvent: string | undefined;
                 let compactSummary: CompactSummaryPayload | undefined;
+                let compactContextTokens: number | undefined;
                 if (isCompactCommand) {
                     compactSummary = await lookupCompactSummary(compactFailure);
                     if (!compactSummary) {
                         completionEvent = buildCompactCompletionEvent(compactFailure, compactTokensBefore, compactTokensAfter);
                     }
                     logger.debug(`[claudeRemote] ${compactSummary ? `compact summary promoted (${compactSummary.summary.length} chars)` : completionEvent}`);
+                    // Preserve the post-compaction context size even when no
+                    // summary was found: the launcher refreshes the context
+                    // bar with it, since the next real usage only arrives
+                    // with the next model response.
+                    compactContextTokens = compactTokensAfter;
                     isCompactCommand = false;
                     compactFailure = null;
                     compactTokensBefore = undefined;
@@ -447,7 +453,7 @@ export async function claudeRemote(opts: {
                 }
 
                 // Flush the result carrier before completion, then announce ready.
-                await opts.onReady(completionEvent, compactSummary);
+                await opts.onReady(completionEvent, compactSummary, compactContextTokens);
                 logger.debug(`${debugPrefix} onReady emitted for result #${resultSeq}`);
 
                 // Pull next user message without blocking response stream processing.

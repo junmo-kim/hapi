@@ -2,6 +2,7 @@ import React from "react";
 import { Session } from "./session";
 import { RemoteModeDisplay } from "@/ui/ink/RemoteModeDisplay";
 import { claudeRemote, type CompactSummaryPayload } from "./claudeRemote";
+import { convertAgentMessage } from "@/agent/messageConverter";
 import { PermissionHandler } from "./utils/permissionHandler";
 import { Future } from "@/utils/future";
 import { SDKAssistantMessage, SDKMessage, SDKUserMessage } from "./sdk";
@@ -507,7 +508,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             // just asked to clear.
                             session.consumeOneTimeFlags();
                         },
-                        onReady: async (completionEvent?: string, compactSummary?: CompactSummaryPayload) => {
+                        onReady: async (completionEvent?: string, compactSummary?: CompactSummaryPayload, compactContextTokens?: number) => {
                             // Reaching ready at all means this attempt is not an
                             // immediate/deterministic failure -- reset the
                             // respawn-storm guard. The turn that led here is no
@@ -529,6 +530,17 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                     tokensBefore: compactSummary.tokensBefore,
                                     estimatedTokensAfter: compactSummary.tokensAfter
                                 });
+                            }
+                            if (compactContextTokens !== undefined) {
+                                // The status bar keeps the last pre-compaction
+                                // usage until the next model response; refresh
+                                // it with the boundary's post-tokens the same
+                                // way the Pi launcher does.
+                                const convertedUsage = convertAgentMessage(
+                                    { type: 'usage', inputTokens: 0, outputTokens: 0, contextTokens: compactContextTokens },
+                                    session.getModel()
+                                );
+                                if (convertedUsage) session.client.sendAgentMessage(convertedUsage);
                             }
 
                             logger.debug(
