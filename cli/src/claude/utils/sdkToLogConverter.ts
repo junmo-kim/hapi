@@ -283,12 +283,14 @@ export class SDKToLogConverter {
                     logMessage.isMeta = true
                 }
 
-                // Slash-command bookkeeping echoes back as plain user-role text
-                // tagged with <local-command-*> wrappers. They are CLI plumbing,
-                // not chat content — flag them meta so the same downstream
-                // filters hide them instead of leaking raw stdout into the UI.
+                // The /compact result echoes back as a plain user-role message
+                // wrapped in <local-command-stdout>Compacted</local-command-stdout>.
+                // That one echo is CLI plumbing — flag it meta so the downstream
+                // filters hide it. Other local-command output (e.g. /context)
+                // is rendered intentionally as a CLI-output block by the client
+                // contract and must stay visible.
                 const contentText = typeof userMsg.message.content === 'string' ? userMsg.message.content : null
-                if (contentText && contentText.startsWith('<local-command-')) {
+                if (contentText && /^<local-command-stdout>\s*Compacted\s*<\/local-command-stdout>$/.test(contentText.trim())) {
                     logMessage.isMeta = true
                 }
 

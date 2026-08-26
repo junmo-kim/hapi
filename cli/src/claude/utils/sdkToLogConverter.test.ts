@@ -117,13 +117,12 @@ describe('SDKToLogConverter', () => {
         })
 
         it.each([
-            '<local-command-name>/compact</local-command-name>',
             '<local-command-stdout>Compacted </local-command-stdout>',
-            '<local-command-stderr>boom</local-command-stderr>'
-        ])('should mark local-command tag user messages as meta (%s)', (content) => {
-            // Claude Code echoes slash-command bookkeeping back over the SDK as
-            // plain user-role messages. They are CLI plumbing, not chat content,
-            // so they must ride the same isMeta filter as injected turns.
+            '<local-command-stdout>Compacted</local-command-stdout>'
+        ])('should mark the compact stdout bookkeeping user message as meta (%s)', (content) => {
+            // Claude Code echoes the /compact result back over the SDK as a
+            // plain user-role message. It is CLI plumbing, not chat content,
+            // so it must ride the same isMeta filter as injected turns.
             const sdkMessage: SDKUserMessage = {
                 type: 'user',
                 message: {
@@ -136,6 +135,25 @@ describe('SDKToLogConverter', () => {
 
             expect(logMessage?.type).toBe('user')
             expect(logMessage?.isMeta).toBe(true)
+        })
+
+        it.each([
+            '<local-command-name>/context</local-command-name>',
+            '<local-command-stdout>context window usage</local-command-stdout>',
+            '<local-command-stderr>boom</local-command-stderr>'
+        ])('keeps other local-command CLI output visible for the client contract (%s)', (content) => {
+            // Non-compaction slash-command output is rendered intentionally as a
+            // CLI-output block (docs/api/client-contract/messages.md) — only the
+            // compact stdout echo is bookkeeping.
+            const sdkMessage: SDKUserMessage = {
+                type: 'user',
+                message: {
+                    role: 'user',
+                    content
+                }
+            }
+
+            expect(converter.convert(sdkMessage)?.isMeta).toBeUndefined()
         })
     })
 
