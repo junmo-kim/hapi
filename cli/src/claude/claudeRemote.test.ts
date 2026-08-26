@@ -1,7 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as claudeSdk from '@/claude/sdk';
 import type { SDKMessage } from '@/claude/sdk/types';
 import { join } from 'node:path';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { getProjectPath } from '@/claude/utils/path';
 
 vi.mock('@/claude/utils/compactSummaryLookup', () => ({
@@ -653,6 +655,15 @@ describe('claudeRemote compact summary promotion', () => {
         session_id: 's-9'
     } as unknown as SDKMessage;
 
+    let transcriptDir: string | null = null;
+
+    afterEach(async () => {
+        if (transcriptDir) {
+            await rm(transcriptDir, { recursive: true, force: true });
+            transcriptDir = null;
+        }
+    });
+
     async function runCompactWithSummary(
         mockSummary: string | null
     ): Promise<{ completionEvents: string[]; readyPayloads: Array<Record<string, unknown> | undefined> }> {
@@ -661,6 +672,14 @@ describe('claudeRemote compact summary promotion', () => {
         const { claudeRemote } = await import('./claudeRemote');
         const completionEvents: string[] = [];
         const readyPayloads: Array<Record<string, unknown> | undefined> = [];
+
+        // The baseline capture stats the transcript at /compact detection; a
+        // missing file makes the lookup skip promotion, so tests that exercise
+        // promotion need a real (empty) transcript on disk.
+        transcriptDir = await mkdtemp(join(tmpdir(), 'claude-compact-'));
+        const projectDir = getProjectPath(transcriptDir);
+        await mkdir(projectDir, { recursive: true });
+        await writeFile(join(projectDir, 's-9.jsonl'), '');
 
         queryMock.mockReturnValueOnce(createAsyncStream([
             initMessage,
@@ -678,7 +697,7 @@ describe('claudeRemote compact summary promotion', () => {
         try {
             await claudeRemote({
                 sessionId: 's-9',
-                path: process.cwd(),
+                path: transcriptDir,
                 mcpServers: {},
                 claudeEnvVars: {},
                 claudeArgs: [],
@@ -716,13 +735,69 @@ describe('claudeRemote compact summary promotion', () => {
         const { completionEvents, readyPayloads } = await runCompactWithSummary('The conversation was about X');
 
         expect(findLatestCompactSummaryMock).toHaveBeenCalledWith(
-            expect.stringContaining(join(getProjectPath(process.cwd()), 's-9.jsonl').slice(-40)),
+            expect.stringContaining(join(getProjectPath(transcriptDir!), 's-9.jsonl').slice(-40)),
             expect.objectContaining({ minBytes: expect.any(Number) })
         );
         expect(readyPayloads).toEqual([
             { summary: 'The conversation was about X', tokensBefore: 34492, tokensAfter: 2082 }
         ]);
         expect(completionEvents).toEqual(['📦 Compaction started']);
+    }, 15_000);
+
+    it('skips summary promotion entirely when the transcript baseline cannot be established', async () => {
+        // No transcript file on disk: stat fails, the baseline stays null, and
+        // reading from offset 0 could promote a previous compaction's summary
+        // row — so the lookup must not run at all.
+        findLatestCompactSummaryMock.mockImplementation(async () => 'stale summary');
+        const dir = await mkdtemp(join(tmpdir(), 'claude-compact-missing-'));
+        try {
+            const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
+            const { claudeRemote } = await import('./claudeRemote');
+            const completionEvents: string[] = [];
+            const readyPayloads: Array<Record<string, unknown> | undefined> = [];
+            queryMock.mockReturnValueOnce(createAsyncStream([initMessage, resultMessage]));
+
+            let nextCallCount = 0;
+            try {
+                await claudeRemote({
+                    sessionId: 's-9',
+                    path: dir,
+                    mcpServers: {},
+                    claudeEnvVars: {},
+                    claudeArgs: [],
+                    allowedTools: [],
+                    hookSettingsPath: '/tmp/hook.json',
+                    canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+                    nextMessage: async () => {
+                        nextCallCount += 1;
+                        if (nextCallCount === 1) {
+                            return { message: '/compact', mode: { permissionMode: 'default' } };
+                        }
+                        return null;
+                    },
+                    onReady: (completionEvent, compactSummary) => {
+                        if (completionEvent) completionEvents.push(completionEvent);
+                        readyPayloads.push(compactSummary as Record<string, unknown> | undefined);
+                    },
+                    isAborted: () => false,
+                    onSessionFound: () => {},
+                    onMessage: () => {},
+                    onCompletionEvent: (message) => {
+                        completionEvents.push(message);
+                    },
+                    onSessionReset: () => {}
+                });
+            } finally {
+                queryMock.mockReset();
+                querySpy.mockRestore();
+            }
+
+            expect(findLatestCompactSummaryMock).not.toHaveBeenCalled();
+            expect(readyPayloads).toEqual([undefined]);
+            expect(completionEvents).toEqual(['📦 Compaction started', '📦 Compacted']);
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
     }, 15_000);
 
     it('keeps the token delta fallback line when the transcript never yields a summary', async () => {

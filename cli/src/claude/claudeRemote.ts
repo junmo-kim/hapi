@@ -121,7 +121,7 @@ export async function claudeRemote(opts: {
     // compaction's summary survives in resumed / second-compact sessions) and
     // must not satisfy the summary lookup while the fresh row is still being
     // flushed to disk.
-    let compactTranscriptBaseline = 0;
+    let compactTranscriptBaseline: number | null = null;
     // The local transcript is keyed by the live session id (updated on init),
     // not opts.sessionId which can be stale for forked sessions.
     let currentSessionId = startFrom;
@@ -132,28 +132,30 @@ export async function claudeRemote(opts: {
     // Success-only: a failed compaction keeps its failure line, an unknown
     // session id or any transcript read problem falls back to the plain
     // completion line. Never propagates errors into the result flow.
-    const getTranscriptBytes = async (): Promise<number> => {
-        if (!currentSessionId) return 0;
+    // Null means the baseline could not be established (unknown session id or
+    // unreadable transcript) — summary promotion is skipped entirely, because
+    // reading from offset 0 could promote a previous compaction's summary row.
+    const getTranscriptBytes = async (): Promise<number | null> => {
+        if (!currentSessionId) return null;
         try {
             return (await stat(join(getProjectPath(opts.path), `${currentSessionId}.jsonl`))).size;
         } catch {
-            return 0;
+            return null;
         }
     };
-    const beginCompactCommand = () => {
+    const beginCompactCommand = async () => {
         logger.debug('[claudeRemote] /compact command detected - will process as normal but with compaction behavior');
-        // Set the flag and emit synchronously: the boundary message and the
-        // result can arrive while the baseline stat below is still in flight.
+        // Flag and status line go out synchronously; only the baseline capture
+        // is awaited (and it must complete before the command is enqueued, so
+        // the result handler can never read a not-yet-established offset).
         isCompactCommand = true;
         if (opts.onCompletionEvent) {
             opts.onCompletionEvent('📦 Compaction started');
         }
-        void getTranscriptBytes().then((bytes) => {
-            compactTranscriptBaseline = bytes;
-        });
+        compactTranscriptBaseline = await getTranscriptBytes();
     };
     const lookupCompactSummary = async (failure: string | null): Promise<CompactSummaryPayload | undefined> => {
-        if (failure !== null || !currentSessionId) return undefined;
+        if (failure !== null || !currentSessionId || compactTranscriptBaseline === null) return undefined;
         try {
             const transcriptPath = join(getProjectPath(opts.path), `${currentSessionId}.jsonl`);
             const summary = await findLatestCompactSummary(transcriptPath, { minBytes: compactTranscriptBaseline });
@@ -196,7 +198,7 @@ export async function claudeRemote(opts: {
             return null;
         }
         if (specialCommand.type === 'compact') {
-            beginCompactCommand();
+            await beginCompactCommand();
         }
 
         mode = next.mode;
@@ -316,7 +318,7 @@ export async function claudeRemote(opts: {
                     // /compact can arrive on any turn, not just the initial
                     // one — arm the compaction tracking here too so later
                     // turns get the same summary/token completion output.
-                    beginCompactCommand();
+                    await beginCompactCommand();
                 }
                 messages.push({ type: 'user', message: { role: 'user', content: next.message } });
                 logger.debug(
