@@ -1048,6 +1048,108 @@ describe('claudeRemote compact summary promotion', () => {
         expect(completionEvents).toEqual(['📦 Compaction started']);
     }, 15_000);
 
+    it('propagates a rejected compact onReady callback to the response attempt', async () => {
+        findLatestCompactSummaryMock.mockImplementation(async () => 'summary');
+        const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
+        const { claudeRemote } = await import('./claudeRemote');
+        transcriptDir = await mkdtemp(join(tmpdir(), 'claude-compact-ready-error-'));
+        const projectDir = getProjectPath(transcriptDir);
+        await mkdir(projectDir, { recursive: true });
+        await writeFile(join(projectDir, 's-9.jsonl'), '');
+        queryMock.mockImplementationOnce(createQueryThatMirrorsPromptErrors([
+            initMessage,
+            {
+                type: 'system',
+                subtype: 'compact_boundary',
+                compact_metadata: { trigger: 'manual', pre_tokens: 100, post_tokens: 10 },
+                session_id: 's-9',
+                uuid: 'u-boundary'
+            } as unknown as SDKMessage,
+            resultMessage
+        ]));
+
+        let nextCallCount = 0;
+        try {
+            await expect(claudeRemote({
+                sessionId: 's-9', path: transcriptDir, mcpServers: {}, claudeEnvVars: {},
+                claudeArgs: [], allowedTools: [], hookSettingsPath: '/tmp/hook.json',
+                canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+                nextMessage: async () => {
+                    nextCallCount += 1;
+                    if (nextCallCount === 1) return { message: '/compact', mode: { permissionMode: 'default' } };
+                    return { message: 'must stay queued', mode: { permissionMode: 'default' } };
+                },
+                onReady: async () => {
+                    throw new Error('ready failed');
+                },
+                isAborted: () => false,
+                onSessionFound: () => {},
+                onMessage: () => {},
+                onCompletionEvent: () => {},
+                onSessionReset: () => {}
+            })).rejects.toThrow('ready failed');
+        } finally {
+            queryMock.mockReset();
+            querySpy.mockRestore();
+        }
+
+        expect(nextCallCount).toBe(1);
+    }, 15_000);
+
+    it('propagates compact completion failure after the prompt iterable has ended', async () => {
+        findLatestCompactSummaryMock.mockImplementation(async () => 'summary');
+        const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
+        const { claudeRemote } = await import('./claudeRemote');
+        transcriptDir = await mkdtemp(join(tmpdir(), 'claude-compact-ended-prompt-'));
+        const projectDir = getProjectPath(transcriptDir);
+        await mkdir(projectDir, { recursive: true });
+        await writeFile(join(projectDir, 's-9.jsonl'), '');
+
+        queryMock.mockImplementationOnce(({ prompt }: { prompt: AsyncIterable<unknown> }) => {
+            const responseError = deferred<never>();
+            return {
+                setError(error: Error) {
+                    responseError.reject(error);
+                },
+                async *[Symbol.asyncIterator]() {
+                    const promptIterator = prompt[Symbol.asyncIterator]();
+                    await promptIterator.next();
+                    await promptIterator.return?.();
+                    yield initMessage;
+                    yield {
+                        type: 'system',
+                        subtype: 'compact_boundary',
+                        compact_metadata: { trigger: 'manual', pre_tokens: 100, post_tokens: 10 },
+                        session_id: 's-9',
+                        uuid: 'u-boundary'
+                    } as unknown as SDKMessage;
+                    yield resultMessage;
+                    await responseError.promise;
+                }
+            };
+        });
+
+        try {
+            await expect(claudeRemote({
+                sessionId: 's-9', path: transcriptDir, mcpServers: {}, claudeEnvVars: {},
+                claudeArgs: [], allowedTools: [], hookSettingsPath: '/tmp/hook.json',
+                canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+                nextMessage: async () => ({ message: '/compact', mode: { permissionMode: 'default' } }),
+                onReady: async () => {
+                    throw new Error('ready failed after prompt end');
+                },
+                isAborted: () => false,
+                onSessionFound: () => {},
+                onMessage: () => {},
+                onCompletionEvent: () => {},
+                onSessionReset: () => {}
+            })).rejects.toThrow('ready failed after prompt end');
+        } finally {
+            queryMock.mockReset();
+            querySpy.mockRestore();
+        }
+    }, 15_000);
+
     it('cancels deferred compact completion when an aborted tool exits the stream loop', async () => {
         findLatestCompactSummaryMock.mockImplementation(async (_path, opts) => {
             if (opts?.signal?.aborted) return null;

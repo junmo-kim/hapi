@@ -296,6 +296,7 @@ export async function claudeRemote(opts: {
     let resultSeq = 0;
     const pendingCompactCompletions = new Set<Promise<void>>();
     const compactCompletionAbort = new AbortController();
+    let compactCompletionError: Error | null = null;
     let responseFailed = false;
     let responseClosed = false;
     const abortCompactCompletion = () => compactCompletionAbort.abort();
@@ -478,23 +479,30 @@ export async function claudeRemote(opts: {
                     compactTranscriptBaseline = null;
 
                     const completion = (async () => {
-                        const compactSummary = await lookupCompactSummary(
-                            failure,
-                            sessionId,
-                            baseline,
-                            tokensBefore,
-                            tokensAfter,
-                            compactCompletionAbort.signal
-                        );
-                        if (responseFailed || compactCompletionAbort.signal.aborted) return;
-                        const completionEvent = compactSummary
-                            ? undefined
-                            : buildCompactCompletionEvent(failure, tokensBefore, tokensAfter);
-                        logger.debug(`[claudeRemote] ${compactSummary ? `compact summary promoted (${compactSummary.summary.length} chars)` : completionEvent}`);
-                        await opts.onReady(completionEvent, compactSummary, tokensAfter);
-                        logger.debug(`${debugPrefix} onReady emitted for compact result #${resultSeq}`);
-                        if (!responseClosed && !compactCompletionAbort.signal.aborted) {
-                            scheduleNextMessage();
+                        try {
+                            const compactSummary = await lookupCompactSummary(
+                                failure,
+                                sessionId,
+                                baseline,
+                                tokensBefore,
+                                tokensAfter,
+                                compactCompletionAbort.signal
+                            );
+                            if (responseFailed || compactCompletionAbort.signal.aborted) return;
+                            const completionEvent = compactSummary
+                                ? undefined
+                                : buildCompactCompletionEvent(failure, tokensBefore, tokensAfter);
+                            logger.debug(`[claudeRemote] ${compactSummary ? `compact summary promoted (${compactSummary.summary.length} chars)` : completionEvent}`);
+                            await opts.onReady(completionEvent, compactSummary, tokensAfter);
+                            logger.debug(`${debugPrefix} onReady emitted for compact result #${resultSeq}`);
+                            if (!responseClosed && !compactCompletionAbort.signal.aborted) {
+                                scheduleNextMessage();
+                            }
+                        } catch (error) {
+                            compactCompletionError = error instanceof Error ? error : new Error(String(error));
+                            messages.setError(compactCompletionError);
+                            (response as { setError?: (error: Error) => void }).setError?.(compactCompletionError);
+                            throw compactCompletionError;
                         }
                     })();
                     pendingCompactCompletions.add(completion);
@@ -530,6 +538,7 @@ export async function claudeRemote(opts: {
         responseClosed = true;
         logger.debug(`${debugPrefix} response stream exhausted`);
         await Promise.allSettled(pendingCompactCompletions);
+        if (compactCompletionError) throw compactCompletionError;
     } catch (e) {
         responseFailed = true;
         responseClosed = true;
