@@ -22,6 +22,19 @@ export interface CompactSummaryPayload {
     tokensAfter?: number;
 }
 
+interface CompactCompletion {
+    completionEvent?: string;
+    compactSummary?: CompactSummaryPayload;
+    contextTokens?: number;
+}
+
+interface ActiveCompact {
+    baseline: number | null;
+    failure: string | null;
+    tokensBefore?: number;
+    tokensAfter?: number;
+}
+
 export async function claudeRemote(opts: {
 
     // Fixed parameters
@@ -105,23 +118,9 @@ export async function claudeRemote(opts: {
     let mode: EnhancedMode = bootstrapMode;
     let initial: { message: string; mode: EnhancedMode } | null = null;
     let specialCommand: ReturnType<typeof parseSpecialCommand> = { type: null };
-    // Claude reports the /compact outcome on a `system`/`status` message that
-    // arrives before the `result` message. Hold it here so the completion event
-    // can report what actually happened. Stays null unless a failure is
-    // reported, so an unseen or successful status keeps the success path.
-    let isCompactCommand = false;
-    let compactFailure: string | null = null;
-    // Token context size around the compaction, from the system/compact_boundary
-    // message's compact_metadata. The result that follows a compact reports all-zero
-    // usage (measured), so the boundary metadata is the only real source.
-    let compactTokensBefore: number | undefined;
-    let compactTokensAfter: number | undefined;
-    // Transcript byte size recorded when the /compact command is detected.
-    // Summary rows below this offset belong to earlier turns (a previous
-    // compaction's summary survives in resumed / second-compact sessions) and
-    // must not satisfy the summary lookup while the fresh row is still being
-    // flushed to disk.
-    let compactTranscriptBaseline: number | null = null;
+    // Owns all mutable state from command enqueue through its result. Null
+    // means no manual compact turn can claim stream status or boundaries.
+    const compactState: { active: ActiveCompact | null } = { active: null };
     // The local transcript is keyed by the live session id (updated on init),
     // not opts.sessionId which can be stale for forked sessions.
     let currentSessionId = startFrom;
@@ -147,9 +146,10 @@ export async function claudeRemote(opts: {
         logger.debug('[claudeRemote] /compact command detected - will process as normal but with compaction behavior');
         // Keep baseline capture, state arming, and command enqueue in one event
         // loop turn so an autonomous result cannot claim the pending compact.
-        const baseline = getTranscriptBytes();
-        compactTranscriptBaseline = baseline;
-        isCompactCommand = true;
+        compactState.active = {
+            baseline: getTranscriptBytes(),
+            failure: null
+        };
         if (opts.onCompletionEvent) {
             opts.onCompletionEvent('📦 Compaction started');
         }
@@ -294,11 +294,9 @@ export async function claudeRemote(opts: {
     let nextMessageFetchSeq = 0;
     let streamMessageSeq = 0;
     let resultSeq = 0;
-    const pendingCompactCompletions = new Set<Promise<void>>();
     const compactCompletionAbort = new AbortController();
-    let compactCompletionError: Error | null = null;
-    let responseFailed = false;
     let responseClosed = false;
+    let compactCompletion: Promise<CompactCompletion> | null = null;
     const abortCompactCompletion = () => compactCompletionAbort.abort();
     opts.signal?.addEventListener('abort', abortCompactCompletion, { once: true });
     if (opts.signal?.aborted) compactCompletionAbort.abort();
@@ -362,7 +360,49 @@ export async function claudeRemote(opts: {
     try {
         logger.debug(`[claudeRemote] Starting to iterate over response`);
 
-        for await (const message of response) {
+        const responseIterator = response[Symbol.asyncIterator]();
+        let pendingResponseNext: Promise<IteratorResult<SDKMessage>> | null = null;
+        while (true) {
+            pendingResponseNext ??= responseIterator.next();
+            let message: SDKMessage;
+            if (compactCompletion) {
+                const winner = await Promise.race([
+                    compactCompletion.then((result) => ({ type: 'compact' as const, result })),
+                    pendingResponseNext.then((result) => ({ type: 'response' as const, result }))
+                ]);
+                if (winner.type === 'compact') {
+                    compactCompletion = null;
+                    await opts.onReady(
+                        winner.result.completionEvent,
+                        winner.result.compactSummary,
+                        winner.result.contextTokens
+                    );
+                    logger.debug(`${debugPrefix} compact completion published`);
+                    scheduleNextMessage();
+                    continue;
+                }
+                pendingResponseNext = null;
+                if (winner.result.done) {
+                    responseClosed = true;
+                    const completion = await compactCompletion;
+                    compactCompletion = null;
+                    await opts.onReady(
+                        completion.completionEvent,
+                        completion.compactSummary,
+                        completion.contextTokens
+                    );
+                    break;
+                }
+                message = winner.result.value;
+            } else {
+                const next = await pendingResponseNext;
+                pendingResponseNext = null;
+                if (next.done) {
+                    responseClosed = true;
+                    break;
+                }
+                message = next.value;
+            }
             streamMessageSeq += 1;
             logger.debug(
                 `${debugPrefix} stream message #${streamMessageSeq} type=${message.type} ` +
@@ -380,7 +420,7 @@ export async function claudeRemote(opts: {
                     ? (message as any).compact_metadata
                     : undefined;
             const isManualCompactBoundary =
-                isCompactCommand && compactMetadata?.trigger === 'manual';
+                compactState.active !== null && compactMetadata?.trigger === 'manual';
             // The stdout echo of the active /compact is CLI bookkeeping for
             // this turn — suppress it here where the command state lives, so
             // identical output from other slash commands stays visible.
@@ -388,7 +428,7 @@ export async function claudeRemote(opts: {
                 ? (message as SDKUserMessage).message?.content
                 : undefined;
             const isManualCompactBookkeeping =
-                isCompactCommand &&
+                compactState.active !== null &&
                 typeof echo === 'string' &&
                 /^<local-command-stdout>\s*Compacted\s*<\/local-command-stdout>$/.test(echo.trim());
             if (!isManualCompactBoundary && !isManualCompactBookkeeping) {
@@ -430,23 +470,23 @@ export async function claudeRemote(opts: {
             // Capture the /compact outcome. Only a reported failure is recorded:
             // anything else leaves the success path untouched, so a status shape
             // we do not recognise cannot invent a failure.
-            if (message.type === 'system' && message.subtype === 'status' && isCompactCommand) {
+            if (message.type === 'system' && message.subtype === 'status' && compactState.active) {
                 const systemStatus = message as SDKSystemMessage;
                 if (systemStatus.compact_result === 'failed') {
                     const reason = typeof systemStatus.compact_error === 'string'
                         ? systemStatus.compact_error.trim()
                         : '';
-                    compactFailure = reason.length > 0 ? reason : 'Compaction failed';
-                    logger.debug(`[claudeRemote] Compaction reported as failed: ${compactFailure}`);
+                    compactState.active.failure = reason.length > 0 ? reason : 'Compaction failed';
+                    logger.debug(`[claudeRemote] Compaction reported as failed: ${compactState.active.failure}`);
                 }
             }
 
             // Capture the compaction token delta from the boundary metadata
             // (pre_tokens/post_tokens are the context sizes on each side).
-            if (isManualCompactBoundary) {
-                if (typeof compactMetadata?.pre_tokens === 'number') compactTokensBefore = compactMetadata.pre_tokens;
-                if (typeof compactMetadata?.post_tokens === 'number') compactTokensAfter = compactMetadata.post_tokens;
-                logger.debug(`[claudeRemote] compact_boundary tokens: ${compactTokensBefore} -> ${compactTokensAfter}`);
+            if (isManualCompactBoundary && compactState.active) {
+                if (typeof compactMetadata?.pre_tokens === 'number') compactState.active.tokensBefore = compactMetadata.pre_tokens;
+                if (typeof compactMetadata?.post_tokens === 'number') compactState.active.tokensAfter = compactMetadata.post_tokens;
+                logger.debug(`[claudeRemote] compact_boundary tokens: ${compactState.active.tokensBefore} -> ${compactState.active.tokensAfter}`);
             }
 
             // Handle result messages
@@ -462,55 +502,41 @@ export async function claudeRemote(opts: {
                     opts.onFirstResult?.(initial.message);
                 }
 
-                if (isCompactCommand) {
-                    const failure = compactFailure;
+                if (compactState.active) {
+                    const compact = compactState.active;
                     const sessionId = currentSessionId;
-                    const baseline = compactTranscriptBaseline;
-                    const tokensBefore = compactTokensBefore;
-                    const tokensAfter = compactTokensAfter;
+                    const baseline = compact.baseline;
+                    const failure = compact.failure;
+                    const tokensBefore = compact.tokensBefore;
+                    const tokensAfter = compact.tokensAfter;
                     // Preserve the post-compaction context size even when no
                     // summary was found: the launcher refreshes the context
                     // bar with it, since the next real usage only arrives
                     // with the next model response.
-                    isCompactCommand = false;
-                    compactFailure = null;
-                    compactTokensBefore = undefined;
-                    compactTokensAfter = undefined;
-                    compactTranscriptBaseline = null;
+                    compactState.active = null;
 
-                    const completion = (async () => {
-                        try {
-                            const compactSummary = await lookupCompactSummary(
-                                failure,
-                                sessionId,
-                                baseline,
-                                tokensBefore,
-                                tokensAfter,
-                                compactCompletionAbort.signal
-                            );
-                            if (responseFailed || compactCompletionAbort.signal.aborted) return;
-                            const completionEvent = compactSummary
-                                ? undefined
-                                : buildCompactCompletionEvent(failure, tokensBefore, tokensAfter);
-                            logger.debug(`[claudeRemote] ${compactSummary ? `compact summary promoted (${compactSummary.summary.length} chars)` : completionEvent}`);
-                            await opts.onReady(completionEvent, compactSummary, tokensAfter);
-                            logger.debug(`${debugPrefix} onReady emitted for compact result #${resultSeq}`);
-                            if (!responseClosed && !compactCompletionAbort.signal.aborted) {
-                                scheduleNextMessage();
-                            }
-                        } catch (error) {
-                            compactCompletionError = error instanceof Error ? error : new Error(String(error));
-                            messages.setError(compactCompletionError);
-                            (response as { setError?: (error: Error) => void }).setError?.(compactCompletionError);
-                            throw compactCompletionError;
-                        }
+                    compactCompletion = (async () => {
+                        const compactSummary = await lookupCompactSummary(
+                            failure,
+                            sessionId,
+                            baseline,
+                            tokensBefore,
+                            tokensAfter,
+                            compactCompletionAbort.signal
+                        );
+                        const completionEvent = compactSummary
+                            ? undefined
+                            : buildCompactCompletionEvent(failure, tokensBefore, tokensAfter);
+                        logger.debug(`[claudeRemote] ${compactSummary ? `compact summary promoted (${compactSummary.summary.length} chars)` : completionEvent}`);
+                        return { completionEvent, compactSummary, contextTokens: tokensAfter };
                     })();
-                    pendingCompactCompletions.add(completion);
-                    void completion
-                        .finally(() => pendingCompactCompletions.delete(completion))
-                        .catch((error) => logger.debug('[claudeRemote] compact completion callback failed', error));
                     continue;
                 }
+
+                // An autonomous result may arrive while transcript polling is
+                // pending. The coordinator keeps consuming it, but the compact
+                // outcome remains the sole owner of ready and the next prompt.
+                if (compactCompletion) continue;
 
                 await opts.onReady();
                 logger.debug(`${debugPrefix} onReady emitted for result #${resultSeq}`);
@@ -535,15 +561,11 @@ export async function claudeRemote(opts: {
                 }
             }
         }
-        responseClosed = true;
         logger.debug(`${debugPrefix} response stream exhausted`);
-        await Promise.allSettled(pendingCompactCompletions);
-        if (compactCompletionError) throw compactCompletionError;
     } catch (e) {
-        responseFailed = true;
         responseClosed = true;
         compactCompletionAbort.abort();
-        await Promise.allSettled(pendingCompactCompletions);
+        await Promise.allSettled(compactCompletion ? [compactCompletion] : []);
         if (e instanceof AbortError) {
             logger.debug(`[claudeRemote] Aborted`);
             // Ignore
@@ -553,9 +575,9 @@ export async function claudeRemote(opts: {
         }
     } finally {
         responseClosed = true;
-        if (pendingCompactCompletions.size > 0) {
+        if (compactCompletion) {
             compactCompletionAbort.abort();
-            await Promise.allSettled(pendingCompactCompletions);
+            await Promise.allSettled([compactCompletion]);
         }
         opts.signal?.removeEventListener('abort', abortCompactCompletion);
         logger.debug(
