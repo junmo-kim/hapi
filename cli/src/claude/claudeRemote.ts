@@ -159,12 +159,13 @@ export async function claudeRemote(opts: {
         sessionId: string | null,
         baseline: number | null,
         tokensBefore: number | undefined,
-        tokensAfter: number | undefined
+        tokensAfter: number | undefined,
+        signal?: AbortSignal
     ): Promise<CompactSummaryPayload | undefined> => {
         if (failure !== null || !sessionId || baseline === null) return undefined;
         try {
             const transcriptPath = join(getProjectPath(opts.path), `${sessionId}.jsonl`);
-            const summary = await findLatestCompactSummary(transcriptPath, { minBytes: baseline, signal: opts.signal });
+            const summary = await findLatestCompactSummary(transcriptPath, { minBytes: baseline, signal });
             if (summary === null) return undefined;
             return { summary, tokensBefore, tokensAfter };
         } catch (e) {
@@ -294,12 +295,18 @@ export async function claudeRemote(opts: {
     let streamMessageSeq = 0;
     let resultSeq = 0;
     const pendingCompactCompletions = new Set<Promise<void>>();
+    const compactCompletionAbort = new AbortController();
+    let responseFailed = false;
+    let responseClosed = false;
+    const abortCompactCompletion = () => compactCompletionAbort.abort();
+    opts.signal?.addEventListener('abort', abortCompactCompletion, { once: true });
+    if (opts.signal?.aborted) compactCompletionAbort.abort();
 
     const scheduleNextMessage = () => {
-        if (nextMessageFetchInFlight || inputEnded) {
+        if (nextMessageFetchInFlight || inputEnded || responseClosed) {
             logger.debug(
                 `${debugPrefix} scheduleNextMessage skipped ` +
-                `(inFlight=${nextMessageFetchInFlight}, inputEnded=${inputEnded})`
+                `(inFlight=${nextMessageFetchInFlight}, inputEnded=${inputEnded}, responseClosed=${responseClosed})`
             );
             return;
         }
@@ -311,6 +318,7 @@ export async function claudeRemote(opts: {
         void (async () => {
             try {
                 const next = await opts.nextMessage();
+                if (responseClosed) return;
                 if (!next) {
                     inputEnded = true;
                     messages.end();
@@ -475,16 +483,19 @@ export async function claudeRemote(opts: {
                             sessionId,
                             baseline,
                             tokensBefore,
-                            tokensAfter
+                            tokensAfter,
+                            compactCompletionAbort.signal
                         );
-                        if (opts.signal?.aborted) return;
+                        if (responseFailed || compactCompletionAbort.signal.aborted) return;
                         const completionEvent = compactSummary
                             ? undefined
                             : buildCompactCompletionEvent(failure, tokensBefore, tokensAfter);
                         logger.debug(`[claudeRemote] ${compactSummary ? `compact summary promoted (${compactSummary.summary.length} chars)` : completionEvent}`);
                         await opts.onReady(completionEvent, compactSummary, tokensAfter);
                         logger.debug(`${debugPrefix} onReady emitted for compact result #${resultSeq}`);
-                        scheduleNextMessage();
+                        if (!responseClosed && !compactCompletionAbort.signal.aborted) {
+                            scheduleNextMessage();
+                        }
                     })();
                     pendingCompactCompletions.add(completion);
                     void completion
@@ -516,9 +527,14 @@ export async function claudeRemote(opts: {
                 }
             }
         }
+        responseClosed = true;
         logger.debug(`${debugPrefix} response stream exhausted`);
         await Promise.allSettled(pendingCompactCompletions);
     } catch (e) {
+        responseFailed = true;
+        responseClosed = true;
+        compactCompletionAbort.abort();
+        await Promise.allSettled(pendingCompactCompletions);
         if (e instanceof AbortError) {
             logger.debug(`[claudeRemote] Aborted`);
             // Ignore
@@ -527,6 +543,12 @@ export async function claudeRemote(opts: {
             throw e;
         }
     } finally {
+        responseClosed = true;
+        if (pendingCompactCompletions.size > 0) {
+            compactCompletionAbort.abort();
+            await Promise.allSettled(pendingCompactCompletions);
+        }
+        opts.signal?.removeEventListener('abort', abortCompactCompletion);
         logger.debug(
             `${debugPrefix} finally ` +
             `(streamMessages=${streamMessageSeq}, results=${resultSeq}, nextFetches=${nextMessageFetchSeq}, inputEnded=${inputEnded})`

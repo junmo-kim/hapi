@@ -987,6 +987,130 @@ describe('claudeRemote compact summary promotion', () => {
         expect(wireOrder.slice(0, 3)).toEqual(['compact outcome', 'ready', 'next prompt consumed']);
     }, 15_000);
 
+    it('cancels deferred compact completion when the response stream fails', async () => {
+        findLatestCompactSummaryMock.mockImplementation(async (_path, opts) => {
+            if (opts?.signal?.aborted) return null;
+            await new Promise<void>((resolve) => {
+                opts?.signal?.addEventListener('abort', () => resolve(), { once: true });
+            });
+            return null;
+        });
+        const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
+        const { claudeRemote } = await import('./claudeRemote');
+        transcriptDir = await mkdtemp(join(tmpdir(), 'claude-compact-failure-'));
+        const projectDir = getProjectPath(transcriptDir);
+        await mkdir(projectDir, { recursive: true });
+        await writeFile(join(projectDir, 's-9.jsonl'), '');
+        queryMock.mockReturnValueOnce({
+            async *[Symbol.asyncIterator]() {
+                yield initMessage;
+                yield {
+                    type: 'system',
+                    subtype: 'compact_boundary',
+                    compact_metadata: { trigger: 'manual', pre_tokens: 100, post_tokens: 10 },
+                    session_id: 's-9',
+                    uuid: 'u-boundary'
+                } as unknown as SDKMessage;
+                yield resultMessage;
+                throw new Error('stream failed');
+            }
+        });
+
+        let nextCallCount = 0;
+        let readyCount = 0;
+        const completionEvents: string[] = [];
+        try {
+            await expect(claudeRemote({
+                sessionId: 's-9', path: transcriptDir, mcpServers: {}, claudeEnvVars: {},
+                claudeArgs: [], allowedTools: [], hookSettingsPath: '/tmp/hook.json',
+                canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+                nextMessage: async () => {
+                    nextCallCount += 1;
+                    if (nextCallCount === 1) return { message: '/compact', mode: { permissionMode: 'default' } };
+                    return { message: 'must stay queued', mode: { permissionMode: 'default' } };
+                },
+                onReady: () => {
+                    readyCount += 1;
+                },
+                isAborted: () => false,
+                onSessionFound: () => {},
+                onMessage: () => {},
+                onCompletionEvent: (message) => completionEvents.push(message),
+                onSessionReset: () => {}
+            })).rejects.toThrow('stream failed');
+        } finally {
+            queryMock.mockReset();
+            querySpy.mockRestore();
+        }
+
+        expect(nextCallCount).toBe(1);
+        expect(readyCount).toBe(0);
+        expect(completionEvents).toEqual(['📦 Compaction started']);
+    }, 15_000);
+
+    it('cancels deferred compact completion when an aborted tool exits the stream loop', async () => {
+        findLatestCompactSummaryMock.mockImplementation(async (_path, opts) => {
+            if (opts?.signal?.aborted) return null;
+            await new Promise<void>((resolve) => {
+                opts?.signal?.addEventListener('abort', () => resolve(), { once: true });
+            });
+            return null;
+        });
+        const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
+        const { claudeRemote } = await import('./claudeRemote');
+        transcriptDir = await mkdtemp(join(tmpdir(), 'claude-compact-abort-'));
+        const projectDir = getProjectPath(transcriptDir);
+        await mkdir(projectDir, { recursive: true });
+        await writeFile(join(projectDir, 's-9.jsonl'), '');
+        queryMock.mockReturnValueOnce(createAsyncStream([
+            initMessage,
+            {
+                type: 'system',
+                subtype: 'compact_boundary',
+                compact_metadata: { trigger: 'manual', pre_tokens: 100, post_tokens: 10 },
+                session_id: 's-9',
+                uuid: 'u-boundary'
+            } as unknown as SDKMessage,
+            resultMessage,
+            {
+                type: 'user',
+                message: {
+                    role: 'user',
+                    content: [{ type: 'tool_result', tool_use_id: 'tool-aborted', content: 'cancelled' }]
+                }
+            } as unknown as SDKMessage
+        ]));
+
+        let nextCallCount = 0;
+        let readyCount = 0;
+        try {
+            await claudeRemote({
+                sessionId: 's-9', path: transcriptDir, mcpServers: {}, claudeEnvVars: {},
+                claudeArgs: [], allowedTools: [], hookSettingsPath: '/tmp/hook.json',
+                canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+                nextMessage: async () => {
+                    nextCallCount += 1;
+                    if (nextCallCount === 1) return { message: '/compact', mode: { permissionMode: 'default' } };
+                    return { message: 'must stay queued', mode: { permissionMode: 'default' } };
+                },
+                onReady: () => {
+                    readyCount += 1;
+                },
+                isAborted: (toolCallId) => toolCallId === 'tool-aborted',
+                onSessionFound: () => {},
+                onMessage: () => {},
+                onCompletionEvent: () => {},
+                onSessionReset: () => {}
+            });
+        } finally {
+            queryMock.mockReset();
+            querySpy.mockRestore();
+        }
+
+        expect(nextCallCount).toBe(1);
+        expect(readyCount).toBe(0);
+    }, 15_000);
+
     it('skips summary promotion entirely when the transcript baseline cannot be established', async () => {
         // No transcript file on disk: stat fails, the baseline stays null, and
         // reading from offset 0 could promote a previous compaction's summary
