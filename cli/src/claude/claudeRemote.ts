@@ -61,6 +61,7 @@ export async function claudeRemote(opts: {
     onThinkingChange?: (thinking: boolean) => void,
     onMessage: (message: SDKMessage) => void,
     onFirstResult?: (initialMessage: string) => void,
+    onCompactResultAccepted?: () => void,
     onCompletionEvent?: (message: string) => void,
     onSessionReset?: () => void
 }) {
@@ -364,14 +365,47 @@ export async function claudeRemote(opts: {
 
         const responseIterator = response[Symbol.asyncIterator]();
         let pendingResponseNext: Promise<IteratorResult<SDKMessage>> | null = null;
+        let pendingResponseDone = false;
+        let pendingResponseError: unknown;
+        let hasPendingResponseError = false;
         while (true) {
-            pendingResponseNext ??= responseIterator.next();
+            if (!pendingResponseNext) {
+                pendingResponseDone = false;
+                pendingResponseError = undefined;
+                hasPendingResponseError = false;
+                pendingResponseNext = responseIterator.next().then(
+                    (result) => {
+                        pendingResponseDone = result.done === true;
+                        return result;
+                    },
+                    (error) => {
+                        pendingResponseError = error;
+                        hasPendingResponseError = true;
+                        throw error;
+                    }
+                );
+            }
             let message: SDKMessage;
             if (compactCompletion) {
                 const winner = await Promise.race([
                     compactCompletion.then((result) => ({ type: 'compact' as const, result })),
-                    pendingResponseNext.then((result) => ({ type: 'response' as const, result }))
+                    pendingResponseNext.then(
+                        (result) => ({ type: 'response' as const, result }),
+                        (error) => ({ type: 'response-error' as const, error })
+                    )
                 ]);
+                if (winner.type === 'response-error') {
+                    if (winner.error instanceof AbortError) throw winner.error;
+                    if (opts.signal?.aborted) throw new AbortError('Compaction completion aborted');
+                    const completion = await compactCompletion;
+                    compactCompletion = null;
+                    await opts.onReady(
+                        completion.completionEvent,
+                        completion.compactSummary,
+                        completion.contextTokens
+                    );
+                    throw winner.error;
+                }
                 if (winner.type === 'compact') {
                     compactCompletion = null;
                     await opts.onReady(
@@ -380,6 +414,11 @@ export async function claudeRemote(opts: {
                         winner.result.contextTokens
                     );
                     logger.debug(`${debugPrefix} compact completion published`);
+                    if (hasPendingResponseError) throw pendingResponseError;
+                    if (pendingResponseDone) {
+                        responseClosed = true;
+                        break;
+                    }
                     scheduleNextMessage();
                     continue;
                 }
@@ -521,6 +560,7 @@ export async function claudeRemote(opts: {
                     // bar with it, since the next real usage only arrives
                     // with the next model response.
                     compactState.active = null;
+                    opts.onCompactResultAccepted?.();
 
                     compactCompletion = (async () => {
                         const compactSummary = await lookupCompactSummary(

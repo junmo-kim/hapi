@@ -1112,14 +1112,9 @@ describe('claudeRemote compact summary promotion', () => {
         expect(wireOrder.slice(0, 3)).toEqual(['compact outcome', 'ready', 'next prompt consumed']);
     }, 15_000);
 
-    it('cancels deferred compact completion when the response stream fails', async () => {
-        findLatestCompactSummaryMock.mockImplementation(async (_path, opts) => {
-            if (opts?.signal?.aborted) return null;
-            await new Promise<void>((resolve) => {
-                opts?.signal?.addEventListener('abort', () => resolve(), { once: true });
-            });
-            return null;
-        });
+    it('publishes deferred compact completion before propagating a later stream failure', async () => {
+        const summary = deferred<string | null>();
+        findLatestCompactSummaryMock.mockImplementation(() => summary.promise);
         const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
         const { claudeRemote } = await import('./claudeRemote');
         transcriptDir = await mkdtemp(join(tmpdir(), 'claude-compact-failure-'));
@@ -1143,7 +1138,74 @@ describe('claudeRemote compact summary promotion', () => {
 
         let nextCallCount = 0;
         let readyCount = 0;
+        let acceptedCount = 0;
+        const readyEvents: Array<string | undefined> = [];
         const completionEvents: string[] = [];
+        const run = claudeRemote({
+            sessionId: 's-9', path: transcriptDir, mcpServers: {}, claudeEnvVars: {},
+            claudeArgs: [], allowedTools: [], hookSettingsPath: '/tmp/hook.json',
+            canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+            nextMessage: async () => {
+                nextCallCount += 1;
+                if (nextCallCount === 1) return { message: '/compact', mode: { permissionMode: 'default' } };
+                return { message: 'must stay queued', mode: { permissionMode: 'default' } };
+            },
+            onReady: (completionEvent) => {
+                readyCount += 1;
+                readyEvents.push(completionEvent);
+            },
+            onCompactResultAccepted: () => {
+                acceptedCount += 1;
+            },
+            isAborted: () => false,
+            onSessionFound: () => {},
+            onMessage: () => {},
+            onCompletionEvent: (message) => completionEvents.push(message),
+            onSessionReset: () => {}
+        });
+        try {
+            await vi.waitFor(() => expect(findLatestCompactSummaryMock).toHaveBeenCalled());
+            summary.resolve(null);
+            await expect(run).rejects.toThrow('stream failed');
+        } finally {
+            summary.resolve(null);
+            await run.catch(() => {});
+            queryMock.mockReset();
+            querySpy.mockRestore();
+        }
+
+        expect(nextCallCount).toBe(1);
+        expect(readyCount).toBe(1);
+        expect(acceptedCount).toBe(1);
+        expect(readyEvents).toEqual(['📦 Compacted (100 → 10 tokens)']);
+        expect(completionEvents).toEqual(['📦 Compaction started']);
+    }, 15_000);
+
+    it('does not consume the next prompt when completion and stream failure settle together', async () => {
+        findLatestCompactSummaryMock.mockImplementation(async () => null);
+        const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
+        const { claudeRemote } = await import('./claudeRemote');
+        transcriptDir = await mkdtemp(join(tmpdir(), 'claude-compact-failure-tie-'));
+        const projectDir = getProjectPath(transcriptDir);
+        await mkdir(projectDir, { recursive: true });
+        await writeFile(join(projectDir, 's-9.jsonl'), '');
+        queryMock.mockReturnValueOnce({
+            async *[Symbol.asyncIterator]() {
+                yield initMessage;
+                yield {
+                    type: 'system',
+                    subtype: 'compact_boundary',
+                    compact_metadata: { trigger: 'manual', pre_tokens: 100, post_tokens: 10 },
+                    session_id: 's-9',
+                    uuid: 'u-boundary'
+                } as unknown as SDKMessage;
+                yield resultMessage;
+                throw new Error('stream failed in tie');
+            }
+        });
+
+        let nextCallCount = 0;
+        const readyEvents: Array<string | undefined> = [];
         try {
             await expect(claudeRemote({
                 sessionId: 's-9', path: transcriptDir, mcpServers: {}, claudeEnvVars: {},
@@ -1151,26 +1213,26 @@ describe('claudeRemote compact summary promotion', () => {
                 canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
                 nextMessage: async () => {
                     nextCallCount += 1;
-                    if (nextCallCount === 1) return { message: '/compact', mode: { permissionMode: 'default' } };
-                    return { message: 'must stay queued', mode: { permissionMode: 'default' } };
+                    return nextCallCount === 1
+                        ? { message: '/compact', mode: { permissionMode: 'default' } }
+                        : { message: 'must stay queued', mode: { permissionMode: 'default' } };
                 },
-                onReady: () => {
-                    readyCount += 1;
+                onReady: (completionEvent) => {
+                    readyEvents.push(completionEvent);
                 },
                 isAborted: () => false,
                 onSessionFound: () => {},
                 onMessage: () => {},
-                onCompletionEvent: (message) => completionEvents.push(message),
+                onCompletionEvent: () => {},
                 onSessionReset: () => {}
-            })).rejects.toThrow('stream failed');
+            })).rejects.toThrow('stream failed in tie');
         } finally {
             queryMock.mockReset();
             querySpy.mockRestore();
         }
 
+        expect(readyEvents).toEqual(['📦 Compacted (100 → 10 tokens)']);
         expect(nextCallCount).toBe(1);
-        expect(readyCount).toBe(0);
-        expect(completionEvents).toEqual(['📦 Compaction started']);
     }, 15_000);
 
     it('propagates a rejected compact onReady callback to the response attempt', async () => {

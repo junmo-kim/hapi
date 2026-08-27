@@ -493,6 +493,13 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                         onFirstResult: (initialMessage) => {
                             applySessionTitleFallback(session.client, initialMessage);
                         },
+                        onCompactResultAccepted: () => {
+                            // The command has completed at the SDK boundary even
+                            // if transcript summary lookup is still pending. A
+                            // later stream failure must not replay /compact.
+                            reachedReadyThisAttempt = true;
+                            inFlightMessage = null;
+                        },
                         onCompletionEvent: (message: string) => {
                             logger.debug(`[remote]: Completion event: ${message}`);
                             session.client.sendSessionEvent({ type: 'message', message });
