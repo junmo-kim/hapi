@@ -508,15 +508,6 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             // just asked to clear.
                             session.consumeOneTimeFlags();
                         },
-                        onCompactSummary: (compactSummary: CompactSummaryPayload) => {
-                            logger.debug(`[remote]: Compact summary promoted (${compactSummary.summary.length} chars)`);
-                            session.client.sendSessionEvent({
-                                type: 'compact-summary',
-                                summary: compactSummary.summary,
-                                tokensBefore: compactSummary.tokensBefore,
-                                estimatedTokensAfter: compactSummary.tokensAfter
-                            });
-                        },
                         onReady: async (completionEvent?: string, compactSummary?: CompactSummaryPayload, compactContextTokens?: number) => {
                             // Reaching ready at all means this attempt is not an
                             // immediate/deterministic failure -- reset the

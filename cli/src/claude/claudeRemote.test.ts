@@ -740,7 +740,7 @@ describe('claudeRemote /compact result reporting', () => {
             querySpy.mockRestore();
         }
 
-        expect(wireOrder).toEqual(['result', 'ready', '📦 Compacted']);
+        expect(wireOrder).toEqual(['result', '📦 Compacted', 'ready']);
     }, 15_000);
 });
 
@@ -824,12 +824,10 @@ describe('claudeRemote compact summary promotion', () => {
                     }
                     return null;
                 },
-                onReady: (completionEvent, _compactSummary, compactContextTokens) => {
+                onReady: (completionEvent, compactSummary, compactContextTokens) => {
                     if (completionEvent) completionEvents.push(completionEvent);
+                    if (compactSummary) compactSummaries.push(compactSummary);
                     contextTokens.push(compactContextTokens);
-                },
-                onCompactSummary: (compactSummary) => {
-                    compactSummaries.push(compactSummary);
                 },
                 isAborted: () => false,
                 onSessionFound: () => {},
@@ -918,6 +916,75 @@ describe('claudeRemote compact summary promotion', () => {
             queryMock.mockReset();
             querySpy.mockRestore();
         }
+    }, 15_000);
+
+    it('publishes compact outcome before consuming an already queued next prompt', async () => {
+        const summary = deferred<string | null>();
+        findLatestCompactSummaryMock.mockImplementation(() => summary.promise);
+        const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
+        const { claudeRemote } = await import('./claudeRemote');
+        const wireOrder: string[] = [];
+        transcriptDir = await mkdtemp(join(tmpdir(), 'claude-compact-order-'));
+        const projectDir = getProjectPath(transcriptDir);
+        await mkdir(projectDir, { recursive: true });
+        await writeFile(join(projectDir, 's-9.jsonl'), '');
+
+        queryMock.mockImplementationOnce(({ prompt }: { prompt: AsyncIterable<unknown> }) => ({
+            async *[Symbol.asyncIterator]() {
+                const promptIterator = prompt[Symbol.asyncIterator]();
+                await promptIterator.next();
+                yield initMessage;
+                yield {
+                    type: 'system',
+                    subtype: 'compact_boundary',
+                    compact_metadata: { trigger: 'manual', pre_tokens: 100, post_tokens: 10 },
+                    session_id: 's-9',
+                    uuid: 'u-boundary'
+                } as unknown as SDKMessage;
+                yield resultMessage;
+                await promptIterator.next();
+                yield resultMessage;
+            }
+        }));
+
+        let nextCallCount = 0;
+        const run = claudeRemote({
+            sessionId: 's-9', path: transcriptDir, mcpServers: {}, claudeEnvVars: {},
+            claudeArgs: [], allowedTools: [], hookSettingsPath: '/tmp/hook.json',
+            canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+            nextMessage: async () => {
+                nextCallCount += 1;
+                if (nextCallCount === 1) return { message: '/compact', mode: { permissionMode: 'default' } };
+                if (nextCallCount === 2) {
+                    wireOrder.push('next prompt consumed');
+                    return { message: 'after compact', mode: { permissionMode: 'default' } };
+                }
+                return null;
+            },
+            onReady: (_completionEvent, compactSummary) => {
+                if (compactSummary) wireOrder.push('compact outcome');
+                wireOrder.push('ready');
+            },
+            isAborted: () => false,
+            onSessionFound: () => {},
+            onMessage: () => {},
+            onCompletionEvent: () => {},
+            onSessionReset: () => {}
+        });
+
+        try {
+            await vi.waitFor(() => expect(findLatestCompactSummaryMock).toHaveBeenCalled());
+            expect(nextCallCount).toBe(1);
+            summary.resolve('summary');
+            await run;
+        } finally {
+            summary.resolve(null);
+            await run.catch(() => {});
+            queryMock.mockReset();
+            querySpy.mockRestore();
+        }
+
+        expect(wireOrder.slice(0, 3)).toEqual(['compact outcome', 'ready', 'next prompt consumed']);
     }, 15_000);
 
     it('skips summary promotion entirely when the transcript baseline cannot be established', async () => {

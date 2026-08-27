@@ -40,7 +40,6 @@ export async function claudeRemote(opts: {
     // Dynamic parameters
     nextMessage: () => Promise<{ message: string, mode: EnhancedMode } | null>,
     onReady: (completionEvent?: string, compactSummary?: CompactSummaryPayload, compactContextTokens?: number) => void | Promise<void>,
-    onCompactSummary?: (compactSummary: CompactSummaryPayload) => void,
     isAborted: (toolCallId: string) => boolean,
 
     // Callbacks
@@ -454,8 +453,6 @@ export async function claudeRemote(opts: {
                     opts.onFirstResult?.(initial.message);
                 }
 
-                let compactContextTokens: number | undefined;
-                let releaseCompactCompletion: (() => void) | undefined;
                 if (isCompactCommand) {
                     const failure = compactFailure;
                     const sessionId = currentSessionId;
@@ -466,16 +463,12 @@ export async function claudeRemote(opts: {
                     // summary was found: the launcher refreshes the context
                     // bar with it, since the next real usage only arrives
                     // with the next model response.
-                    compactContextTokens = tokensAfter;
                     isCompactCommand = false;
                     compactFailure = null;
                     compactTokensBefore = undefined;
                     compactTokensAfter = undefined;
                     compactTranscriptBaseline = null;
 
-                    const readyFlushed = new Promise<void>((resolve) => {
-                        releaseCompactCompletion = resolve;
-                    });
                     const completion = (async () => {
                         const compactSummary = await lookupCompactSummary(
                             failure,
@@ -484,30 +477,23 @@ export async function claudeRemote(opts: {
                             tokensBefore,
                             tokensAfter
                         );
-                        await readyFlushed;
                         if (opts.signal?.aborted) return;
-                        if (compactSummary) {
-                            logger.debug(`[claudeRemote] compact summary promoted (${compactSummary.summary.length} chars)`);
-                            opts.onCompactSummary?.(compactSummary);
-                            return;
-                        }
-                        const completionEvent = buildCompactCompletionEvent(failure, tokensBefore, tokensAfter);
-                        logger.debug(`[claudeRemote] ${completionEvent}`);
-                        opts.onCompletionEvent?.(completionEvent);
+                        const completionEvent = compactSummary
+                            ? undefined
+                            : buildCompactCompletionEvent(failure, tokensBefore, tokensAfter);
+                        logger.debug(`[claudeRemote] ${compactSummary ? `compact summary promoted (${compactSummary.summary.length} chars)` : completionEvent}`);
+                        await opts.onReady(completionEvent, compactSummary, tokensAfter);
+                        logger.debug(`${debugPrefix} onReady emitted for compact result #${resultSeq}`);
+                        scheduleNextMessage();
                     })();
                     pendingCompactCompletions.add(completion);
                     void completion
                         .finally(() => pendingCompactCompletions.delete(completion))
                         .catch((error) => logger.debug('[claudeRemote] compact completion callback failed', error));
+                    continue;
                 }
 
-                // Flush the result carrier and announce ready without blocking
-                // response consumption on transcript-summary polling.
-                try {
-                    await opts.onReady(undefined, undefined, compactContextTokens);
-                } finally {
-                    releaseCompactCompletion?.();
-                }
+                await opts.onReady();
                 logger.debug(`${debugPrefix} onReady emitted for result #${resultSeq}`);
 
                 // Pull next user message without blocking response stream processing.
