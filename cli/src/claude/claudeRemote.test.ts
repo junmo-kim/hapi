@@ -482,6 +482,29 @@ describe('claudeRemote /compact result reporting', () => {
         expect(completionEvents).not.toContain('📦 Compacted');
     }, 15_000);
 
+    it('reports a generic failure without duplicating the fallback text', async () => {
+        const completionEvents = await runCompact([
+            {
+                type: 'system',
+                subtype: 'status',
+                status: 'compacting',
+                session_id: 's-1',
+                uuid: 'u-1'
+            } as unknown as SDKMessage,
+            {
+                type: 'system',
+                subtype: 'status',
+                status: null,
+                compact_result: 'failed',
+                session_id: 's-1',
+                uuid: 'u-2'
+            } as unknown as SDKMessage,
+            resultMessage
+        ]);
+
+        expect(completionEvents).toEqual(['📦 Compaction started', '📦 Compaction failed']);
+    }, 15_000);
+
     it('still reports success when no failure status arrives', async () => {
         const completionEvents = await runCompact([
             {
@@ -517,6 +540,29 @@ describe('claudeRemote /compact result reporting', () => {
         ]);
 
         expect(completionEvents).toEqual(['📦 Compaction started', '📦 Compacted (34492 → 2082 tokens)']);
+    }, 15_000);
+
+    it('ignores an autonomous result until the compact stream signal arrives', async () => {
+        const completionEvents = await runCompact([
+            resultMessage,
+            {
+                type: 'system',
+                subtype: 'status',
+                status: 'compacting',
+                session_id: 's-1',
+                uuid: 'u-status'
+            } as unknown as SDKMessage,
+            {
+                type: 'system',
+                subtype: 'compact_boundary',
+                compact_metadata: { trigger: 'manual', pre_tokens: 100, post_tokens: 10 },
+                session_id: 's-1',
+                uuid: 'u-boundary'
+            } as unknown as SDKMessage,
+            resultMessage
+        ]);
+
+        expect(completionEvents).toEqual(['📦 Compaction started', '📦 Compacted (100 → 10 tokens)']);
     }, 15_000);
 
     it('does not relay the compact_boundary system message during a manual /compact', async () => {
@@ -710,7 +756,16 @@ describe('claudeRemote /compact result reporting', () => {
         const { claudeRemote } = await import('./claudeRemote');
         const wireOrder: string[] = [];
         const queued: string[] = [];
-        queryMock.mockReturnValueOnce(createAsyncStream([resultMessage]));
+        queryMock.mockReturnValueOnce(createAsyncStream([
+            {
+                type: 'system',
+                subtype: 'status',
+                status: 'compacting',
+                session_id: 's-1',
+                uuid: 'u-status'
+            } as unknown as SDKMessage,
+            resultMessage
+        ]));
 
         let nextCallCount = 0;
         try {
@@ -916,6 +971,76 @@ describe('claudeRemote compact summary promotion', () => {
             queryMock.mockReset();
             querySpy.mockRestore();
         }
+    }, 15_000);
+
+    it('does not publish a successful compact outcome when summary polling is aborted', async () => {
+        findLatestCompactSummaryMock.mockImplementation(async (_path, opts) => {
+            if (opts?.signal?.aborted) return null;
+            await new Promise<void>((resolve) => {
+                opts?.signal?.addEventListener('abort', () => resolve(), { once: true });
+            });
+            return null;
+        });
+        const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
+        const { claudeRemote } = await import('./claudeRemote');
+        const controller = new AbortController();
+        const completionEvents: string[] = [];
+        let readyCount = 0;
+        transcriptDir = await mkdtemp(join(tmpdir(), 'claude-compact-signal-abort-'));
+        const projectDir = getProjectPath(transcriptDir);
+        await mkdir(projectDir, { recursive: true });
+        await writeFile(join(projectDir, 's-9.jsonl'), '');
+        queryMock.mockReturnValueOnce({
+            async *[Symbol.asyncIterator]() {
+                yield initMessage;
+                yield {
+                    type: 'system',
+                    subtype: 'compact_boundary',
+                    compact_metadata: { trigger: 'manual', pre_tokens: 100, post_tokens: 10 },
+                    session_id: 's-9',
+                    uuid: 'u-boundary'
+                } as unknown as SDKMessage;
+                yield resultMessage;
+                await new Promise<never>(() => {});
+            }
+        });
+
+        let nextCallCount = 0;
+        const run = claudeRemote({
+            sessionId: 's-9', path: transcriptDir, mcpServers: {}, claudeEnvVars: {},
+            claudeArgs: [], allowedTools: [], hookSettingsPath: '/tmp/hook.json',
+            signal: controller.signal,
+            canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+            nextMessage: async () => {
+                nextCallCount += 1;
+                return nextCallCount === 1
+                    ? { message: '/compact', mode: { permissionMode: 'default' } }
+                    : { message: 'must stay queued', mode: { permissionMode: 'default' } };
+            },
+            onReady: () => {
+                readyCount += 1;
+            },
+            isAborted: () => false,
+            onSessionFound: () => {},
+            onMessage: () => {},
+            onCompletionEvent: (message) => completionEvents.push(message),
+            onSessionReset: () => {}
+        });
+
+        try {
+            await vi.waitFor(() => expect(findLatestCompactSummaryMock).toHaveBeenCalled());
+            controller.abort();
+            await run;
+        } finally {
+            controller.abort();
+            await run.catch(() => {});
+            queryMock.mockReset();
+            querySpy.mockRestore();
+        }
+
+        expect(completionEvents).toEqual(['📦 Compaction started']);
+        expect(readyCount).toBe(0);
+        expect(nextCallCount).toBe(1);
     }, 15_000);
 
     it('publishes compact outcome before consuming an already queued next prompt', async () => {
@@ -1224,7 +1349,17 @@ describe('claudeRemote compact summary promotion', () => {
             const { claudeRemote } = await import('./claudeRemote');
             const completionEvents: string[] = [];
             const readyPayloads: Array<Record<string, unknown> | undefined> = [];
-            queryMock.mockReturnValueOnce(createAsyncStream([initMessage, resultMessage]));
+            queryMock.mockReturnValueOnce(createAsyncStream([
+                initMessage,
+                {
+                    type: 'system',
+                    subtype: 'status',
+                    status: 'compacting',
+                    session_id: 's-9',
+                    uuid: 'u-status'
+                } as unknown as SDKMessage,
+                resultMessage
+            ]));
 
             let nextCallCount = 0;
             try {

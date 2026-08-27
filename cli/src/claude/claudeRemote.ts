@@ -31,6 +31,7 @@ interface CompactCompletion {
 interface ActiveCompact {
     baseline: number | null;
     failure: string | null;
+    sawCompactSignal: boolean;
     tokensBefore?: number;
     tokensAfter?: number;
 }
@@ -148,7 +149,8 @@ export async function claudeRemote(opts: {
         // loop turn so an autonomous result cannot claim the pending compact.
         compactState.active = {
             baseline: getTranscriptBytes(),
-            failure: null
+            failure: null,
+            sawCompactSignal: false
         };
         if (opts.onCompletionEvent) {
             opts.onCompletionEvent('📦 Compaction started');
@@ -472,11 +474,14 @@ export async function claudeRemote(opts: {
             // we do not recognise cannot invent a failure.
             if (message.type === 'system' && message.subtype === 'status' && compactState.active) {
                 const systemStatus = message as SDKSystemMessage;
+                if (systemStatus.status === 'compacting' || systemStatus.compact_result !== undefined) {
+                    compactState.active.sawCompactSignal = true;
+                }
                 if (systemStatus.compact_result === 'failed') {
                     const reason = typeof systemStatus.compact_error === 'string'
                         ? systemStatus.compact_error.trim()
                         : '';
-                    compactState.active.failure = reason.length > 0 ? reason : 'Compaction failed';
+                    compactState.active.failure = reason;
                     logger.debug(`[claudeRemote] Compaction reported as failed: ${compactState.active.failure}`);
                 }
             }
@@ -484,6 +489,7 @@ export async function claudeRemote(opts: {
             // Capture the compaction token delta from the boundary metadata
             // (pre_tokens/post_tokens are the context sizes on each side).
             if (isManualCompactBoundary && compactState.active) {
+                compactState.active.sawCompactSignal = true;
                 if (typeof compactMetadata?.pre_tokens === 'number') compactState.active.tokensBefore = compactMetadata.pre_tokens;
                 if (typeof compactMetadata?.post_tokens === 'number') compactState.active.tokensAfter = compactMetadata.post_tokens;
                 logger.debug(`[claudeRemote] compact_boundary tokens: ${compactState.active.tokensBefore} -> ${compactState.active.tokensAfter}`);
@@ -503,6 +509,7 @@ export async function claudeRemote(opts: {
                 }
 
                 if (compactState.active) {
+                    if (!compactState.active.sawCompactSignal) continue;
                     const compact = compactState.active;
                     const sessionId = currentSessionId;
                     const baseline = compact.baseline;
@@ -524,6 +531,9 @@ export async function claudeRemote(opts: {
                             tokensAfter,
                             compactCompletionAbort.signal
                         );
+                        if (compactCompletionAbort.signal.aborted) {
+                            throw new AbortError('Compaction completion aborted');
+                        }
                         const completionEvent = compactSummary
                             ? undefined
                             : buildCompactCompletionEvent(failure, tokensBefore, tokensAfter);
