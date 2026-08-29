@@ -230,10 +230,11 @@ describe('listOpencodeModelVariants resident lifecycle', () => {
         const first = mod.listOpencodeModelVariants();
         await vi.advanceTimersByTimeAsync(300);
         await first;
-        const hook = exitSpy.mock.calls.find(([event]) => event === 'exit')?.[1] as () => void;
+        const calls = exitSpy.mock.calls as unknown as Array<[string, (...args: unknown[]) => void]>;
+        const hook = calls.find(([event]) => event === 'exit')?.[1];
         expect(hook).toBeDefined();
         const residentServe = serveProcs()[0];
-        hook();
+        hook?.();
         expect(residentServe.kill).toHaveBeenCalled();
         exitSpy.mockRestore();
     });
