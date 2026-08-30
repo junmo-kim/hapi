@@ -317,6 +317,9 @@ function createSessionStub(
     const claudeSessionMessages: unknown[] = [];
     const rpcHandlers = new Map<string, (params: unknown) => unknown>();
     const setModelReasoningEffort = vi.fn();
+    const setModel = vi.fn((model: string | null) => {
+        session.model = model;
+    });
     const pushKeepAlive = vi.fn();
     const emitMessagesConsumedCalls: Array<{ localIds: string[]; options?: { clearQueuedThinkingGrace?: boolean } }> = [];
     const thinkingChangeCalls: boolean[] = [];
@@ -354,7 +357,7 @@ function createSessionStub(
         getModel() {
             return session.model;
         },
-        setModel(_model: string | null) {},
+        setModel,
         setModelReasoningEffort,
         pushKeepAlive,
         onThinkingChange(thinking: boolean) {
@@ -373,7 +376,7 @@ function createSessionStub(
         sendUserMessage(_text: string) {}
     };
 
-    return { session, sessionEvents, sentAgentMessages, agentMessages: sentAgentMessages, claudeSessionMessages, rpcHandlers, setModelReasoningEffort, pushKeepAlive, emitMessagesConsumedCalls, thinkingChangeCalls };
+    return { session, sessionEvents, sentAgentMessages, agentMessages: sentAgentMessages, claudeSessionMessages, rpcHandlers, setModel, setModelReasoningEffort, pushKeepAlive, emitMessagesConsumedCalls, thinkingChangeCalls };
 }
 
 function createCompactMode(model?: string): OpencodeMode {
@@ -1803,17 +1806,21 @@ describe('opencodeRemoteLauncher inline model switch', () => {
     });
 
     it('reports a transient setModel error and continues with the previous model', async () => {
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/a', availableModels: [] };
         let attempts = 0;
         harness.setModelImpl = async () => {
             attempts++;
             throw new Error('Transient backend failure');
         };
-        const { session, sessionEvents } = createSessionStub([
+        const { session, sessionEvents, setModel, pushKeepAlive } = createSessionStub([
             { message: 'first', mode: createMode('ollama/a') },
             { message: 'second', mode: createMode('ollama/b') }
         ]);
+        const rollbacks: Array<string | null> = [];
 
-        await opencodeRemoteLauncher(session as never);
+        await opencodeRemoteLauncher(session as never, {
+            onModelRollback: (model) => rollbacks.push(model)
+        });
 
         expect(attempts).toBe(1);
         const failureMessages = sessionEvents.filter(
@@ -1824,6 +1831,10 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         );
         expect(failureMessages.length).toBe(1);
         expect(failureMessages[0]?.message).toContain('ollama/b');
+        expect(setModel).toHaveBeenCalledWith('ollama/a');
+        expect(session.model).toBe('ollama/a');
+        expect(pushKeepAlive).toHaveBeenCalledTimes(1);
+        expect(rollbacks).toEqual(['ollama/a']);
         expect(harness.promptCount).toBe(2);
     });
 

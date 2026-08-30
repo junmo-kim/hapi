@@ -26,6 +26,7 @@ import { getOpencodeNativeToolInstruction, PLAN_MODE_INSTRUCTION } from './utils
 import { resolveThoughtLevelEffort } from './thoughtLevelEffort';
 
 type OpencodeRemoteLauncherOptions = {
+    onModelRollback?: (model: string | null) => void;
     onReasoningEffortRollback?: (effort: string | null) => void;
     // Called with `true` once the ACP backend + internal HTTP baseUrl are
     // ready (so /compact can actually run) and with `false` whenever this
@@ -431,7 +432,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 this.currentBackendModel = requestedModel;
             } else if (requestedModel && requestedModel !== this.currentBackendModel) {
                 if (!backend.setModel || this.setModelSupported === false) {
-                    batch.mode.model = this.currentBackendModel ?? undefined;
+                    this.rollbackModel(batch, this.currentBackendModel);
                 } else {
                     logger.debug(`[opencode-remote] Switching model inline: ${this.currentBackendModel} -> ${requestedModel}`);
                     try {
@@ -468,7 +469,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                                 message: `Failed to switch model to ${requestedModel}. Continuing with ${this.currentBackendModel ?? '(default)'}.`
                             });
                         }
-                        batch.mode.model = this.currentBackendModel ?? undefined;
+                        this.rollbackModel(batch, this.currentBackendModel);
                     }
                 }
             }
@@ -856,6 +857,13 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         this.session.setModelReasoningEffort(effort);
         this.session.pushKeepAlive();
         this.options.onReasoningEffortRollback?.(effort);
+    }
+
+    private rollbackModel(batch: { mode: OpencodeMode }, model: string | null): void {
+        batch.mode.model = model ?? undefined;
+        this.session.setModel(model);
+        this.session.pushKeepAlive();
+        this.options.onModelRollback?.(model);
     }
 
     /**
