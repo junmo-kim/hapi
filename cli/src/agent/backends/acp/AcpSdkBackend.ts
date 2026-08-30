@@ -435,6 +435,15 @@ export class AcpSdkBackend implements AgentBackend {
             // cached currentModelId (the call succeeded, so the agent has switched)
             // while preserving the availableModels list captured from session/new.
             this.updateCurrentModelOptimistic(sessionId, modelId);
+            if (opts.flavor === 'opencode') {
+                const options = this.sessionConfigOptions.get(sessionId);
+                if (options) {
+                    this.sessionConfigOptions.set(
+                        sessionId,
+                        options.filter((option) => option.category !== 'thought_level')
+                    );
+                }
+            }
         } else {
             // For other flavors (e.g. Gemini), if the response carries metadata,
             // capture it. Missing fields are silently ignored.

@@ -490,7 +490,13 @@ describe('AcpSdkBackend', () => {
                 if (method === 'session/new') {
                     return {
                         sessionId: 's1',
-                        models: { availableModels: fixtureModels, currentModelId: 'ollama/a' }
+                        models: { availableModels: fixtureModels, currentModelId: 'ollama/a' },
+                        configOptions: [{
+                            id: 'effort',
+                            category: 'thought_level',
+                            currentValue: 'high',
+                            options: [{ value: 'high', name: 'High' }]
+                        }]
                     };
                 }
                 if (method === 'session/set_config_option') {
@@ -506,6 +512,7 @@ describe('AcpSdkBackend', () => {
         };
 
         await backend.newSession({ cwd: '/tmp/x', mcpServers: [] });
+        expect(backend.getThoughtLevelConfigOption('s1')).toBeDefined();
         await backend.setModel('s1', 'ollama/b', { flavor: 'opencode' });
 
         expect(calls.slice(1)).toEqual([
@@ -519,6 +526,7 @@ describe('AcpSdkBackend', () => {
             availableModels: fixtureModels,
             currentModelId: 'ollama/b'
         });
+        expect(backend.getThoughtLevelConfigOption('s1')).toBeUndefined();
     });
 
     it('rethrows non method-not-found errors from opencode set_config_option without falling back', async () => {
