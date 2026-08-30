@@ -9,6 +9,7 @@ import type { ApiClient } from '@/api/client'
 import type {
     AttachmentMetadata,
     CodexCollaborationMode,
+    CodexModelSummary,
     CopilotAgentMode,
     DecryptedMessage,
     PermissionMode,
@@ -171,6 +172,26 @@ export async function applyModelChangeWithReasoningRollback(args: {
         }
         throw error
     }
+}
+
+export function shouldClearReasoningEffortForModelChange(args: {
+    agentFlavor: string | null | undefined
+    previousModelReasoningEffort: string | null
+    codexModels: readonly CodexModelSummary[]
+    model: SessionModelSelection
+}): boolean {
+    if (!args.previousModelReasoningEffort) {
+        return false
+    }
+    if (args.agentFlavor === 'opencode') {
+        return true
+    }
+    return args.agentFlavor === 'codex'
+        && supportsCodexReasoningEffort(
+            args.codexModels,
+            args.model,
+            args.previousModelReasoningEffort
+        ) === false
 }
 
 /**
@@ -1449,13 +1470,12 @@ function SessionChatInner(props: SessionChatProps) {
     // Model mode change handler
     const handleModelChange = useCallback(async (model: SessionModelSelection) => {
         const previousModelReasoningEffort = props.session.modelReasoningEffort
-        const shouldClearReasoningEffort = agentFlavor === 'codex'
-            && Boolean(previousModelReasoningEffort)
-            && supportsCodexReasoningEffort(
-                codexModelsState.models,
-                model,
-                previousModelReasoningEffort
-            ) === false
+        const shouldClearReasoningEffort = shouldClearReasoningEffortForModelChange({
+            agentFlavor,
+            previousModelReasoningEffort,
+            codexModels: codexModelsState.models,
+            model
+        })
 
         try {
             await applyModelChangeWithReasoningRollback({

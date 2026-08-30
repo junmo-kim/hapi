@@ -23,7 +23,7 @@ describe('useOpencodeReasoningEffortOptions pending-switch polling', () => {
         const wrapper = ({ children }: { children: React.ReactNode }) =>
             createElement(QueryClientProvider, { client: queryClient }, children)
 
-        const { rerender } = renderHook(
+        const { result, rerender } = renderHook(
             ({ model }) => useOpencodeReasoningEffortOptions({
                 api,
                 sessionId: 'session-1',
@@ -34,6 +34,8 @@ describe('useOpencodeReasoningEffortOptions pending-switch polling', () => {
         )
 
         await waitFor(() => expect(getSessionOpencodeReasoningEffortOptions).toHaveBeenCalledTimes(1))
+        expect(result.current.options).toEqual([])
+        expect(result.current.currentValue).toBeNull()
         await sleep(2300)
         // Mismatch polling: at least two intervals' worth of refetches.
         expect(getSessionOpencodeReasoningEffortOptions.mock.calls.length).toBeGreaterThanOrEqual(2)

@@ -11,6 +11,7 @@ import {
     resolvePiContextWindow,
     resolveLatestCompletedBoundaryIdForView,
     shouldAutoClearPendingSchedule,
+    shouldClearReasoningEffortForModelChange,
     shouldRouteToScratchlist,
 } from './SessionChat'
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
@@ -49,6 +50,26 @@ describe('applyModelChangeWithReasoningRollback', () => {
         expect(setModelReasoningEffort).toHaveBeenCalledOnce()
         expect(setModelReasoningEffort).toHaveBeenCalledWith(null)
         expect(setModel).toHaveBeenCalledWith('gpt-next')
+    })
+})
+
+describe('shouldClearReasoningEffortForModelChange', () => {
+    it('clears an OpenCode effort when the model changes', () => {
+        expect(shouldClearReasoningEffortForModelChange({
+            agentFlavor: 'opencode',
+            previousModelReasoningEffort: 'high',
+            codexModels: [],
+            model: 'provider/model-b'
+        })).toBe(true)
+    })
+
+    it('does not clear an unset OpenCode effort', () => {
+        expect(shouldClearReasoningEffortForModelChange({
+            agentFlavor: 'opencode',
+            previousModelReasoningEffort: null,
+            codexModels: [],
+            model: 'provider/model-b'
+        })).toBe(false)
     })
 })
 

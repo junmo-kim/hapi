@@ -115,10 +115,14 @@ export function useOpencodeReasoningEffortOptions(args: {
             )
         },
     })
+    const targetModelId = query.data?.targetModelId ?? sessionModel
+    const optionsAreCurrent = !query.data?.currentModelId
+        || !targetModelId
+        || query.data.currentModelId === targetModelId
 
     return {
-        options: query.data?.options ?? [],
-        currentValue: query.data?.currentValue ?? null,
+        options: optionsAreCurrent ? (query.data?.options ?? []) : [],
+        currentValue: optionsAreCurrent ? (query.data?.currentValue ?? null) : null,
         isLoading: query.isLoading,
         error: query.data?.success === false
             ? (query.data.error ?? 'Failed to load OpenCode reasoning effort options')
