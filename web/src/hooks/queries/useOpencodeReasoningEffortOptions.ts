@@ -26,14 +26,12 @@ export function getOpencodeReasoningEffortRefetchInterval(
     }
     if (
         data
-        && data.success !== false
-        && (data.options?.length ?? 0) > 0
         && data.currentModelId
         && sessionModel
         && data.currentModelId !== sessionModel
     ) {
-        // Options exist but still belong to a previous model — keep polling
-        // (bounded) until the requested switch lands.
+        // The backend still reports the previous model. This includes a
+        // variant-less previous model whose response has no options.
         return pollCount < MAX_OPENCODE_REASONING_EFFORT_MISMATCH_POLLS ? 1000 : false
     }
     if (pollCount >= MAX_OPENCODE_REASONING_EFFORT_DISCOVERY_POLLS) {
@@ -101,8 +99,6 @@ export function useOpencodeReasoningEffortOptions(args: {
             latestUpdateCountRef.current = totalUpdateCount
             const mismatchActive = Boolean(
                 data
-                && data.success !== false
-                && (data.options?.length ?? 0) > 0
                 && data.currentModelId
                 && sessionModel
                 && data.currentModelId !== sessionModel

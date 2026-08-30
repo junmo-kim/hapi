@@ -2063,6 +2063,7 @@ describe('opencodeRemoteLauncher inline model switch', () => {
     });
 
     it('listOpencodeReasoningEffortOptions handler returns unavailable when backend has no thought level option', async () => {
+        harness.sessionModelsMetadata = { currentModelId: 'opencode/big-pickle', availableModels: [] };
         const { session, rpcHandlers } = createSessionStub([
             { message: 'first', mode: createMode() }
         ]);
@@ -2073,7 +2074,8 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         const result = await handler!(undefined) as Record<string, unknown>;
         expect(result).toEqual({
             success: false,
-            error: 'OpenCode reasoning effort options are not available'
+            error: 'OpenCode reasoning effort options are not available',
+            currentModelId: 'opencode/big-pickle'
         });
     });
 

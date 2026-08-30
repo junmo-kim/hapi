@@ -125,8 +125,8 @@ let exitCleanupRegistered = false;
 
 /**
  * Kill the resident serve when the CLI exits gracefully (same pattern as
- * autoStartServer's hub cleanup). SIGKILL of the CLI is unhandleable by any
- * child-cleanup approach short of PDEATHSIG-style platform tricks.
+ * autoStartServer's hub cleanup). Signal ownership stays with the runner so
+ * its asynchronous shutdown can finish before the process exits.
  */
 function registerExitCleanup(): void {
     if (exitCleanupRegistered) return;
@@ -136,17 +136,6 @@ function registerExitCleanup(): void {
         resident = null;
     };
     process.on('exit', killResident);
-    // Default signal termination does not emit 'exit', so handle the common
-    // signals explicitly: kill the resident, then exit (which runs the
-    // remaining 'exit' hooks, e.g. autoStartServer's hub cleanup).
-    process.once('SIGTERM', () => {
-        killResident();
-        process.exit(128 + 15);
-    });
-    process.once('SIGINT', () => {
-        killResident();
-        process.exit(128 + 2);
-    });
 }
 
 function scheduleIdleReap(): void {
@@ -206,6 +195,7 @@ async function listOpencodeModelVariantsUncached(cwd: string | null): Promise<Li
                 return { success: true, variants };
             }
             // Server died (e.g. reaped externally) — fall through and respawn.
+            resident.proc.kill();
             resident = null;
         }
     }

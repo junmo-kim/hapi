@@ -560,7 +560,12 @@ export function NewSession(props: {
         api: props.api,
         machineId,
         cwd: deferredDirectory || null,
-        enabled: agent === 'opencode' && Boolean(machineId)
+        enabled: shouldEnableOpencodeModelDiscovery({
+            agent,
+            machineId,
+            cwd: deferredDirectory,
+            cwdExists: deferredDirectoryExists,
+        })
     })
     // OpenCode model option values are provider-qualified (`provider/model`),
     // matching the variant catalog keys from the OpenCode server `/provider`
@@ -571,16 +576,19 @@ export function NewSession(props: {
         if (agent !== 'opencode' || !machineId) {
             return undefined
         }
-        if (!opencodeSelectedModel || opencodeSelectedModel === 'auto') {
+        const effectiveModelId = !opencodeSelectedModel || opencodeSelectedModel === 'auto'
+            ? opencodeModelsState.currentModelId
+            : opencodeSelectedModel
+        if (!effectiveModelId) {
             return null
         }
         if (opencodeVariantsState.isLoading || opencodeVariantsState.error || !opencodeVariantsState.variants) {
             return null
         }
-        return opencodeVariantsState.variants[opencodeSelectedModel] ?? []
+        return opencodeVariantsState.variants[effectiveModelId] ?? []
         // Primitive/state-slice deps: the hook returns a fresh object per render,
         // and a per-render options array would retrigger the reset effect below.
-    }, [agent, machineId, opencodeSelectedModel, opencodeVariantsState.variants, opencodeVariantsState.isLoading, opencodeVariantsState.error])
+    }, [agent, machineId, opencodeSelectedModel, opencodeModelsState.currentModelId, opencodeVariantsState.variants, opencodeVariantsState.isLoading, opencodeVariantsState.error])
 
     useEffect(() => {
         if (

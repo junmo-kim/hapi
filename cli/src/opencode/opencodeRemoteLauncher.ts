@@ -323,8 +323,13 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
 
         session.client.rpcHandlerManager.registerHandler(RPC_METHODS.ListOpencodeReasoningEffortOptions, async () => {
             const effortOption = backend.getThoughtLevelConfigOption?.(acpSessionId);
+            const currentModelId = backend.getSessionModelsMetadata?.(acpSessionId)?.currentModelId ?? null;
             if (!effortOption) {
-                return { success: false, error: 'OpenCode reasoning effort options are not available' };
+                return {
+                    success: false,
+                    error: 'OpenCode reasoning effort options are not available',
+                    currentModelId
+                };
             }
             return {
                 success: true,
@@ -333,7 +338,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 // Lets the web client detect "options still belong to the
                 // previous model" while a requested switch has not been
                 // applied by the backend yet.
-                currentModelId: backend.getSessionModelsMetadata?.(acpSessionId)?.currentModelId ?? null
+                currentModelId
             };
         });
 

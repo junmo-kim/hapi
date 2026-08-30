@@ -211,6 +211,22 @@ describe('listOpencodeModelVariants resident lifecycle', () => {
         expect(newServe.kill).not.toHaveBeenCalled();
     });
 
+    it('kills an unresponsive resident before replacing it', async () => {
+        const first = mod.listOpencodeModelVariants({ cwd: '/a' });
+        await vi.advanceTimersByTimeAsync(300);
+        await first;
+        const firstServe = serveProcs()[0];
+
+        const fetchMock = vi.mocked(fetch);
+        fetchMock.mockRejectedValueOnce(new Error('server unavailable'));
+        const second = mod.listOpencodeModelVariants({ cwd: '/a' });
+        await vi.advanceTimersByTimeAsync(300);
+        await second;
+
+        expect(firstServe.kill).toHaveBeenCalled();
+        expect(serveProcs().length).toBe(2);
+    });
+
     it('does not coalesce concurrent calls for different cwds', async () => {
         const first = mod.listOpencodeModelVariants({ cwd: '/a' });
         const second = mod.listOpencodeModelVariants({ cwd: '/b' });

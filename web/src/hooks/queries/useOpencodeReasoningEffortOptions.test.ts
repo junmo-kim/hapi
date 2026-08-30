@@ -35,4 +35,14 @@ describe('useOpencodeReasoningEffortOptions retry policy', () => {
         // No session model to compare against: fall back to discovery behavior.
         expect(getOpencodeReasoningEffortRefetchInterval(true, staleData, 12)).toBe(false)
     })
+
+    it('keeps polling when a variant-less previous model reports no options', () => {
+        const staleData = {
+            success: false,
+            error: 'not available',
+            currentModelId: 'opencode/big-pickle'
+        }
+        expect(getOpencodeReasoningEffortRefetchInterval(true, staleData, 12, 'opencode-go/ox-alpha-free')).toBe(1000)
+        expect(getOpencodeReasoningEffortRefetchInterval(true, staleData, 60, 'opencode-go/ox-alpha-free')).toBe(false)
+    })
 })
