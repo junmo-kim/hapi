@@ -54,13 +54,13 @@ describe('applyModelChangeWithReasoningRollback', () => {
 })
 
 describe('shouldClearReasoningEffortForModelChange', () => {
-    it('clears an OpenCode effort when the model changes', () => {
+    it('preserves an OpenCode effort for backend validation and rollback', () => {
         expect(shouldClearReasoningEffortForModelChange({
             agentFlavor: 'opencode',
             previousModelReasoningEffort: 'high',
             codexModels: [],
             model: 'provider/model-b'
-        })).toBe(true)
+        })).toBe(false)
     })
 
     it('does not clear an unset OpenCode effort', () => {

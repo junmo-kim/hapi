@@ -76,7 +76,7 @@ vi.mock('@/hooks/useMachinePathsExists', () => ({
 vi.mock('@/hooks/queries/useAgentAvailability', () => ({
     useAgentAvailability: () => ({
         agents: mocks.availableAgents,
-        isLoading: mocks.opencodeVariantsLoading,
+        isLoading: false,
         error: null,
         upgradeRequired: false,
         refetch: vi.fn()
@@ -140,9 +140,9 @@ vi.mock('@/hooks/queries/useOpencodeModelVariants', () => ({
     useOpencodeModelVariants: (args: { enabled: boolean }) => {
         mocks.opencodeVariantsEnabled = args.enabled
         return {
-        variants: mocks.opencodeVariants,
-        isLoading: false,
-        error: null
+            variants: mocks.opencodeVariants,
+            isLoading: mocks.opencodeVariantsLoading,
+            error: null
         }
     }
 }))

@@ -46,4 +46,50 @@ describe('useOpencodeReasoningEffortOptions pending-switch polling', () => {
         // Budget reset on model change: polling continues on the new model.
         expect(getSessionOpencodeReasoningEffortOptions.mock.calls.length).toBeGreaterThan(callsBeforeSwitch)
     })
+
+    it('hides cached options immediately when the session model changes', async () => {
+        const queryClient = new QueryClient()
+        let resolveRefetch: (() => void) | undefined
+        const refetchPending = new Promise<void>((resolve) => {
+            resolveRefetch = resolve
+        })
+        const getSessionOpencodeReasoningEffortOptions = vi.fn()
+            .mockResolvedValueOnce({
+                success: true,
+                options: [{ value: 'high', name: 'High' }],
+                currentValue: 'high',
+                currentModelId: 'provider/model-a',
+                targetModelId: 'provider/model-a'
+            })
+            .mockImplementationOnce(async () => {
+                await refetchPending
+                return {
+                    success: true,
+                    options: [{ value: 'low', name: 'Low' }],
+                    currentValue: 'low',
+                    currentModelId: 'provider/model-b',
+                    targetModelId: 'provider/model-b'
+                }
+            })
+        const api = { getSessionOpencodeReasoningEffortOptions } as never
+        const wrapper = ({ children }: { children: React.ReactNode }) =>
+            createElement(QueryClientProvider, { client: queryClient }, children)
+
+        const { result, rerender } = renderHook(
+            ({ model }) => useOpencodeReasoningEffortOptions({
+                api,
+                sessionId: 'session-1',
+                enabled: true,
+                sessionModel: model
+            }),
+            { wrapper, initialProps: { model: 'provider/model-a' } }
+        )
+
+        await waitFor(() => expect(result.current.options).toEqual([{ value: 'high', name: 'High' }]))
+        rerender({ model: 'provider/model-b' })
+
+        expect(result.current.options).toEqual([])
+        expect(result.current.currentValue).toBeNull()
+        resolveRefetch?.()
+    })
 })

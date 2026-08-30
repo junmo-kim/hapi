@@ -184,7 +184,7 @@ export function shouldClearReasoningEffortForModelChange(args: {
         return false
     }
     if (args.agentFlavor === 'opencode') {
-        return true
+        return false
     }
     return args.agentFlavor === 'codex'
         && supportsCodexReasoningEffort(
@@ -900,7 +900,7 @@ function SessionChatInner(props: SessionChatProps) {
     )
     const agentFlavor = props.session.metadata?.flavor ?? null
     // The effort-options query is keyed by session only, so a stale option
-    // list from the previous model would survive a switch. Invalidate when the
+    // list from the previous model would survive a switch. Reset when the
     // session model changes. `session.model` is updated by the hub at REST-ack
     // time, ahead of the CLI's inline ACP switch — the invalidation alone
     // would refetch the old model's options, and the hook's pending-switch
@@ -913,7 +913,7 @@ function SessionChatInner(props: SessionChatProps) {
     useEffect(() => {
         const effortInvalidationKey = opencodeEffortOptionsInvalidationKey(agentFlavor, sessionId)
         if (!effortInvalidationKey || sessionModel === undefined) return
-        void queryClient.invalidateQueries({ queryKey: effortInvalidationKey })
+        void queryClient.resetQueries({ queryKey: effortInvalidationKey, exact: true })
     }, [agentFlavor, sessionId, sessionModel, queryClient])
     const controlledByUser = props.session.agentState?.controlledByUser === true
     const codexCollaborationModeSupported = agentFlavor === 'codex' && !controlledByUser

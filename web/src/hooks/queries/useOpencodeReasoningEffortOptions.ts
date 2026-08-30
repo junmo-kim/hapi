@@ -115,7 +115,7 @@ export function useOpencodeReasoningEffortOptions(args: {
             )
         },
     })
-    const targetModelId = query.data?.targetModelId ?? sessionModel
+    const targetModelId = sessionModel ?? query.data?.targetModelId
     const optionsAreCurrent = !query.data?.currentModelId
         || !targetModelId
         || query.data.currentModelId === targetModelId
