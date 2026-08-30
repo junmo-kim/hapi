@@ -20,19 +20,20 @@ export function getOpencodeReasoningEffortRefetchInterval(
     data: OpencodeReasoningEffortResponse | undefined,
     pollCount: number,
     sessionModel?: string | null
-): 1000 | false {
+): 1000 | 30_000 | false {
     if (!enabled) {
         return false
     }
+    const targetModelId = data?.targetModelId ?? sessionModel
     if (
         data
         && data.currentModelId
-        && sessionModel
-        && data.currentModelId !== sessionModel
+        && targetModelId
+        && data.currentModelId !== targetModelId
     ) {
         // The backend still reports the previous model. This includes a
         // variant-less previous model whose response has no options.
-        return pollCount < MAX_OPENCODE_REASONING_EFFORT_MISMATCH_POLLS ? 1000 : false
+        return pollCount < MAX_OPENCODE_REASONING_EFFORT_MISMATCH_POLLS ? 1000 : 30_000
     }
     if (pollCount >= MAX_OPENCODE_REASONING_EFFORT_DISCOVERY_POLLS) {
         return false
@@ -97,11 +98,12 @@ export function useOpencodeReasoningEffortOptions(args: {
             const data = query.state.data as OpencodeReasoningEffortResponse | undefined
             const totalUpdateCount = query.state.dataUpdateCount + query.state.errorUpdateCount
             latestUpdateCountRef.current = totalUpdateCount
+            const targetModelId = data?.targetModelId ?? sessionModel
             const mismatchActive = Boolean(
                 data
                 && data.currentModelId
-                && sessionModel
-                && data.currentModelId !== sessionModel
+                && targetModelId
+                && data.currentModelId !== targetModelId
             )
             return getOpencodeReasoningEffortRefetchInterval(
                 enabled,

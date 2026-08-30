@@ -29,11 +29,22 @@ describe('useOpencodeReasoningEffortOptions retry policy', () => {
             currentModelId: 'opencode/big-pickle'
         }
         expect(getOpencodeReasoningEffortRefetchInterval(true, staleData, 12, 'opencode/hy3-free')).toBe(1000)
-        expect(getOpencodeReasoningEffortRefetchInterval(true, staleData, 60, 'opencode/hy3-free')).toBe(false)
+        expect(getOpencodeReasoningEffortRefetchInterval(true, staleData, 60, 'opencode/hy3-free')).toBe(30_000)
         // Matching model: options are current, no mismatch polling.
         expect(getOpencodeReasoningEffortRefetchInterval(true, { ...staleData, currentModelId: 'opencode/hy3-free' }, 12, 'opencode/hy3-free')).toBe(false)
-        // No session model to compare against: fall back to discovery behavior.
+        // No target model to compare against: fall back to discovery behavior.
         expect(getOpencodeReasoningEffortRefetchInterval(true, staleData, 12)).toBe(false)
+    })
+
+    it('polls toward the resolved Default target when the session model is null', () => {
+        const staleData = {
+            success: true,
+            options: [{ value: 'low', name: 'Low' }],
+            currentModelId: 'opencode/previous',
+            targetModelId: 'opencode/default'
+        }
+        expect(getOpencodeReasoningEffortRefetchInterval(true, staleData, 12)).toBe(1000)
+        expect(getOpencodeReasoningEffortRefetchInterval(true, staleData, 60)).toBe(30_000)
     })
 
     it('keeps polling when a variant-less previous model reports no options', () => {
@@ -43,6 +54,6 @@ describe('useOpencodeReasoningEffortOptions retry policy', () => {
             currentModelId: 'opencode/big-pickle'
         }
         expect(getOpencodeReasoningEffortRefetchInterval(true, staleData, 12, 'opencode-go/ox-alpha-free')).toBe(1000)
-        expect(getOpencodeReasoningEffortRefetchInterval(true, staleData, 60, 'opencode-go/ox-alpha-free')).toBe(false)
+        expect(getOpencodeReasoningEffortRefetchInterval(true, staleData, 60, 'opencode-go/ox-alpha-free')).toBe(30_000)
     })
 })

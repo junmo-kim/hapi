@@ -837,6 +837,8 @@ export type OpencodeReasoningEffortResponse = {
     currentValue?: string | null
     /** Backend-side model the options belong to — lets clients detect a pending model switch. */
     currentModelId?: string | null
+    /** Concrete backend model requested by the session, including a resolved Default selection. */
+    targetModelId?: string | null
     error?: string
 }
 

@@ -2058,7 +2058,8 @@ describe('opencodeRemoteLauncher inline model switch', () => {
                 { value: 'medium', name: 'Medium' }
             ],
             currentValue: 'low',
-            currentModelId: null
+            currentModelId: null,
+            targetModelId: null
         });
     });
 
@@ -2075,7 +2076,23 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         expect(result).toEqual({
             success: false,
             error: 'OpenCode reasoning effort options are not available',
-            currentModelId: 'opencode/big-pickle'
+            currentModelId: 'opencode/big-pickle',
+            targetModelId: 'opencode/big-pickle'
+        });
+    });
+
+    it('reports the resolved default target while the backend still uses the previous model', async () => {
+        harness.sessionModelsMetadata = { currentModelId: 'opencode/default', availableModels: [] };
+        const { session, rpcHandlers } = createSessionStub([
+            { message: 'first', mode: createMode() }
+        ]);
+        await opencodeRemoteLauncher(session as never);
+
+        harness.sessionModelsMetadata = { currentModelId: 'opencode/previous', availableModels: [] };
+        const result = await rpcHandlers.get('listOpencodeReasoningEffortOptions')!(undefined) as Record<string, unknown>;
+        expect(result).toMatchObject({
+            currentModelId: 'opencode/previous',
+            targetModelId: 'opencode/default'
         });
     });
 

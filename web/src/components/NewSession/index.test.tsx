@@ -28,6 +28,7 @@ const mocks = vi.hoisted(() => ({
     opencodeCurrentModelId: null as string | null,
     opencodeModelsLoading: false,
     opencodeVariants: null as Record<string, string[]> | null,
+    opencodeVariantsLoading: false,
     opencodeVariantsEnabled: false,
     piDialogSelection: ['pi-native-1'] as string[],
     piModels: [] as PiModelSummary[],
@@ -75,7 +76,7 @@ vi.mock('@/hooks/useMachinePathsExists', () => ({
 vi.mock('@/hooks/queries/useAgentAvailability', () => ({
     useAgentAvailability: () => ({
         agents: mocks.availableAgents,
-        isLoading: false,
+        isLoading: mocks.opencodeVariantsLoading,
         error: null,
         upgradeRequired: false,
         refetch: vi.fn()
@@ -298,6 +299,7 @@ describe('NewSession launch preferences', () => {
         mocks.opencodeCurrentModelId = 'provider/current'
         mocks.opencodeModelsLoading = false
         mocks.opencodeVariants = null
+        mocks.opencodeVariantsLoading = false
         mocks.opencodeVariantsEnabled = false
         mocks.piDialogSelection = ['pi-native-1']
         mocks.piModels = []
@@ -649,6 +651,20 @@ describe('NewSession launch preferences', () => {
         fireEvent.click(screen.getByTestId('opencode-model-default'))
         await waitFor(() => expect(screen.getByTestId('opencode-variants')).toHaveTextContent('low,high'))
         expect(mocks.opencodeVariantsEnabled).toBe(true)
+    })
+
+    it('waits for OpenCode variants before launching a non-default effort', async () => {
+        savePreferredAgent('opencode')
+        mocks.opencodeVariantsLoading = true
+        const view = render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+
+        fireEvent.click(screen.getByTestId('reasoning'))
+        expect(screen.getByTestId('create')).toBeDisabled()
+
+        mocks.opencodeVariantsLoading = false
+        mocks.opencodeVariants = { 'provider/current': ['max'] }
+        view.rerender(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
     })
 
     it('does not probe OpenCode variants until the working directory is verified', () => {

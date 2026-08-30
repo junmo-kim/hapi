@@ -589,12 +589,19 @@ export function NewSession(props: {
         // Primitive/state-slice deps: the hook returns a fresh object per render,
         // and a per-render options array would retrigger the reset effect below.
     }, [agent, machineId, opencodeSelectedModel, opencodeModelsState.currentModelId, opencodeVariantsState.variants, opencodeVariantsState.isLoading, opencodeVariantsState.error])
+    const opencodeCatalogPending = agent === 'opencode'
+        && deferredDirectory !== ''
+        && (
+            deferredDirectoryExists === undefined
+            || (deferredDirectoryExists === true
+                && (opencodeModelsState.isLoading || opencodeVariantsState.isLoading))
+        )
 
     useEffect(() => {
         if (
             agent !== 'opencode'
             || modelReasoningEffort === 'default'
-            || (agent === 'opencode' && opencodeVariantsState.isLoading)
+            || opencodeCatalogPending
         ) {
             return
         }
@@ -602,7 +609,7 @@ export function NewSession(props: {
         if (!isOpencodeReasoningEffortValid(modelReasoningEffort, dynamicVariants)) {
             setModelReasoningEffort('default')
         }
-    }, [agent, modelReasoningEffort, opencodeVariantOptions, opencodeVariantsState.isLoading])
+    }, [agent, modelReasoningEffort, opencodeVariantOptions, opencodeCatalogPending])
     const grokModelsState = useGrokModelsForCwd({
         api: props.api,
         machineId,
@@ -1668,6 +1675,7 @@ export function NewSession(props: {
                 deferredDirectoryExists === undefined
                 || (deferredDirectoryExists === true && opencodeModelsState.isLoading)
             ))
+        || (opencodeCatalogPending && modelReasoningEffort !== 'default')
         || (agent === 'copilot'
             && model !== 'auto'
             && (
