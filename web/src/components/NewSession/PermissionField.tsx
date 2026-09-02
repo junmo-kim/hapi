@@ -6,7 +6,7 @@ import {
     type PermissionMode
 } from '@hapi/protocol'
 import { useTranslation } from '@/lib/use-translation'
-import { usesCodexFamilyPermissionModes } from '@/lib/codexFamilyPermissionAgents'
+import { usesNativePermissionSelect } from '@/lib/codexFamilyPermissionAgents'
 import type { AgentType } from './types'
 import { SelectControl } from '@/components/ui/select-control'
 import { YoloToggle } from './YoloToggle'
@@ -58,7 +58,7 @@ export function PermissionField(props: PermissionFieldProps) {
         )
     }
 
-    if (field.kind === 'select' && (props.agent === 'grok' || usesCodexFamilyPermissionModes(props.agent))) {
+    if (field.kind === 'select' && usesNativePermissionSelect(props.agent)) {
         const options = getPermissionModeOptionsForFlavor(props.agent)
         return (
             <div className="flex flex-col gap-1.5 px-3 py-3">

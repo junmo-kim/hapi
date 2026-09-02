@@ -560,7 +560,7 @@ describe('NewSession launch preferences', () => {
         saveNewSessionFormDraft({
             agent: 'agy', model: 'gemini-3.6-flash-low', cursorSelectedBase: 'auto', machineId: 'machine-1',
             effort: 'auto', modelReasoningEffort: 'default', serviceTier: 'standard', collaborationMode: 'default',
-            copilotAgentMode: 'interactive', yoloMode: false, codexFamilyPermissionMode: 'default',
+            copilotAgentMode: 'interactive', yoloMode: false, nativePermissionMode: 'default',
             grokPermissionMode: 'default', sessionType: 'simple', worktreeName: ''
         })
         render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
@@ -572,7 +572,7 @@ describe('NewSession launch preferences', () => {
         saveNewSessionFormDraft({
             agent: 'agy', model: 'removed-model', cursorSelectedBase: 'auto', machineId: 'machine-1',
             effort: 'auto', modelReasoningEffort: 'default', serviceTier: 'standard', collaborationMode: 'default',
-            copilotAgentMode: 'interactive', yoloMode: false, codexFamilyPermissionMode: 'default',
+            copilotAgentMode: 'interactive', yoloMode: false, nativePermissionMode: 'default',
             grokPermissionMode: 'default', sessionType: 'simple', worktreeName: ''
         })
         render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
@@ -899,7 +899,7 @@ describe('NewSession launch preferences', () => {
             collaborationMode: 'default',
             copilotAgentMode: 'interactive',
             yoloMode: false,
-            codexFamilyPermissionMode: 'default',
+            nativePermissionMode: 'default',
             grokPermissionMode: 'default',
             sessionType: 'simple',
             worktreeName: ''

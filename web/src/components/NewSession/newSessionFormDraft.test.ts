@@ -24,7 +24,7 @@ describe('newSessionFormDraft', () => {
             collaborationMode: 'default',
             copilotAgentMode: 'interactive',
             yoloMode: false,
-            codexFamilyPermissionMode: 'default',
+            nativePermissionMode: 'default',
             grokPermissionMode: 'default',
             sessionType: 'simple',
             worktreeName: ''
@@ -41,7 +41,7 @@ describe('newSessionFormDraft', () => {
             collaborationMode: 'default',
             copilotAgentMode: 'interactive',
             yoloMode: false,
-            codexFamilyPermissionMode: 'default',
+            nativePermissionMode: 'default',
             grokPermissionMode: 'default',
             sessionType: 'simple',
             worktreeName: ''
@@ -71,7 +71,7 @@ describe('newSessionFormDraft', () => {
             collaborationMode: 'default',
             copilotAgentMode: 'interactive',
             yoloMode: false,
-            codexFamilyPermissionMode: 'default',
+            nativePermissionMode: 'default',
             grokPermissionMode: 'default',
             sessionType: 'simple',
             worktreeName: ''
@@ -92,7 +92,7 @@ describe('newSessionFormDraft', () => {
             collaborationMode: 'plan',
             copilotAgentMode: 'interactive',
             yoloMode: false,
-            codexFamilyPermissionMode: 'default',
+            nativePermissionMode: 'default',
             grokPermissionMode: 'default',
             sessionType: 'simple',
             worktreeName: ''
@@ -115,7 +115,7 @@ describe('newSessionFormDraft', () => {
             collaborationMode: 'plan',
             copilotAgentMode: 'interactive',
             yoloMode: true,
-            codexFamilyPermissionMode: 'default',
+            nativePermissionMode: 'default',
             grokPermissionMode: 'default',
             sessionType: 'simple',
             worktreeName: ''
@@ -153,6 +153,6 @@ describe('newSessionFormDraft', () => {
 
         const loaded = loadNewSessionFormDraft()!
         expect(loaded.agent).toBe('copilot')
-        expect(loaded.codexFamilyPermissionMode).toBe('yolo')
+        expect(loaded.nativePermissionMode).toBe('yolo')
     })
 })

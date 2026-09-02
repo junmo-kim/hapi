@@ -17,3 +17,13 @@ export function usesCodexFamilyPermissionModes(
     return typeof flavor === 'string'
         && (CODEX_FAMILY_PERMISSION_AGENTS as readonly string[]).includes(flavor)
 }
+
+/**
+ * Flavors whose create-form permission control is the native-mode select.
+ * Ports: `NewSessionLogic.usesNativePermissionSelect`
+ * (`ios/Packages/HapiKit/Sources/HapiClient/NewSession/NewSessionForm.swift`,
+ * `android/app/src/main/kotlin/app/hapi/companion/feature/newsession/NewSessionForm.kt`).
+ */
+export function usesNativePermissionSelect(flavor: string | null | undefined): boolean {
+    return flavor === 'grok' || usesCodexFamilyPermissionModes(flavor)
+}
