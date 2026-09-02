@@ -50,12 +50,19 @@ public enum ClaudeModels {
         let trimmed = model?.trimmingCharacters(in: .whitespaces).lowercased() ?? ""
         if trimmed.isEmpty || trimmed == "auto" || trimmed == "default" { return nil }
         let bare = trimmed.hasSuffix("[1m]") ? String(trimmed.dropLast(4)) : trimmed
-        guard bare.hasPrefix("claude-") else {
-            return labels[bare] != nil ? bare : nil
-        }
-        let rest = bare.dropFirst("claude-".count)
-        let head = rest.split(separator: "-").first.map(String.init)
-        return (head?.isEmpty ?? true) ? nil : head
+        if labels[bare] != nil { return bare }
+        guard bare.contains("claude") else { return nil }
+        // Scan for a segment naming a known family rather than taking a fixed
+        // position: ids from before Claude 4 are `claude-<generation>-<family>-...`
+        // so a positional read returns the generation and conflates every model
+        // of it. Scanning also tolerates a vendor prefix such as `us.anthropic.`.
+        let families = Set(labels.keys.map { key in
+            key.hasSuffix("[1m]") ? String(key.dropLast(4)) : key
+        })
+        return bare
+            .split(whereSeparator: { $0 == "-" || $0 == "." })
+            .map(String.init)
+            .first(where: { families.contains($0) })
     }
 
     /// `CLAUDE_MODEL_LABELS`: recognition aliases, wider than the offer list.

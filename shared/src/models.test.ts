@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import {
     CLAUDE_MODEL_FALLBACK_OPTIONS,
+    resolveClaudeModelFamily,
     CLAUDE_MODEL_LABELS,
     DEFAULT_GEMINI_MODEL,
     GEMINI_MODEL_LABELS,
@@ -98,5 +99,38 @@ describe('model constants consistency', () => {
 
     test('DEFAULT_GEMINI_MODEL is a valid preset', () => {
         expect(GEMINI_MODEL_PRESETS).toContain(DEFAULT_GEMINI_MODEL)
+    })
+})
+
+describe('resolveClaudeModelFamily', () => {
+    test('reads the family from a current resolved id', () => {
+        expect(resolveClaudeModelFamily('claude-sonnet-5')).toBe('sonnet')
+        expect(resolveClaudeModelFamily('claude-haiku-4-5-20251001')).toBe('haiku')
+        expect(resolveClaudeModelFamily('claude-fable-5-1[1m]')).toBe('fable')
+    })
+
+    test('reads presets and legacy aliases', () => {
+        expect(resolveClaudeModelFamily('opus')).toBe('opus')
+        expect(resolveClaudeModelFamily('sonnet[1m]')).toBe('sonnet')
+    })
+
+    test('reads pre-4 ids, where the generation comes before the family', () => {
+        // claude-<gen>-<family>-<date>, not claude-<family>-<gen>. Positional
+        // slicing returned "3" for all of these and conflated them.
+        expect(resolveClaudeModelFamily('claude-3-5-sonnet-20241022')).toBe('sonnet')
+        expect(resolveClaudeModelFamily('claude-3-opus-20240229')).toBe('opus')
+        expect(resolveClaudeModelFamily('claude-3-5-haiku-20241022')).toBe('haiku')
+    })
+
+    test('reads a vendor-prefixed id', () => {
+        expect(resolveClaudeModelFamily('us.anthropic.claude-sonnet-5')).toBe('sonnet')
+    })
+
+    test('returns null when nothing names a known family', () => {
+        expect(resolveClaudeModelFamily('claude-opusplan-1')).toBeNull()
+        expect(resolveClaudeModelFamily('gpt-5.6-sol')).toBeNull()
+        expect(resolveClaudeModelFamily('auto')).toBeNull()
+        expect(resolveClaudeModelFamily('default')).toBeNull()
+        expect(resolveClaudeModelFamily(null)).toBeNull()
     })
 })

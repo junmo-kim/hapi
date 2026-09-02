@@ -267,6 +267,13 @@ struct CatalogTests {
         #expect(ClaudeModels.family(of: "claude-haiku-4-5-20251001") == "haiku")
         #expect(ClaudeModels.family(of: "sonnet[1m]") == "sonnet")
         #expect(ClaudeModels.family(of: "default") == nil)
+        // Pre-4 ids put the generation before the family; a positional read
+        // returned "3" for all of them and conflated every model of it.
+        #expect(ClaudeModels.family(of: "claude-3-5-sonnet-20241022") == "sonnet")
+        #expect(ClaudeModels.family(of: "claude-3-opus-20240229") == "opus")
+        #expect(ClaudeModels.family(of: "us.anthropic.claude-sonnet-5") == "sonnet")
+        #expect(ClaudeModels.family(of: "claude-opusplan-1") == nil)
+        #expect(!ClaudeModels.supportsEffort("claude-3-5-haiku-20241022"))
         // A suffixed id names the same family as its bare counterpart.
         #expect(ModelCatalog.claudeEffortOptions(currentEffort: nil, model: "sonnet[1m]").count
             == ClaudeEfforts.levels.count + 1)

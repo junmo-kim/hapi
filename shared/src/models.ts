@@ -117,9 +117,15 @@ export function resolveClaudeModelFamily(model: string | null | undefined): stri
     const trimmed = typeof model === 'string' ? model.trim().toLowerCase() : ''
     if (!trimmed || trimmed === 'auto' || trimmed === 'default') return null
     const bare = trimmed.endsWith('[1m]') ? trimmed.slice(0, -'[1m]'.length) : trimmed
-    if (!bare.startsWith('claude-')) {
-        return Object.hasOwn(CLAUDE_MODEL_LABELS, bare) ? bare : null
-    }
-    const family = bare.slice('claude-'.length).split('-')[0]
-    return family || null
+    if (Object.hasOwn(CLAUDE_MODEL_LABELS, bare)) return bare
+    if (!bare.includes('claude')) return null
+    // Scan for a segment naming a known family rather than taking a fixed
+    // position: ids from before Claude 4 are `claude-<generation>-<family>-...`
+    // (`claude-3-5-sonnet-20241022`), so a positional read returns the
+    // generation and conflates every model of it. Scanning also tolerates a
+    // vendor prefix such as `us.anthropic.`.
+    const families = new Set(Object.keys(CLAUDE_MODEL_LABELS).map((preset) => (
+        preset.endsWith('[1m]') ? preset.slice(0, -'[1m]'.length) : preset
+    )))
+    return bare.split(/[-.]/).find((segment) => families.has(segment)) ?? null
 }

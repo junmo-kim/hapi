@@ -39,9 +39,14 @@ object ClaudeModels {
         val trimmed = model?.trim()?.lowercase().orEmpty()
         if (trimmed.isEmpty() || trimmed == "auto" || trimmed == "default") return null
         val bare = if (trimmed.endsWith("[1m]")) trimmed.removeSuffix("[1m]") else trimmed
-        if (!bare.startsWith("claude-")) return if (LABELS.containsKey(bare)) bare else null
-        val head = bare.removePrefix("claude-").substringBefore('-')
-        return if (head.isEmpty()) null else head
+        if (LABELS.containsKey(bare)) return bare
+        if (!bare.contains("claude")) return null
+        // Scan for a segment naming a known family rather than taking a fixed
+        // position: ids from before Claude 4 are `claude-<generation>-<family>-...`
+        // so a positional read returns the generation and conflates every model
+        // of it. Scanning also tolerates a vendor prefix such as `us.anthropic.`.
+        val families = LABELS.keys.map { it.removeSuffix("[1m]") }.toSet()
+        return bare.split('-', '.').firstOrNull { it in families }
     }
 
     /** `CLAUDE_MODEL_LABELS`: recognition aliases, wider than the offer list. */
