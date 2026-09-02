@@ -197,9 +197,14 @@ vi.mock('./PermissionField', () => ({
         onNativeChange: (mode: string) => void
         onYoloToggle: (value: boolean) => void
     }) => (
-        <button type="button" data-testid="permission-mode" onClick={() => props.onNativeChange('yolo')}>
-            {props.nativeValue}
-        </button>
+        <>
+            <button type="button" data-testid="permission-mode" onClick={() => props.onNativeChange('yolo')}>
+                {props.nativeValue}
+            </button>
+            <button type="button" data-testid="permission-mode-plan" onClick={() => props.onNativeChange('plan')}>
+                {props.nativeValue}
+            </button>
+        </>
     )
 }))
 vi.mock('./CopilotAgentModeSelector', () => ({ CopilotAgentModeSelector: () => null }))
@@ -607,6 +612,72 @@ describe('NewSession launch preferences', () => {
             yolo: undefined,
             permissionMode: undefined
         }))
+    })
+
+    it('lets Claude create with a chosen permission mode instead of the global YOLO toggle', async () => {
+        savePreferredAgent('claude')
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'claude-session' })
+        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+
+        fireEvent.click(screen.getByTestId('permission-mode-plan'))
+        fireEvent.click(screen.getByTestId('create'))
+
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('claude-session'))
+        expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({
+            agent: 'claude',
+            yolo: undefined,
+            permissionMode: 'plan'
+        }))
+    })
+
+    it('does not carry a permission mode picked under another flavor into the Claude spawn payload', async () => {
+        savePreferredAgent('codex')
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'claude-session' })
+        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+
+        // Starts as codex; picking the mocked native-select button sets the
+        // shared nativePermissionMode state to 'yolo', a value 'claude' does
+        // not carry in its own permission catalog.
+        await waitFor(() => expect(screen.getByDisplayValue('codex')).toBeChecked())
+        fireEvent.click(screen.getByTestId('permission-mode'))
+        fireEvent.click(screen.getByDisplayValue('claude'))
+        await waitFor(() => expect(screen.getByDisplayValue('claude')).toBeChecked())
+        fireEvent.click(screen.getByTestId('create'))
+
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('claude-session'))
+        expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({
+            agent: 'claude',
+            permissionMode: 'default'
+        }))
+    })
+
+    it('migrates a legacy YOLO value owned by Claude to bypassPermissions', async () => {
+        savePreferredAgent('claude')
+        savePreferredYoloMode(true)
+
+        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+
+        await waitFor(() => {
+            expect(screen.getByTestId('permission-mode')).toHaveTextContent('bypassPermissions')
+        })
+    })
+
+    it('does not preselect bypassPermissions for Claude from a legacy YOLO value owned by another flavor', async () => {
+        // hapi:newSession:yolo is a flavor-agnostic global key. The legacyYoloAgent
+        // snapshot (captured once at mount, see index.tsx) is what stops a YOLO
+        // toggle left on under cursor from silently preselecting bypassPermissions
+        // the next time Claude is picked.
+        savePreferredAgent('cursor')
+        savePreferredYoloMode(true)
+
+        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+
+        await waitFor(() => expect(screen.getByDisplayValue('cursor')).toBeChecked())
+        fireEvent.click(screen.getByDisplayValue('claude'))
+
+        await waitFor(() => {
+            expect(screen.getByTestId('permission-mode')).toHaveTextContent('default')
+        })
     })
 
     it('keeps an explicit OpenCode Default selection instead of restoring a concrete model', async () => {

@@ -68,7 +68,7 @@ import {
 } from './preferences'
 import { SessionTypeSelector } from './SessionTypeSelector'
 import { PermissionField } from './PermissionField'
-import { usesCodexFamilyPermissionModes, usesNativePermissionSelect } from '@/lib/codexFamilyPermissionAgents'
+import { usesNativePermissionSelect, usesSharedPermissionModeState } from '@/lib/codexFamilyPermissionAgents'
 import { CodexSessionSyncDialog } from '@/components/CodexSessionSyncDialog'
 import { PiSessionImportDialog } from '@/components/PiSessionImportDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
@@ -101,8 +101,13 @@ export function NewSession(props: {
     const [suppressSuggestions, setSuppressSuggestions] = useState(false)
     const [isDirectoryFocused, setIsDirectoryFocused] = useState(false)
     const [agent, setAgent] = useState<AgentType>(loadPreferredAgent)
-    const [legacyCodexYolo] = useState(
-        () => loadPreferredAgent() === 'codex' && loadPreferredYoloMode()
+    // Snapshot taken once at mount, before any savePreferredAgent() call this
+    // component makes can overwrite the stored agent. savePreferredAgent()
+    // runs on every agent change (below), so reading loadPreferredAgent()
+    // again later would always equal the current agent and make the
+    // legacyYoloAgent === agent gate at the restore effect below vacuous.
+    const [legacyYoloAgent] = useState(
+        () => (loadPreferredYoloMode() ? loadPreferredAgent() : null)
     )
     const [model, setModel] = useState('auto')
     const [cursorSelectedBase, setCursorSelectedBase] = useState('auto')
@@ -778,6 +783,9 @@ export function NewSession(props: {
         setOpencodeSelectedModel(undefined)
     }, [agent, machineId, deferredDirectory])
 
+    const usesNativeSelect = usesNativePermissionSelect(agent)
+    const usesSharedPermissionMode = usesSharedPermissionModeState(agent)
+
     useEffect(() => {
         if (!machineId || preserveRestoredDraftRef.current) {
             return
@@ -786,14 +794,14 @@ export function NewSession(props: {
         const preferred = resolvePreferredLaunchSettings(
             agent,
             loadPreferredLaunchSettings(machineId, agent),
-            legacyCodexYolo
+            legacyYoloAgent === agent
         )
 
         setModel(agent === 'opencode' ? 'auto' : preferred.model)
         setCursorSelectedBase(preferred.cursorSelectedBase)
         setEffort(preferred.effort)
         setModelReasoningEffort(preferred.modelReasoningEffort)
-        if (usesCodexFamilyPermissionModes(agent)) {
+        if (usesSharedPermissionMode) {
             setNativePermissionMode(preferred.permissionMode ?? 'default')
         }
         setOpencodeSelectedModel(
@@ -802,7 +810,7 @@ export function NewSession(props: {
         setAgySelectedModel(
             agent === 'agy' && preferred.model !== 'auto' ? preferred.model : null
         )
-    }, [agent, legacyCodexYolo, machineId])
+    }, [agent, legacyYoloAgent, machineId, usesSharedPermissionMode])
 
     useEffect(() => {
         if (
@@ -1466,7 +1474,6 @@ export function NewSession(props: {
             const resolvedModelReasoningEffort = (agent === 'codex' || agent === 'opencode') && modelReasoningEffort !== 'default'
                 ? modelReasoningEffort
                 : undefined
-            const usesCodexFamilyPermissions = usesCodexFamilyPermissionModes(agent)
             const preferredLaunchSettings = {
                 model: agent === 'agy'
                     ? (agySelectedModel ?? 'auto')
@@ -1476,7 +1483,7 @@ export function NewSession(props: {
                 cursorSelectedBase,
                 effort,
                 modelReasoningEffort,
-                ...(usesCodexFamilyPermissions ? { permissionMode: nativePermissionMode } : {})
+                ...(usesSharedPermissionMode ? { permissionMode: nativePermissionMode } : {})
             }
             const resolvedServiceTier = agent === 'codex' && showCodexFastMode
                 ? serviceTier
@@ -1557,10 +1564,10 @@ export function NewSession(props: {
                 model: resolvedModel,
                 effort: resolvedEffort,
                 modelReasoningEffort: resolvedModelReasoningEffort,
-                yolo: agent === 'dsh' || usesNativePermissionSelect(agent) ? undefined : yoloMode,
+                yolo: agent === 'dsh' || usesNativeSelect ? undefined : yoloMode,
                 permissionMode: agent === 'grok'
                     ? grokPermissionMode
-                    : usesCodexFamilyPermissions
+                    : usesSharedPermissionMode
                         ? nativePermissionMode
                         : undefined,
                 sessionType,
