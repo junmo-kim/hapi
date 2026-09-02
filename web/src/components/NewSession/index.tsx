@@ -2,9 +2,9 @@ import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, ty
 import type { ApiClient } from '@/api/client'
 import type { CodexDuplicateSessionGroup, CodexLocalSessionSummary, Machine, PiLocalSessionSummary } from '@/types/api'
 import type { CodexCollaborationMode, GrokPermissionMode, PermissionMode, CopilotAgentMode } from '@hapi/protocol'
-import { CLAUDE_EFFORT_LABELS, type ClaudeEffortLevel } from '@hapi/protocol'
+import { CLAUDE_EFFORT_LABELS, type ClaudeEffortLevel, isClaudeModelPreset, resolveClaudeModelFamily } from '@hapi/protocol'
 import { codexModelAdvertisesFastTier } from '@/components/AssistantChat/codexFastMode'
-import { getClaudeComposerModelOptions, resolveClaudeSupportedEffortLevels } from '@/components/AssistantChat/claudeModelOptions'
+import { findCatalogRowFor, getClaudeComposerModelOptions, resolveClaudeSupportedEffortLevels } from '@/components/AssistantChat/claudeModelOptions'
 import { usePlatform } from '@/hooks/usePlatform'
 import { useMachinePathsExists } from '@/hooks/useMachinePathsExists'
 import { useSpawnSession } from '@/hooks/mutations/useSpawnSession'
@@ -624,6 +624,32 @@ export function NewSession(props: {
                 }))
         ]
     }, [agent, claudeModelsState.availableModels, model])
+    // The row the current selection resolves to, for the select's value and the
+    // spawn payload. Deliberately not written back into `model`: that state is
+    // what gets persisted (savePreferredLaunchSettings, the form draft), and
+    // storing today's row id would turn the user's alias -- `fable`, meaning
+    // "whatever Fable currently is" -- into a pin to one release. The next time
+    // the catalog renamed that row the pin would match nothing and reset to
+    // Default, which is the regression this path exists to prevent.
+    const claudeSelectedRowValue = useMemo(() => {
+        if (agent !== 'claude' || model === 'auto' || model === 'default') {
+            return model
+        }
+        return findCatalogRowFor(model, claudeModelsState.availableModels)?.value ?? model
+    }, [agent, claudeModelsState.availableModels, model])
+
+    // Store the family a picked row belongs to rather than the row's own id.
+    // With a catalog loaded the picker is the only place a family appears, so
+    // this is the ordinary way a preference is created -- and a row id is a pin
+    // to one release, which stops matching as soon as the catalog renames it.
+    // claudeSelectedRowValue turns the alias back into the concrete row for the
+    // select and the spawn, so the round trip closes. A row whose family is not
+    // a known preset has no alias to store and stays as it came.
+    const handleClaudeModelChange = useCallback((next: string) => {
+        const family = resolveClaudeModelFamily(next)
+        setModel(family && isClaudeModelPreset(family) ? family : next)
+    }, [])
+
     const claudeEffortOptions = useMemo(() => {
         if (agent !== 'claude') {
             return undefined
@@ -679,10 +705,17 @@ export function NewSession(props: {
         ) {
             return
         }
-        if (
-            model !== 'auto'
-            && !claudeModelsState.availableModels.some((candidate) => candidate.value === model)
-        ) {
+        if (model === 'auto' || model === 'default') {
+            return
+        }
+        // Through findCatalogRowFor rather than a raw value scan: a stored
+        // preset like `fable` names a family the catalog may publish under
+        // another id (`claude-fable-5-1[1m]` today), and scanning values alone
+        // read that as "not in this catalog" and reset a deliberate Fable
+        // choice to Default, which resolves to Opus. Only the reset happens
+        // here -- the matched row's value is derived below rather than written
+        // back, since this state is what gets persisted.
+        if (!findCatalogRowFor(model, claudeModelsState.availableModels)) {
             setModel('auto')
         }
     }, [agent, claudeModelsState.availableModels, claudeModelsState.error, claudeModelsState.isLoading, model])
@@ -1596,7 +1629,7 @@ export function NewSession(props: {
                 ? (opencodeSelectedModel ?? undefined)
                 : agent === 'agy'
                     ? (agySelectedModel ?? undefined)
-                    : (model !== 'auto' ? model : undefined)
+                    : (model !== 'auto' ? claudeSelectedRowValue : undefined)
             const resolvedEffort = (agent === 'claude' || agent === 'grok' || agent === 'pi') && effort !== 'auto'
                 ? effort
                 : undefined
@@ -1942,7 +1975,7 @@ export function NewSession(props: {
                 ) : (
                     <ModelSelector
                         agent={agent}
-                        model={model}
+                        model={claudeSelectedRowValue}
                         options={
                             agent === 'codex'
                                 ? codexModelOptions
@@ -1982,7 +2015,7 @@ export function NewSession(props: {
                                 // catalog's backward-compat policy, so no error
                                 // text is surfaced here.
                                 : null}
-                        onModelChange={setModel}
+                        onModelChange={agent === 'claude' ? handleClaudeModelChange : setModel}
                     />
                 )
             )}

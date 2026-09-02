@@ -1,4 +1,4 @@
-import { CLAUDE_MODEL_FALLBACK_OPTIONS, getClaudeModelLabel, resolveClaudeModelFamily } from '@hapi/protocol'
+import { CLAUDE_MODEL_FALLBACK_OPTIONS, getClaudeModelLabel, isClaudeModelPreset, resolveClaudeModelFamily } from '@hapi/protocol'
 import type { ClaudeModelSummary } from '@hapi/protocol/apiTypes'
 
 export type ClaudeComposerModelOption = {
@@ -27,8 +27,30 @@ function normalizeClaudeComposerModel(model?: string | null): string | null {
  *   1. An exact `value` match -- the row IS this wire value.
  *   2. A concrete (non-`default`) row's `resolvedModel` match -- a stored
  *      resolved SDK id was a deliberate pin to *that* model.
- *   3. The `default` row, but only when the caller has no explicit
+ *   3. For a *preset alias* only, a row of the same family. `fable` names
+ *      "whatever Fable currently is", and the catalog picks its own form per
+ *      family and changes it between releases -- Fable arrives today only as
+ *      `claude-fable-5-1[1m]` and Opus only as `opus[1m]`, so those aliases
+ *      equal no row. A resolved SDK id is deliberately excluded here: it pins
+ *      one specific model, and collapsing `claude-sonnet-4-5-...` onto a
+ *      Sonnet 5 row would assert the session is running a model it is not,
+ *      with no row left to return to -- the same demotion this function
+ *      refuses for the `default` row below.
+ *   4. The `default` row, but only when the caller has no explicit
  *      selection (`model` is null/`'auto'`/`'default'`).
+ *
+ * The identity contract this priority order serves, enforced across New
+ * Session and the composer:
+ *
+ *   - persisted  the user's own identifier -- the alias when the family is a
+ *                known preset, since `fable` means "whatever Fable is now"
+ *   - wire       the catalog row's value, which is what a spawn or a model
+ *                change submits
+ *   - display    the same row value, so a select's value matches its options
+ *
+ * Writing a row value back into persisted state turns an alias into a pin to
+ * one release, and a pin stops matching as soon as the catalog renames that
+ * row.
  *
  * Deliberately never falls back to matching the `default` row purely by
  * `resolvedModel` for a concrete `model`: multiple rows commonly share a
@@ -46,8 +68,23 @@ export function findCatalogRowFor(
     if (!model || model === 'auto' || model === 'default') {
         return availableModels.find((entry) => entry.value === 'default')
     }
-    return availableModels.find((entry) => entry.value === model)
-        ?? availableModels.find((entry) => entry.value !== 'default' && entry.resolvedModel === model)
+    const exact = availableModels.find((entry) => entry.value === model)
+    if (exact) return exact
+    const byResolvedModel = availableModels.find((entry) => (
+        entry.value !== 'default' && entry.resolvedModel === model
+    ))
+    if (byResolvedModel) return byResolvedModel
+
+    if (!isClaudeModelPreset(model)) return undefined
+    const family = resolveClaudeModelFamily(model)
+    if (!family) return undefined
+    // The two forms of a family are the same model -- that measurement is why
+    // the `[1m]` presets left the offer list -- so any row of it will do.
+    return availableModels.find((entry) => (
+        entry.value !== 'default'
+        && (resolveClaudeModelFamily(entry.value) === family
+            || resolveClaudeModelFamily(entry.resolvedModel) === family)
+    ))
 }
 
 /**

@@ -89,7 +89,7 @@ describe('getModelOptionsForFlavor', () => {
         expect(rendered.some((option) => option.value === sessionModel)).toBe(false)
     })
 
-    it('integration: a legacy alias the live catalog no longer advertises still surfaces as an explicit, friendly-labeled row', () => {
+    it('collapses a legacy alias onto its family row when the catalog carries one', () => {
         const liveCatalog = [
             { value: 'default', displayName: 'Default (recommended)', resolvedModel: 'claude-opus-5[1m]', supportsFastMode: true },
             { value: 'opus[1m]', displayName: 'Opus (1M context)', resolvedModel: 'claude-opus-5[1m]', supportsFastMode: true },
@@ -101,7 +101,27 @@ describe('getModelOptionsForFlavor', () => {
         const finalizedOptions = getClaudeComposerModelOptions(sessionModel, liveCatalog)
         const rendered = getModelOptionsForFlavor('claude', sessionModel, finalizedOptions)
 
+        // sonnet and sonnet[1m] are the same model, which is why the [1m]
+        // presets left the offer list at all. The stored alias belongs on the
+        // catalog's own row rather than beside it as a near-duplicate.
         expect(rendered).toEqual(finalizedOptions)
+        expect(rendered.some((option) => option.value === 'sonnet[1m]')).toBe(false)
+        expect(rendered.filter((option) => option.value === 'sonnet')).toHaveLength(1)
+    })
+
+    it('integration: a family the live catalog dropped entirely still surfaces as an explicit row', () => {
+        const liveCatalog = [
+            { value: 'default', displayName: 'Default (recommended)', resolvedModel: 'claude-opus-5[1m]', supportsFastMode: true },
+            { value: 'opus[1m]', displayName: 'Opus (1M context)', resolvedModel: 'claude-opus-5[1m]', supportsFastMode: true },
+            { value: 'haiku', displayName: 'Haiku', resolvedModel: 'claude-haiku-4-5-20251001', supportsFastMode: false }
+        ]
+        const sessionModel = 'sonnet[1m]'
+
+        const finalizedOptions = getClaudeComposerModelOptions(sessionModel, liveCatalog)
+        const rendered = getModelOptionsForFlavor('claude', sessionModel, finalizedOptions)
+
+        // No sonnet row to collapse onto, so the pin keeps its own labelled row
+        // and stays reselectable.
         expect(rendered.some((option) => option.value === 'sonnet[1m]' && option.label === 'Sonnet 1M')).toBe(true)
         expect(rendered.filter((option) => option.value === 'sonnet[1m]')).toHaveLength(1)
     })

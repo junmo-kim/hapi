@@ -243,6 +243,49 @@ describe('catalogReportsEffortLevels', () => {
     })
 })
 
+describe('findCatalogRowFor family matching', () => {
+    // The shape the CLI actually returns today: Fable only as a full SDK id,
+    // Opus only with the [1m] suffix, neither equal to the stored preset.
+    const CURRENT_CATALOG = [
+        { value: 'default', displayName: 'Default (recommended)', resolvedModel: 'claude-opus-5[1m]' },
+        { value: 'opus[1m]', displayName: 'Opus (1M context)', resolvedModel: 'claude-opus-5[1m]' },
+        { value: 'claude-fable-5-1[1m]', displayName: 'Fable', resolvedModel: 'claude-fable-5-1' },
+        { value: 'sonnet', displayName: 'Sonnet', resolvedModel: 'claude-sonnet-5' },
+        { value: 'haiku', displayName: 'Haiku', resolvedModel: 'claude-haiku-4-5-20251001' }
+    ]
+
+    it('matches a stored preset to the row the catalog publishes for that family', () => {
+        expect(findCatalogRowFor('fable', CURRENT_CATALOG)?.value).toBe('claude-fable-5-1[1m]')
+        expect(findCatalogRowFor('opus', CURRENT_CATALOG)?.value).toBe('opus[1m]')
+        expect(findCatalogRowFor('sonnet', CURRENT_CATALOG)?.value).toBe('sonnet')
+    })
+
+    it('never collapses a resolved SDK id onto another generation of its family', () => {
+        // `fable` is an alias meaning "whatever Fable is now"; a resolved id is
+        // a pin to one model. Collapsing the pin would show Sonnet 5 checked
+        // for a session running Sonnet 4.5, with no row left to return to.
+        expect(findCatalogRowFor('claude-sonnet-4-5-20250929', CURRENT_CATALOG)).toBeUndefined()
+        expect(findCatalogRowFor('claude-opus-4-1-20250805', CURRENT_CATALOG)).toBeUndefined()
+        // An exact resolvedModel match is still a match -- that row IS the pin.
+        expect(findCatalogRowFor('claude-fable-5-1', CURRENT_CATALOG)?.value)
+            .toBe('claude-fable-5-1[1m]')
+    })
+
+    it('takes any row of the family for a preset alias, both forms being one model', () => {
+        const bothForms = [
+            { value: 'claude-fable-5-1', displayName: 'Fable', resolvedModel: 'claude-fable-5-1' },
+            { value: 'claude-fable-5-1[1m]', displayName: 'Fable 1M', resolvedModel: 'claude-fable-5-1' }
+        ]
+        expect(findCatalogRowFor('fable', bothForms)?.value).toBe('claude-fable-5-1')
+        expect(findCatalogRowFor('fable[1m]', bothForms)?.value).toBe('claude-fable-5-1')
+    })
+
+    it('still finds nothing for a family the catalog does not carry', () => {
+        expect(findCatalogRowFor('opusplan', CURRENT_CATALOG)).toBeUndefined()
+        expect(findCatalogRowFor('some-other-vendor-model', CURRENT_CATALOG)).toBeUndefined()
+    })
+})
+
 describe('resolveClaudeSupportedEffortLevels', () => {
     // The live-shaped scenario a hostile review round caught in production:
     // haiku itself carries no supportedEffortLevels, but sibling rows in the
