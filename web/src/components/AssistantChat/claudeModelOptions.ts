@@ -43,7 +43,10 @@ function normalizeClaudeComposerModel(model?: string | null): string | null {
  * Session and the composer:
  *
  *   - persisted  the user's own identifier -- the alias when the family is a
- *                known preset, since `fable` means "whatever Fable is now"
+ *                known preset and the catalog carries a single row for it,
+ *                since `fable` means "whatever Fable is now". Two rows mean
+ *                the user chose between them and an alias cannot say which,
+ *                so the row's own value is kept
  *   - wire       the catalog row's value, which is what a spawn or a model
  *                change submits
  *   - display    the same row value, so a select's value matches its options

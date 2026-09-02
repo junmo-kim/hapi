@@ -638,17 +638,27 @@ export function NewSession(props: {
         return findCatalogRowFor(model, claudeModelsState.availableModels)?.value ?? model
     }, [agent, claudeModelsState.availableModels, model])
 
-    // Store the family a picked row belongs to rather than the row's own id.
-    // With a catalog loaded the picker is the only place a family appears, so
-    // this is the ordinary way a preference is created -- and a row id is a pin
-    // to one release, which stops matching as soon as the catalog renames it.
-    // claudeSelectedRowValue turns the alias back into the concrete row for the
-    // select and the spawn, so the round trip closes. A row whose family is not
-    // a known preset has no alias to store and stays as it came.
+    // Store the family a picked row belongs to rather than the row's own id, so
+    // the preference survives the catalog renaming that row -- with a catalog
+    // loaded the picker is the only place a family appears, so this is the
+    // ordinary way a preference is created. claudeSelectedRowValue turns the
+    // alias back into the concrete row for the select and the spawn.
+    //
+    // Only when the family has a single row, though. Two rows mean the user
+    // chose between them, and an alias cannot say which: the derivation would
+    // take the first and spawn the other generation. Those, and rows whose
+    // family is not a known preset, are stored exactly as they came.
     const handleClaudeModelChange = useCallback((next: string) => {
         const family = resolveClaudeModelFamily(next)
-        setModel(family && isClaudeModelPreset(family) ? family : next)
-    }, [])
+        if (!family || !isClaudeModelPreset(family)) {
+            setModel(next)
+            return
+        }
+        const familyRowCount = claudeModelsState.availableModels.filter((candidate) => (
+            candidate.value !== 'default' && resolveClaudeModelFamily(candidate.value) === family
+        )).length
+        setModel(familyRowCount > 1 ? next : family)
+    }, [claudeModelsState.availableModels])
 
     const claudeEffortOptions = useMemo(() => {
         if (agent !== 'claude') {

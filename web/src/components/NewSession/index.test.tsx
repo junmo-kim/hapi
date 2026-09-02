@@ -1151,6 +1151,44 @@ describe('NewSession launch preferences', () => {
         })
     })
 
+    it('keeps the exact row when a family offers more than one, so the pick is what spawns', async () => {
+        // Aliasing is only safe while a family has a single row. With two, the
+        // user distinguished between them: storing the family would let the
+        // derivation pick the other row and spawn a different generation.
+        mocks.claudeModels = [
+            { value: 'default', displayName: 'Default (recommended)', resolvedModel: 'claude-opus-5[1m]' },
+            { value: 'sonnet', displayName: 'Sonnet', resolvedModel: 'claude-sonnet-5' },
+            { value: 'claude-sonnet-4-5-20250929', displayName: 'Sonnet 4.5', resolvedModel: 'claude-sonnet-4-5-20250929' }
+        ]
+        savePreferredAgent('claude')
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'session-1' })
+
+        render(
+            <NewSession
+                api={api}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory={'C:\\repo'}
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        await waitFor(() => expect(screen.getByTestId('model-options')).toHaveTextContent('Sonnet 4.5'))
+        mocks.nextModelValue = 'claude-sonnet-4-5-20250929'
+        fireEvent.click(screen.getByTestId('model'))
+
+        await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
+        fireEvent.click(screen.getByTestId('create'))
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalled())
+
+        expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({
+            model: 'claude-sonnet-4-5-20250929'
+        }))
+        expect(loadPreferredLaunchSettings('machine-1', 'claude')?.model)
+            .toBe('claude-sonnet-4-5-20250929')
+    })
+
     it('holds Create while a restored Claude pin is still being validated', async () => {
         // The gate exists so a restored model/effort is never submitted before
         // this cwd's catalog can confirm it. The loading arm is the half the
