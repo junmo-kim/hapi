@@ -3594,6 +3594,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         } catch (error) {
             logger.debug('[Codex] Failed to read effective context management config; using app-server defaults', error);
         }
+        let hasThread = false;
 
         const publishConversationHistoryCapabilities = async () => {
             const conversationHistory = this.conversationHistory.getCapabilitiesForMetadata()?.conversationHistory
@@ -3621,6 +3622,39 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 ? session.client.getMetadata()?.conversationHistoryTurns
                 : undefined
         )
+        const codexForkRequest = session.codexForkRequest;
+        if (codexForkRequest) {
+            const sourceThreadId = session.sessionId;
+            if (!sourceThreadId || codexForkRequest.sourceThreadId !== sourceThreadId) {
+                throw new Error('Codex fork request source does not match the session thread');
+            }
+            if (codexForkRequest.lastTurnId && codexForkRequest.beforeTurnId) {
+                throw new Error('Codex fork request cannot include both turn boundaries');
+            }
+            const response = await appServerClient.forkThread({
+                threadId: sourceThreadId,
+                ...(codexForkRequest.lastTurnId ? { lastTurnId: codexForkRequest.lastTurnId } : {}),
+                ...(codexForkRequest.beforeTurnId ? { beforeTurnId: codexForkRequest.beforeTurnId } : {})
+            }, {
+                signal: this.abortController.signal
+            });
+            const responseRecord = asRecord(response);
+            const responseThread = responseRecord ? asRecord(responseRecord.thread) : null;
+            const threadId = asString(responseThread?.id);
+            if (!threadId) {
+                throw new Error('thread/fork did not return thread.id');
+            }
+            if (threadId === sourceThreadId) {
+                throw new Error('thread/fork did not return a distinct thread.id');
+            }
+            applyResolvedModel(responseRecord?.model);
+            this.currentThreadId = threadId;
+            this.conversationHistory.setThreadId(threadId);
+            session.onSessionFound(threadId);
+            hasThread = true;
+            void this.conversationHistory.probeCapabilities().catch(() => {});
+            logger.debug(`[Codex] Materialized HAPI fork ${sourceThreadId} -> ${threadId}`);
+        }
         session.client.rpcHandlerManager.registerHandler(RPC_METHODS.ForkConversation, async (payload: unknown) => {
             const messageLocalId = payload && typeof payload === 'object' && typeof (payload as { messageLocalId?: unknown }).messageLocalId === 'string'
                 ? (payload as { messageLocalId: string }).messageLocalId
@@ -3658,7 +3692,6 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             logger.debug(`[Codex] collaborationMode/list failed: ${errorMessage(error)}`);
         }
 
-        let hasThread = false;
         let pending: QueuedMessage | null = null;
         let suppressReadyForAdminCommand = false;
 
@@ -4123,7 +4156,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                                 });
                             const responseRecord = asRecord(response);
                             const responseThread = responseRecord ? asRecord(responseRecord.thread) : null;
-                            threadId = asString(responseThread?.id) ?? resumeCandidate;
+                            threadId = asString(responseThread?.id);
+                            if (!threadId) threadId = resumeCandidate;
                             applyResolvedModel(responseRecord?.model);
                             logger.debug(shouldForkImportedSource
                                 ? `[Codex] Forked imported app-server thread ${resumeCandidate} -> ${threadId}`

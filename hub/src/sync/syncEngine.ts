@@ -1188,6 +1188,41 @@ export class SyncEngine {
         return false
     }
 
+    private async waitForCodexForkBound(
+        childId: string,
+        sourceNativeSessionId: string,
+        timeoutMs: number = 60_000
+    ): Promise<boolean> {
+        const startedAt = Date.now()
+        while (Date.now() - startedAt < timeoutMs) {
+            this.sessionCache.refreshSession(childId)
+            const child = this.sessionCache.getSession(childId)
+            const boundId = child?.metadata?.codexSessionId
+            if (
+                typeof boundId === 'string'
+                && boundId.length > 0
+                && boundId !== sourceNativeSessionId
+                && child?.active === true
+                && child?.metadata?.codexForkRequest === undefined
+            ) {
+                return true
+            }
+            if (
+                child?.metadata?.codexForkRequest === undefined
+                && typeof boundId === 'string'
+                && boundId.length > 0
+                && boundId === sourceNativeSessionId
+            ) {
+                return false
+            }
+            if (child && !child.active && Date.now() - startedAt > 5_000) {
+                return false
+            }
+            await new Promise((resolve) => setTimeout(resolve, 250))
+        }
+        return false
+    }
+
     /**
      * A native fork may be created before its runner child has loaded it. Wait
      * for the exact persisted native id; Pi additionally requires its
@@ -1407,6 +1442,20 @@ export class SyncEngine {
         source = refreshedSource
 
         const flavor = this.resolveFlavor(source)
+        const codexForkRequest = rpcResult.codexForkRequest
+        if (flavor === 'codex') {
+            if (!codexForkRequest) {
+                return { type: 'error', message: 'Codex native fork did not return a fork request' }
+            }
+            if (codexForkRequest.sourceThreadId !== rpcResult.nativeSessionId) {
+                return { type: 'error', message: 'Codex fork source thread did not match the native session id' }
+            }
+            if (codexForkRequest.lastTurnId && codexForkRequest.beforeTurnId) {
+                return { type: 'error', message: 'Codex fork request has conflicting turn boundaries' }
+            }
+        } else if (codexForkRequest) {
+            return { type: 'error', message: 'Codex fork request returned for a non-Codex session' }
+        }
         const childId = randomUUID()
         let prefix
         try {
@@ -1444,6 +1493,7 @@ export class SyncEngine {
         }
         if (flavor === 'codex') {
             childMetadata.codexSessionId = rpcResult.nativeSessionId
+            childMetadata.codexForkRequest = codexForkRequest
         } else if (flavor === 'grok') {
             childMetadata.grokSessionId = rpcResult.nativeSessionId
         } else if (flavor === 'pi') {
@@ -1511,6 +1561,13 @@ export class SyncEngine {
             )
             if (spawn.type !== 'success') {
                 throw new Error(spawn.message)
+            }
+
+            if (flavor === 'codex') {
+                const bound = await this.waitForCodexForkBound(childId, rpcResult.nativeSessionId)
+                if (!bound) {
+                    throw new Error('Codex fork did not materialize before timeout')
+                }
             }
 
             // Claude fork is spawn+flag, not an RPC-time snapshot. Keep the

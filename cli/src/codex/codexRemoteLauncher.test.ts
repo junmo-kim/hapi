@@ -32,6 +32,10 @@ const harness = vi.hoisted(() => ({
     } as unknown,
     startThreadIds: [] as string[],
     startThreadParams: [] as Array<Record<string, unknown>>,
+    forkThreadParams: [] as Array<Record<string, unknown>>,
+    forkThreadResponse: { thread: { id: 'thread-forked' }, model: 'gpt-5.4' } as unknown,
+    forkThreadError: null as Error | null,
+    forkThreadFailuresRemaining: 0,
     resumeThreadIds: [] as string[],
     resumeThreadParams: [] as Array<Record<string, unknown>>,
     startTurnThreadIds: [] as string[],
@@ -179,6 +183,16 @@ vi.mock('./codexAppServerClient', () => {
                 throw new Error('resume failed');
             }
             return { thread: { id }, model: 'gpt-5.4' };
+        }
+
+        async forkThread(params?: Record<string, unknown>): Promise<unknown> {
+            harness.forkThreadParams.push(params ?? {});
+            if (harness.forkThreadFailuresRemaining > 0) {
+                harness.forkThreadFailuresRemaining -= 1;
+                throw harness.forkThreadError ?? new Error('fork failed');
+            }
+            if (harness.forkThreadError) throw harness.forkThreadError;
+            return harness.forkThreadResponse;
         }
 
         async compactThread(params?: { threadId?: string }): Promise<Record<string, never>> {
@@ -1182,6 +1196,7 @@ function createSessionStub(
         emitSteerIndeterminate: vi.fn(),
         setSteerDeliveryState: vi.fn(async () => true)
     };
+    queue.onBatchConsumed = (localIds) => client.emitMessagesConsumed(localIds);
 
     const session = {
         path: '/tmp/hapi-update',
@@ -1191,6 +1206,8 @@ function createSessionStub(
         codexArgs: undefined,
         codexCliOverrides: undefined,
         sessionId: null as string | null,
+        sourceSessionId: undefined as string | undefined,
+        codexForkRequest: undefined as { sourceThreadId: string; lastTurnId?: string; beforeTurnId?: string } | undefined,
         thinking: false,
         getPermissionMode() {
             return currentPermissionMode;
@@ -1428,6 +1445,10 @@ describe('codexRemoteLauncher', () => {
         };
         harness.startThreadIds = [];
         harness.startThreadParams = [];
+        harness.forkThreadParams = [];
+        harness.forkThreadResponse = { thread: { id: 'thread-forked' }, model: 'gpt-5.4' };
+        harness.forkThreadError = null;
+        harness.forkThreadFailuresRemaining = 0;
         harness.resumeThreadIds = [];
         harness.resumeThreadParams = [];
         harness.startTurnThreadIds = [];
@@ -2606,6 +2627,112 @@ describe('codexRemoteLauncher', () => {
             message: 'Task failed: Codex conversation thread-old could not be resumed; no new conversation was created. Reason: resume failed'
         });
         expect(session.thinking).toBe(false);
+    });
+
+    it('materializes a current HAPI fork in the child app server', async () => {
+        const { session, foundSessionIds } = createSessionStub(['first message']);
+        session.sessionId = 'thread-source';
+        session.codexForkRequest = { sourceThreadId: 'thread-source' };
+
+        await codexRemoteLauncher(session as never);
+
+        expect(harness.resumeThreadIds).toEqual([]);
+        expect(harness.forkThreadParams).toEqual([{ threadId: 'thread-source' }]);
+        expect(foundSessionIds).toEqual(['thread-forked']);
+        expect(harness.startTurnThreadIds).toEqual(['thread-forked']);
+    });
+
+    it('passes a historical HAPI fork boundary to the child app server', async () => {
+        const { session } = createSessionStub(['first message']);
+        session.sessionId = 'thread-source';
+        session.codexForkRequest = { sourceThreadId: 'thread-source', lastTurnId: 'turn-a' };
+
+        await codexRemoteLauncher(session as never);
+
+        expect(harness.forkThreadParams).toEqual([{
+            threadId: 'thread-source',
+            lastTurnId: 'turn-a'
+        }]);
+        expect(harness.startTurnThreadIds).toEqual(['thread-forked']);
+    });
+
+    it('fails closed when child-side fork materialization fails', async () => {
+        harness.forkThreadError = new Error('fork failed');
+        const { session, emitMessagesConsumed } = createSessionStub([], createMode(), false, false);
+        session.queue.push('first message', createMode(), 'local-fork');
+        session.queue.close();
+        session.sessionId = 'thread-source';
+        session.codexForkRequest = { sourceThreadId: 'thread-source' };
+
+        await expect(codexRemoteLauncher(session as never)).rejects.toThrow('fork failed');
+
+        expect(harness.startThreadIds).toEqual([]);
+        expect(harness.startTurnThreadIds).toEqual([]);
+        expect(session.queue.size()).toBe(1);
+        expect(emitMessagesConsumed).not.toHaveBeenCalled();
+    });
+
+    it('fails closed when child-side fork omits the returned thread id', async () => {
+        harness.forkThreadResponse = { thread: {}, model: 'gpt-5.4' };
+        const { session } = createSessionStub(['first message']);
+        session.sessionId = 'thread-source';
+        session.codexForkRequest = { sourceThreadId: 'thread-source' };
+
+        await expect(codexRemoteLauncher(session as never)).rejects.toThrow('thread/fork did not return thread.id');
+
+        expect(harness.startThreadIds).toEqual([]);
+        expect(harness.startTurnThreadIds).toEqual([]);
+    });
+
+    it('fails closed when child-side fork returns the source thread id', async () => {
+        harness.forkThreadResponse = { thread: { id: 'thread-source' }, model: 'gpt-5.4' };
+        const { session, emitMessagesConsumed } = createSessionStub(['first message']);
+        session.sessionId = 'thread-source';
+        session.codexForkRequest = { sourceThreadId: 'thread-source' };
+
+        await expect(codexRemoteLauncher(session as never)).rejects.toThrow(/distinct/);
+
+        expect(harness.startTurnThreadIds).toEqual([]);
+        expect(session.queue.size()).toBe(1);
+        expect(emitMessagesConsumed).not.toHaveBeenCalled();
+    });
+
+    it('fails startup when the fork request source does not match the session thread', async () => {
+        const { session } = createSessionStub(['first message']);
+        session.sessionId = 'thread-source';
+        session.codexForkRequest = { sourceThreadId: 'thread-other' };
+
+        await expect(codexRemoteLauncher(session as never)).rejects.toThrow(/does not match/);
+
+        expect(harness.forkThreadParams).toEqual([]);
+        expect(session.queue.size()).toBe(1);
+    });
+
+    it('fails startup when the fork request contains both boundaries', async () => {
+        const { session } = createSessionStub(['first message']);
+        session.sessionId = 'thread-source';
+        session.codexForkRequest = {
+            sourceThreadId: 'thread-source',
+            lastTurnId: 'turn-a',
+            beforeTurnId: 'turn-b'
+        };
+
+        await expect(codexRemoteLauncher(session as never)).rejects.toThrow(/both turn boundaries/);
+
+        expect(harness.forkThreadParams).toEqual([]);
+        expect(session.queue.size()).toBe(1);
+    });
+
+    it('preserves the imported-history fork path without a HAPI fork request', async () => {
+        const { session } = createSessionStub(['first message']);
+        session.sessionId = 'thread-imported';
+        session.sourceSessionId = 'thread-imported';
+
+        await codexRemoteLauncher(session as never);
+
+        expect(harness.forkThreadParams).toEqual([expect.objectContaining({ threadId: 'thread-imported' })]);
+        expect(harness.resumeThreadIds).toEqual([]);
+        expect(harness.startTurnThreadIds).toEqual(['thread-forked']);
     });
 
     it('does not start a fresh thread for the next queued message after thread-level systemError', async () => {
