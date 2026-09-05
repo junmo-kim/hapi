@@ -2640,6 +2640,7 @@ describe('codexRemoteLauncher', () => {
         expect(harness.forkThreadParams).toEqual([{ threadId: 'thread-source' }]);
         expect(foundSessionIds).toEqual(['thread-forked']);
         expect(harness.startTurnThreadIds).toEqual(['thread-forked']);
+        expect(session.codexForkRequest).toBeUndefined();
     });
 
     it('passes a historical HAPI fork boundary to the child app server', async () => {
@@ -2670,6 +2671,7 @@ describe('codexRemoteLauncher', () => {
         expect(harness.startTurnThreadIds).toEqual([]);
         expect(session.queue.size()).toBe(1);
         expect(emitMessagesConsumed).not.toHaveBeenCalled();
+        expect(session.codexForkRequest).toEqual({ sourceThreadId: 'thread-source' });
     });
 
     it('fails closed when child-side fork omits the returned thread id', async () => {

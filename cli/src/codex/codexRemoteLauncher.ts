@@ -3651,6 +3651,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             this.currentThreadId = threadId;
             this.conversationHistory.setThreadId(threadId);
             session.onSessionFound(threadId);
+            session.codexForkRequest = undefined;
             hasThread = true;
             void this.conversationHistory.probeCapabilities().catch(() => {});
             logger.debug(`[Codex] Materialized HAPI fork ${sourceThreadId} -> ${threadId}`);

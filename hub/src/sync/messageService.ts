@@ -833,6 +833,11 @@ export class MessageService {
             deliveryMode?: MessageDeliveryMode
         }
     ): Promise<{ actualSessionId: string; createdAt: number }> {
+        const sessionMetadata = this.store.sessions.getSession(sessionId)?.metadata
+        if (isObject(sessionMetadata) && sessionMetadata.codexForkRequest) {
+            throw new Error('Codex fork is still materializing')
+        }
+
         // Defence-in-depth invariant for non-REST callers (Telegram bot, MCP,
         // internal callers).  Attachment paths live under the CLI session's
         // upload directory which `cleanupUploadDir` purges on session end; a

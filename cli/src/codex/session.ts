@@ -18,7 +18,7 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
     readonly startedBy: 'runner' | 'terminal';
     readonly startingMode: 'local' | 'remote';
     readonly sourceSessionId?: string;
-    readonly codexForkRequest?: Metadata['codexForkRequest'];
+    codexForkRequest?: Metadata['codexForkRequest'];
     localLaunchFailure: LocalLaunchFailure | null = null;
 
     private transcriptPathCallbacks: Array<(path: string) => void> = [];

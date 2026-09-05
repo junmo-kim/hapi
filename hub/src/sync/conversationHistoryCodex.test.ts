@@ -143,16 +143,36 @@ describe('Codex conversation-history hub integration', () => {
                 path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'codex',
                 codexSessionId: 'thread-source', capabilities: { conversationHistory: { forkCurrent: true } }
             }, null, 'default')
+            let pendingChildWasPublished = false
+            engine.subscribe((event) => {
+                if (event.type !== 'session-added') return
+                const data = event.data as { metadata?: { forkedFrom?: string } } | undefined
+                if (data?.metadata?.forkedFrom === source.id) {
+                    pendingChildWasPublished = true
+                }
+            })
             engine.handleSessionAlive({ sid: source.id, time: Date.now(), mode: 'remote' })
             ;(engine as any).rpcGateway.forkConversation = async () => ({
                 nativeSessionId: 'thread-source', codexForkRequest: { sourceThreadId: 'thread-source' }
             })
             ;(engine as any).rpcGateway.spawnSession = async (...args: unknown[]) => ({ type: 'success', sessionId: args[12] })
-            ;(engine as any).waitForCodexForkBound = async () => false
+            let pendingChildId: string | undefined
+            ;(engine as any).waitForCodexForkBound = async () => {
+                pendingChildId = engine.getSessions().find((session) => session.metadata?.forkedFrom === source.id)?.id
+                if (!pendingChildId) throw new Error('pending child was not created')
+                expect(pendingChildWasPublished).toBe(true)
+                await expect(engine.sendMessage(pendingChildId, {
+                    text: 'must not be accepted before materialization',
+                    localId: 'premature-message'
+                })).rejects.toThrow(/materializing/)
+                expect(store.messages.getAllMessages(pendingChildId)).toEqual([])
+                return false
+            }
             ;(engine as any).rpcGateway.stopRunnerSession = async () => 'already_gone'
 
             const result = await engine.forkConversation(source.id, 'default')
             expect(result).toEqual({ type: 'error', message: 'Codex fork did not materialize before timeout' })
+            expect(pendingChildId).toBeDefined()
             expect(engine.getSessions().filter((session) => session.metadata?.forkedFrom === source.id)).toEqual([])
         } finally {
             engine.stop()
