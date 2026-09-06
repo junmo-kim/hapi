@@ -1811,7 +1811,7 @@ function SessionChatInner(props: SessionChatProps) {
                         kind={forkPreview.kind}
                         keptTurns={forkPreview.keptTurns}
                         boundaryText={forkPreview.boundaryText}
-                        prefixMayHaveMore={props.hasMoreMessages}
+                        prefixMayHaveMore={props.hasMoreMessages || forkPreview.prefixTruncated}
                         onCancel={() => setForkPreviewRequest(null)}
                         onConfirm={() => executeForkConversation(forkPreviewRequest.messageLocalId)}
                     />

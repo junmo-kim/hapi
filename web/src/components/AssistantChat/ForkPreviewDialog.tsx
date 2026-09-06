@@ -52,6 +52,11 @@ export function ForkPreviewDialog({ isOpen, kind, keptTurns, boundaryText, prefi
                             <div className="text-center text-[10px] text-[var(--app-hint)]">
                                 {t('forkPreview.keptAbove')}
                             </div>
+                            {prefixMayHaveMore ? (
+                                <div className="text-center text-xs text-[var(--app-hint)]">
+                                    {t('forkPreview.noTextPreview')}
+                                </div>
+                            ) : null}
                         </div>
                     ) : (
                         <div className="text-center text-xs text-[var(--app-hint)]">

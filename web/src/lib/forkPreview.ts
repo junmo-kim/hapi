@@ -15,6 +15,8 @@ export type ForkPreview = {
     /** Text of the selected cutoff message, which is NOT copied into the
      * new session. Null for a current-tail fork where nothing is excluded. */
     boundaryText: string | null
+    /** True when the preview omits earlier copied turns. */
+    prefixTruncated: boolean
 }
 
 const MAX_KEPT_TURNS = 3
@@ -54,7 +56,7 @@ export function buildForkPreview(blocks: readonly VisibleChatBlock[], messageLoc
     let boundaryText: string | null = null
     if (messageLocalId) {
         cutoff = blocks.findLastIndex((block) => block.kind !== 'agent-event' && block.kind !== 'tool-group' && block.localId === messageLocalId)
-        if (cutoff < 0) return { kind: 'historical', keptTurns: [], boundaryText: null }
+        if (cutoff < 0) return { kind: 'historical', keptTurns: [], boundaryText: null, prefixTruncated: false }
         const selected = blockPreviewText(blocks[cutoff])
         boundaryText = selected ? truncate(selected.text) : null
     }
@@ -71,5 +73,11 @@ export function buildForkPreview(blocks: readonly VisibleChatBlock[], messageLoc
             turns.push({ role: entry.role, text: truncate(entry.text) })
         }
     }
-    return { kind: messageLocalId ? 'historical' : 'current', keptTurns: turns.slice(-MAX_KEPT_TURNS), boundaryText }
+    const keptTurns = turns.slice(-MAX_KEPT_TURNS)
+    return {
+        kind: messageLocalId ? 'historical' : 'current',
+        keptTurns,
+        boundaryText,
+        prefixTruncated: turns.length > keptTurns.length,
+    }
 }

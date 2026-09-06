@@ -95,6 +95,11 @@ describe('buildForkPreview', () => {
         expect(buildForkPreview(blocks).kind).toBe('current')
     })
 
+    it('reports when earlier copied turns are omitted from the preview', () => {
+        expect(buildForkPreview(blocks, 'u3').prefixTruncated).toBe(true)
+        expect(buildForkPreview(blocks, 'u2').prefixTruncated).toBe(false)
+    })
+
     it('includes attachment-only user messages by their filenames', () => {
         const attachmentOnly: VisibleChatBlock[] = [
             { ...user('', 'u-file'), attachments: [{ id: 'a1', filename: 'report.pdf', mimeType: 'application/pdf', size: 10, path: '/tmp/report.pdf' }] } as VisibleChatBlock,
