@@ -92,4 +92,43 @@ describe('useOpencodeReasoningEffortOptions pending-switch polling', () => {
         expect(result.current.currentValue).toBeNull()
         resolveRefetch?.()
     })
+
+    it('resets the mismatch poll budget when query counters reset', async () => {
+        const queryClient = new QueryClient()
+        const getSessionOpencodeReasoningEffortOptions = vi.fn(async () => ({
+            success: true,
+            options: [{ value: 'low', name: 'Low' }],
+            currentValue: 'low',
+            currentModelId: 'provider/model-a'
+        }))
+        const api = { getSessionOpencodeReasoningEffortOptions } as never
+        const wrapper = ({ children }: { children: React.ReactNode }) =>
+            createElement(QueryClientProvider, { client: queryClient }, children)
+
+        const { rerender } = renderHook(
+            ({ model }) => useOpencodeReasoningEffortOptions({
+                api,
+                sessionId: 'session-1',
+                enabled: true,
+                sessionModel: model
+            }),
+            { wrapper, initialProps: { model: 'provider/model-b' } }
+        )
+
+        await waitFor(() => expect(getSessionOpencodeReasoningEffortOptions).toHaveBeenCalled())
+        await queryClient.refetchQueries({
+            queryKey: ['session-opencode-reasoning-effort-options', 'session-1'],
+            exact: true
+        })
+        const callsBeforeReset = getSessionOpencodeReasoningEffortOptions.mock.calls.length
+
+        queryClient.resetQueries({
+            queryKey: ['session-opencode-reasoning-effort-options', 'session-1'],
+            exact: true
+        })
+        rerender({ model: 'provider/model-c' })
+        await sleep(1100)
+
+        expect(getSessionOpencodeReasoningEffortOptions.mock.calls.length).toBeGreaterThan(callsBeforeReset)
+    })
 })

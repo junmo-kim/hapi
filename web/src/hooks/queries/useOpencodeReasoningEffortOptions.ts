@@ -97,6 +97,9 @@ export function useOpencodeReasoningEffortOptions(args: {
         refetchInterval: (query) => {
             const data = query.state.data as OpencodeReasoningEffortResponse | undefined
             const totalUpdateCount = query.state.dataUpdateCount + query.state.errorUpdateCount
+            if (totalUpdateCount < latestUpdateCountRef.current) {
+                mismatchBaselineRef.current = 0
+            }
             latestUpdateCountRef.current = totalUpdateCount
             const targetModelId = data?.targetModelId ?? sessionModel
             const mismatchActive = Boolean(
