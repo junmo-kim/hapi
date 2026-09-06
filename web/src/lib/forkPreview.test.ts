@@ -100,6 +100,23 @@ describe('buildForkPreview', () => {
         expect(buildForkPreview(blocks, 'u2').prefixTruncated).toBe(false)
     })
 
+    it('reports when copied non-text content is omitted from the preview', () => {
+        const withReasoning: VisibleChatBlock[] = [
+            user('question', 'u1'),
+            {
+                kind: 'agent-reasoning',
+                id: 'r1',
+                localId: null,
+                createdAt: 1,
+                text: 'private chain of thought',
+            },
+            agent('answer'),
+        ]
+        const preview = buildForkPreview(withReasoning)
+        expect(preview.keptTurns.map((turn) => turn.text)).toEqual(['question', 'answer'])
+        expect(preview.prefixTruncated).toBe(true)
+    })
+
     it('includes attachment-only user messages by their filenames', () => {
         const attachmentOnly: VisibleChatBlock[] = [
             { ...user('', 'u-file'), attachments: [{ id: 'a1', filename: 'report.pdf', mimeType: 'application/pdf', size: 10, path: '/tmp/report.pdf' }] } as VisibleChatBlock,

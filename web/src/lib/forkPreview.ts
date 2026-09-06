@@ -62,10 +62,17 @@ export function buildForkPreview(blocks: readonly VisibleChatBlock[], messageLoc
     }
 
     const turns: ForkPreviewTurn[] = []
+    let previewIncomplete = false
     for (const block of blocks.slice(0, cutoff)) {
         if (block.kind === 'user-text' && (block.invokedAt ?? null) === null) continue
         const entry = blockPreviewText(block)
-        if (!entry) continue
+        if (!entry) {
+            // Events are internal status rows, but other invoked blocks
+            // (reasoning, tools, images, reviews) are copied by the hub and
+            // intentionally omitted from this compact text preview.
+            if (block.kind !== 'agent-event') previewIncomplete = true
+            continue
+        }
         const previous = turns[turns.length - 1]
         if (previous && previous.role === entry.role) {
             previous.text = truncate(`${previous.text} ${entry.text}`)
@@ -78,6 +85,6 @@ export function buildForkPreview(blocks: readonly VisibleChatBlock[], messageLoc
         kind: messageLocalId ? 'historical' : 'current',
         keptTurns,
         boundaryText,
-        prefixTruncated: turns.length > keptTurns.length,
+        prefixTruncated: previewIncomplete || turns.length > keptTurns.length,
     }
 }
