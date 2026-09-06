@@ -36,12 +36,11 @@ function Fixture() {
             kind="historical"
             keptTurns={KEPT_TURNS}
             boundaryText="third question — not copied into the new session"
-            pending={false}
             onCancel={() => {
                 window.__forkPreviewE2E!.cancelled += 1
                 setOpen(false)
             }}
-            onConfirm={() => {
+            onConfirm={async () => {
                 window.__forkPreviewE2E!.confirmed += 1
                 setOpen(false)
             }}
