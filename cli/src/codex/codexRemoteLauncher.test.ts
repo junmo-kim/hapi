@@ -99,7 +99,8 @@ const harness = vi.hoisted(() => ({
     emitRunningChildTurnBeforeSuppressedParent: false,
     emitCompletedChildTurnBeforeSuppressedParent: false,
     emitTurnAbortedOnInterrupt: false,
-    bridgeOptions: [] as unknown[]
+    bridgeOptions: [] as unknown[],
+    mcpServers: {} as Record<string, { command: string; args: string[] }>
 }));
 
 vi.mock('./codexAppServerClient', () => {
@@ -1113,7 +1114,7 @@ vi.mock('./utils/buildHapiMcpBridge', () => ({
         server: {
             stop: () => {}
         },
-        mcpServers: {}
+        mcpServers: harness.mcpServers
         };
     }
 }));
@@ -1513,6 +1514,7 @@ describe('codexRemoteLauncher', () => {
         harness.emitCompletedChildTurnBeforeSuppressedParent = false;
         harness.emitTurnAbortedOnInterrupt = false;
         harness.bridgeOptions = [];
+        harness.mcpServers = {};
     });
 
     it('finishes a turn and emits ready when task lifecycle events include turn_id', async () => {
@@ -1563,7 +1565,6 @@ describe('codexRemoteLauncher', () => {
                 model_auto_compact_token_limit: 300_000
             }
         };
-
         const fresh = createSessionStub();
         await codexRemoteLauncher(fresh.session as never);
         expect(harness.startThreadParams[0]?.config).toMatchObject({
@@ -2630,6 +2631,15 @@ describe('codexRemoteLauncher', () => {
     });
 
     it('materializes a current HAPI fork in the child app server', async () => {
+        harness.configReadResponse = {
+            config: {
+                model_context_window: 400_000,
+                model_auto_compact_token_limit: 360_000
+            }
+        };
+        harness.mcpServers = {
+            hapi: { command: 'node', args: ['child-mcp'] }
+        };
         const { session, foundSessionIds } = createSessionStub(['first message']);
         session.sessionId = 'thread-source';
         session.codexForkRequest = { sourceThreadId: 'thread-source' };
@@ -2637,7 +2647,17 @@ describe('codexRemoteLauncher', () => {
         await codexRemoteLauncher(session as never);
 
         expect(harness.resumeThreadIds).toEqual([]);
-        expect(harness.forkThreadParams).toEqual([{ threadId: 'thread-source' }]);
+        expect(harness.forkThreadParams).toEqual([{
+            threadId: 'thread-source',
+            config: {
+                'mcp_servers.hapi': {
+                    command: 'node',
+                    args: ['child-mcp']
+                },
+                model_context_window: 400_000,
+                model_auto_compact_token_limit: 360_000
+            }
+        }]);
         expect(foundSessionIds).toEqual(['thread-forked']);
         expect(harness.startTurnThreadIds).toEqual(['thread-forked']);
         expect(session.codexForkRequest).toBeUndefined();

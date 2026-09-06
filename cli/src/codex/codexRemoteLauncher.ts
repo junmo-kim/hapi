@@ -17,6 +17,7 @@ import { AppServerEventConverter } from './utils/appServerEventConverter';
 import { registerGeneratedImageFromPath } from '@/modules/common/generatedImages';
 import { registerAppServerPermissionHandlers } from './utils/appServerPermissionAdapter';
 import {
+    buildMcpServerConfig,
     buildThreadStartParams,
     buildTurnStartParams,
     type CodexContextManagementConfig
@@ -3631,8 +3632,18 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             if (codexForkRequest.lastTurnId && codexForkRequest.beforeTurnId) {
                 throw new Error('Codex fork request cannot include both turn boundaries');
             }
+            const forkConfig = {
+                ...buildMcpServerConfig(mcpServers),
+                ...(contextManagementConfig?.modelContextWindow !== undefined
+                    ? { model_context_window: contextManagementConfig.modelContextWindow }
+                    : {}),
+                ...(contextManagementConfig?.modelAutoCompactTokenLimit !== undefined
+                    ? { model_auto_compact_token_limit: contextManagementConfig.modelAutoCompactTokenLimit }
+                    : {})
+            };
             const response = await appServerClient.forkThread({
                 threadId: sourceThreadId,
+                ...(Object.keys(forkConfig).length > 0 ? { config: forkConfig } : {}),
                 ...(codexForkRequest.lastTurnId ? { lastTurnId: codexForkRequest.lastTurnId } : {}),
                 ...(codexForkRequest.beforeTurnId ? { beforeTurnId: codexForkRequest.beforeTurnId } : {})
             }, {
