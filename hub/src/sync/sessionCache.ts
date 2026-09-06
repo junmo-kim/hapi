@@ -1492,6 +1492,10 @@ export class SessionCache {
     private extractAgentSessionId(
         metadata: NonNullable<Session['metadata']>
     ): { field: 'codexSessionId' | 'claudeSessionId' | 'geminiSessionId' | 'opencodeSessionId' | 'grokSessionId' | 'cursorSessionId' | 'piSessionId' | 'agySessionId' | 'copilotSessionId'; value: string; dedupeKey: string; machineId?: string } | null {
+        // A pending Codex child temporarily carries its source thread ID as a
+        // materialization anchor, not as its own native identity.
+        if (metadata.codexForkRequest) return null
+
         const scoped = (field: 'codexSessionId' | 'claudeSessionId' | 'geminiSessionId' | 'opencodeSessionId' | 'grokSessionId' | 'cursorSessionId' | 'piSessionId' | 'agySessionId' | 'copilotSessionId', value: string) => ({
             field,
             value,
@@ -1534,17 +1538,18 @@ export class SessionCache {
 
                 const currentSession = this.sessions.get(sessionId)
                 const candidates: { id: string; session: Session }[] = []
-                if (currentSession?.metadata && currentSession.metadata[agentId.field] === agentId.value) {
-                    if (agentId.field !== 'piSessionId' || currentSession.metadata.machineId === agentId.machineId) {
-                        candidates.push({ id: sessionId, session: currentSession })
-                    }
+                const currentAgentId = currentSession?.metadata
+                    ? this.extractAgentSessionId(currentSession.metadata)
+                    : null
+                if (currentAgentId?.dedupeKey === agentId.dedupeKey && currentSession) {
+                    candidates.push({ id: sessionId, session: currentSession })
                 }
                 for (const [existingId, existing] of this.sessions) {
                     if (existingId === sessionId) continue
                     if (existing.namespace !== session.namespace) continue
                     if (!existing.metadata) continue
-                    if (existing.metadata[agentId.field] !== agentId.value) continue
-                    if (agentId.field === 'piSessionId' && existing.metadata.machineId !== agentId.machineId) continue
+                    const existingAgentId = this.extractAgentSessionId(existing.metadata)
+                    if (existingAgentId?.dedupeKey !== agentId.dedupeKey) continue
                     candidates.push({ id: existingId, session: existing })
                 }
 

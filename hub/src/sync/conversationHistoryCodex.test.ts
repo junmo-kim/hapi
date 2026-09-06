@@ -4,6 +4,33 @@ import { RpcRegistry } from '../socket/rpcRegistry'
 import { SyncEngine } from './syncEngine'
 
 describe('Codex conversation-history hub integration', () => {
+    it('does not deduplicate a pending child against its source thread anchor', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        try {
+            const source = engine.getOrCreateSession('codex-dedupe-source', {
+                path: '/tmp/project', host: 'localhost', flavor: 'codex', codexSessionId: 'thread-source'
+            }, null, 'default')
+            engine.handleSessionAlive({ sid: source.id, time: Date.now(), mode: 'remote' })
+            const child = engine.getOrCreateSession('codex-dedupe-child', {
+                path: '/tmp/project', host: 'localhost', flavor: 'codex', codexSessionId: 'thread-source',
+                codexForkRequest: { sourceThreadId: 'thread-source' }, forkedFrom: source.id
+            }, null, 'default')
+
+            await (engine as any).sessionCache.deduplicateByAgentSessionId(source.id)
+
+            expect(engine.getSession(source.id)).toBeDefined()
+            expect(engine.getSession(child.id)?.metadata?.codexForkRequest).toEqual({ sourceThreadId: 'thread-source' })
+
+            await (engine as any).sessionCache.deduplicateByAgentSessionId(child.id)
+
+            expect(engine.getSession(source.id)).toBeDefined()
+            expect(engine.getSession(child.id)?.metadata?.codexForkRequest).toEqual({ sourceThreadId: 'thread-source' })
+        } finally {
+            engine.stop()
+        }
+    })
+
     it('stores child-side fork intent while spawning from the source thread', async () => {
         const store = new Store(':memory:')
         const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
