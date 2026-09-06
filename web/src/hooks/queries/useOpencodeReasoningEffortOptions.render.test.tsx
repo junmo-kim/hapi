@@ -116,19 +116,20 @@ describe('useOpencodeReasoningEffortOptions pending-switch polling', () => {
         )
 
         await waitFor(() => expect(getSessionOpencodeReasoningEffortOptions).toHaveBeenCalled())
-        await queryClient.refetchQueries({
-            queryKey: ['session-opencode-reasoning-effort-options', 'session-1'],
-            exact: true
-        })
-        const callsBeforeReset = getSessionOpencodeReasoningEffortOptions.mock.calls.length
+        const queryKey = ['session-opencode-reasoning-effort-options', 'session-1'] as const
+        for (let i = 0; i < 65; i += 1) {
+            await queryClient.refetchQueries({ queryKey, exact: true })
+        }
 
-        queryClient.resetQueries({
-            queryKey: ['session-opencode-reasoning-effort-options', 'session-1'],
-            exact: true
-        })
+        await queryClient.resetQueries({ queryKey, exact: true })
         rerender({ model: 'provider/model-c' })
+
+        while ((queryClient.getQueryState(queryKey)?.dataUpdateCount ?? 0) <= 60) {
+            await queryClient.refetchQueries({ queryKey, exact: true })
+        }
+        const callsAfterBudget = getSessionOpencodeReasoningEffortOptions.mock.calls.length
         await sleep(1100)
 
-        expect(getSessionOpencodeReasoningEffortOptions.mock.calls.length).toBeGreaterThan(callsBeforeReset)
+        expect(getSessionOpencodeReasoningEffortOptions).toHaveBeenCalledTimes(callsAfterBudget)
     })
 })
