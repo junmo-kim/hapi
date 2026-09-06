@@ -156,6 +156,35 @@ struct NewSessionLogicTests {
         )
     }
 
+    @Test func windowsDriveAndUNCAutocompletePreserveSeparators() {
+        #expect(
+            NewSessionLogic.parentQuery(for: "C:\\Users\\pro")
+                == NewSessionLogic.ParentQuery(parent: "C:\\Users", prefix: "pro", separator: "\\")
+        )
+        #expect(
+            NewSessionLogic.parentQuery(for: "C:\\Use")
+                == NewSessionLogic.ParentQuery(parent: "C:\\", prefix: "Use", separator: "\\")
+        )
+        #expect(
+            NewSessionLogic.parentQuery(for: "\\\\server\\share\\pro")
+                == NewSessionLogic.ParentQuery(
+                    parent: "\\\\server\\share",
+                    prefix: "pro",
+                    separator: "\\"
+                )
+        )
+        #expect(
+            NewSessionLogic.buildSuggestions(
+                query: NewSessionLogic.ParentQuery(
+                    parent: "C:\\Users",
+                    prefix: "pro",
+                    separator: "\\"
+                ),
+                entries: [dir("projects")]
+            ) == ["C:\\Users\\projects"]
+        )
+    }
+
     @Test func recentPathsLRUDedupesToFrontAndCapsAtEight() {
         var list: [String] = []
         for index in 1...10 {

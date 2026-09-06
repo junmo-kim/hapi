@@ -12,7 +12,7 @@ import {
     cliBinaryUpdatedOnDisk,
     isMachineCapabilitySkewed,
 } from '@hapi/protocol/runnerCapabilities'
-import type { CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, MessageDeliveryMode, MessagesResponse, QueuedStateResponse, SlashCommandsResponse } from '@hapi/protocol/apiTypes'
+import type { CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, MessageDeliveryMode, MessagesResponse, QueuedStateResponse, RewindConversationErrorCode, SlashCommandsResponse } from '@hapi/protocol/apiTypes'
 import type { SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
 import type { AgentFlavor, CodexCollaborationMode, CopilotAgentMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
 import { unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
@@ -1582,7 +1582,7 @@ export class SyncEngine {
         sessionId: string,
         namespace: string,
         messageLocalId: string
-    ): Promise<{ type: 'success' } | { type: 'error'; message: string; hydrateFailed?: boolean }> {
+    ): Promise<{ type: 'success' } | { type: 'error'; message: string; code?: RewindConversationErrorCode; hydrateFailed?: boolean }> {
         if (this.historyActionsInFlight.has(sessionId)) {
             return { type: 'error', message: 'Conversation history action already in progress' }
         }
@@ -1598,7 +1598,7 @@ export class SyncEngine {
         sessionId: string,
         namespace: string,
         messageLocalId: string
-    ): Promise<{ type: 'success' } | { type: 'error'; message: string; hydrateFailed?: boolean }> {
+    ): Promise<{ type: 'success' } | { type: 'error'; message: string; code?: RewindConversationErrorCode; hydrateFailed?: boolean }> {
         const access = this.resolveSessionAccess(sessionId, namespace)
         if (!access.ok) {
             return { type: 'error', message: access.reason === 'not-found' ? 'Session not found' : 'Access denied' }
@@ -1634,7 +1634,11 @@ export class SyncEngine {
         }
 
         if (rpcResult?.success !== true) {
-            return { type: 'error', message: rpcResult?.error ?? 'Native rewind failed' }
+            return {
+                type: 'error',
+                message: rpcResult?.error ?? 'Native rewind failed',
+                ...(rpcResult?.success === false && rpcResult.code ? { code: rpcResult.code } : {})
+            }
         }
 
         try {
@@ -1945,7 +1949,7 @@ export class SyncEngine {
         collaborationMode?: CodexCollaborationMode,
         copilotAgentMode?: CopilotAgentMode,
         startingMode?: 'remote' | 'pty'
-    ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
+    ): ReturnType<RpcGateway['spawnSession']> {
         return await this.rpcGateway.spawnSession(
             machineId,
             directory,
@@ -3839,8 +3843,12 @@ export class SyncEngine {
         return false
     }
 
-    async checkPathsExist(machineId: string, paths: string[]): Promise<Record<string, boolean>> {
+    async checkPathsExist(machineId: string, paths: string[]): ReturnType<RpcGateway['checkPathsExist']> {
         return await this.rpcGateway.checkPathsExist(machineId, paths)
+    }
+
+    async getAgentAvailability(machineId: string): ReturnType<RpcGateway['getAgentAvailability']> {
+        return await this.rpcGateway.getAgentAvailability(machineId)
     }
 
     async listMachineDirectory(machineId: string, path: string, includeHidden?: boolean): Promise<RpcListDirectoryResponse> {

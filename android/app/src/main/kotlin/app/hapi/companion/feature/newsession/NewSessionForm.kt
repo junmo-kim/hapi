@@ -122,6 +122,8 @@ object NewSessionLogic {
         val parent: String,
         /** Typed tail the entries are prefix-filtered by (case-insensitive). */
         val prefix: String,
+        /** Separator used by the typed path; suggestions preserve it. */
+        val separator: String = "/",
     )
 
     /**
@@ -134,10 +136,28 @@ object NewSessionLogic {
      */
     fun parentQuery(input: String): ParentQuery? {
         val text = input.trim()
-        if (!text.startsWith("/")) return null
-        val lastSlash = text.lastIndexOf('/')
-        val parent = if (lastSlash == 0) "/" else text.substring(0, lastSlash)
-        return ParentQuery(parent = parent, prefix = text.substring(lastSlash + 1))
+        val isPosix = text.startsWith("/")
+        val isDrive = Regex("^[A-Za-z]:[\\\\/].*").matches(text)
+        val isUnc = text.startsWith("\\\\") || text.startsWith("//")
+        if (!isPosix && !isDrive && !isUnc) return null
+
+        val lastForward = text.lastIndexOf('/')
+        val lastBackward = text.lastIndexOf('\\')
+        val separatorIndex = maxOf(lastForward, lastBackward)
+        if (separatorIndex < 0) return null
+        val separator = text[separatorIndex].toString()
+        val rawParent = text.substring(0, separatorIndex)
+        val parent = when {
+            separatorIndex == 0 -> separator
+            Regex("^[A-Za-z]:$").matches(rawParent) -> rawParent + separator
+            rawParent.isEmpty() && isUnc -> separator + separator
+            else -> rawParent
+        }
+        return ParentQuery(
+            parent = parent,
+            prefix = text.substring(separatorIndex + 1),
+            separator = separator,
+        )
     }
 
     /**
@@ -149,7 +169,11 @@ object NewSessionLogic {
         entries: List<app.hapi.protocol.wire.MachineDirectoryEntry>,
         limit: Int = 8,
     ): List<String> {
-        val base = if (query.parent == "/") "/" else "${query.parent}/"
+        val base = if (query.parent.endsWith('/') || query.parent.endsWith('\\')) {
+            query.parent
+        } else {
+            query.parent + query.separator
+        }
         return entries.asSequence()
             .filter { it.type == "directory" }
             .filter { it.name.startsWith(query.prefix, ignoreCase = true) }

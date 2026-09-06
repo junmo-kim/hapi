@@ -15,6 +15,7 @@ import type { AgentEvent, ToolCallBlock } from '@/chat/types'
 import type { ToolGroupBlock, VisibleChatBlock } from '@/chat/toolGroups'
 import { visibleBlockRole } from '@/chat/toolGroups'
 import type { AttachmentMetadata, MessageStatus as HappyMessageStatus, Session } from '@/types/api'
+import { orderItemsById } from '@/lib/attachmentOrder'
 
 /**
  * Aggregated metadata for a multi-turn response group, surfaced on the
@@ -749,6 +750,7 @@ export function useHappyRuntime(props: {
         scheduledAt?: number | null,
         intent?: ComposerSendIntent,
     ) => void
+    attachmentOrderRef?: React.MutableRefObject<string[]>
     onAbort: () => Promise<void>
     attachmentAdapter?: AttachmentAdapter
     allowSendWhenInactive?: boolean
@@ -925,14 +927,23 @@ export function useHappyRuntime(props: {
         // failure, or downstream exception cannot leak an explicit queue
         // gesture into the next ordinary send.
         const { text, attachments } = extractMessageContent(message)
-        if (!text && attachments.length === 0) return
+        const orderedAttachments = orderItemsById(
+            attachments,
+            props.attachmentOrderRef?.current ?? [],
+        )
+        if (!text && orderedAttachments.length === 0) return
         // Resolve pendingSchedule at send time (Date.now()) so preset-type schedules
         // ("5 minutes from now") are relative to the actual send action, not the
         // moment the user clicked the preset button.
         const sendNow = Date.now()
         const scheduledAt = resolvePendingSchedule(props.pendingScheduleRef?.current ?? null, sendNow)
-        props.onSendMessage(text, attachments.length > 0 ? attachments : undefined, scheduledAt, intent)
-    }, [props.onSendMessage, props.pendingScheduleRef, props.pendingSendIntentRef])
+        props.onSendMessage(
+            text,
+            orderedAttachments.length > 0 ? orderedAttachments : undefined,
+            scheduledAt,
+            intent,
+        )
+    }, [props.attachmentOrderRef, props.onSendMessage, props.pendingScheduleRef, props.pendingSendIntentRef])
 
     const onCancel = useCallback(async () => {
         await props.onAbort()

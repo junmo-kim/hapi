@@ -6,13 +6,35 @@ import {
     isScratchlistHotkeyBlockedTarget,
     isScratchlistToggleHotkey,
     isSelectAllTargetBlocked,
+    mergeStagedAttachmentsInOrder,
     resolvePiContextWindow,
     resolveLatestCompletedBoundaryIdForView,
     shouldAutoClearPendingSchedule,
     shouldRouteToScratchlist,
+    isRewindForkFallbackError,
 } from './SessionChat'
+import { ApiError } from '@/api/client'
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
 import type { AttachmentMetadata, DecryptedMessage } from '@/types/api'
+
+describe('isRewindForkFallbackError', () => {
+    it('recognizes the structured safe-Fork boundary code', () => {
+        expect(isRewindForkFallbackError(new ApiError(
+            'native boundary is ambiguous',
+            409,
+            'ambiguous_native_boundary_fork_safe'
+        ))).toBe(true)
+    })
+
+    it('does not classify unsafe or message-only errors as fallback candidates', () => {
+        expect(isRewindForkFallbackError(new ApiError(
+            'native boundary is ambiguous',
+            409,
+            'ambiguous_native_boundary'
+        ))).toBe(false)
+        expect(isRewindForkFallbackError(new Error('ambiguous native boundary'))).toBe(false)
+    })
+})
 
 describe('applyModelChangeWithReasoningRollback', () => {
     it('restores the previous effort when the model switch fails after clearing it', async () => {
@@ -238,6 +260,29 @@ describe('shouldRouteToScratchlist', () => {
         expect(routed).toBe(true)
         const shouldClearAfterAccepted = !routed
         expect(shouldClearAfterAccepted).toBe(false)
+    })
+})
+
+describe('mergeStagedAttachmentsInOrder', () => {
+    function attachment(id: string, path: string): AttachmentMetadata {
+        return {
+            id,
+            filename: `${id}.png`,
+            mimeType: 'image/png',
+            size: 1024,
+            path,
+        }
+    }
+
+    it('replaces staged hub attachments without changing mixed attachment order', () => {
+        const hubAttachment = attachment('hub-a', 'hapi-hub:scratchlist/default/session/hub-a.png')
+        const normalAttachment = attachment('normal-b', '/tmp/normal-b.png')
+        const stagedAttachment = attachment('hub-a', '/tmp/staged-hub-a.png')
+
+        expect(mergeStagedAttachmentsInOrder(
+            [hubAttachment, normalAttachment],
+            [stagedAttachment],
+        )).toEqual([stagedAttachment, normalAttachment])
     })
 })
 

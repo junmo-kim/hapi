@@ -1,5 +1,6 @@
 import HapiClient
 import HapiProtocol
+import HapiUI
 import SwiftUI
 
 /// The session list (A-M2a) — standalone screen: navigation and hub chrome
@@ -18,6 +19,7 @@ import SwiftUI
 /// - long-press context menu → pin (none/project/global) + archive with
 ///   optimistic store updates; failures land in an alert.
 struct SessionListView: View {
+    @Environment(\.hapiTheme) private var theme
     @State private var model: SessionListModel
     private let onOpenSession: (String) -> Void
 
@@ -127,6 +129,9 @@ struct SessionListView: View {
             SessionRowView(row: row, now: now)
         }
         .buttonStyle(.plain)
+        // Default separator color reads heavy against these rows; the theme
+        // divider is the WeChat-style faint hairline.
+        .listRowSeparatorTint(theme.divider)
         .contextMenu {
             contextMenuActions(row)
         }
@@ -227,12 +232,15 @@ struct SessionRowView: View {
     }
 
     private var titleLine: some View {
+        // Spinner/dot pinned to the trailing edge next to the timestamp
+        // (Android row order), so they don't drift with the title length.
         HStack(spacing: 6) {
             AgentFlavorIconView(flavor: row.flavor)
             Text(row.title)
                 .font(.body)
                 .fontWeight(row.unread ? .semibold : .regular)
                 .lineLimit(1)
+            Spacer(minLength: 4)
             if row.summary.active && row.summary.thinking {
                 ProgressView()
                     .scaleEffect(0.7)
@@ -246,7 +254,6 @@ struct SessionRowView: View {
                     .frame(width: 8, height: 8)
                     .accessibilityLabel("Unread")
             }
-            Spacer(minLength: 4)
             Text(formatRelativeAge(now: now, thenEpochMs: row.summary.updatedAt))
                 .font(.caption2)
                 .foregroundStyle(.secondary)

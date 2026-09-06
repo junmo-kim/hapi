@@ -12,6 +12,8 @@ import type {
 
 export type {
     AgyModelsResponse,
+    AgentAvailabilityResponse,
+    AgentAvailabilityEntry,
     AgyModelSummary,
     CodexModelsResponse,
     CodexModelSummary,
