@@ -2631,6 +2631,7 @@ describe('codexRemoteLauncher', () => {
     });
 
     it('materializes a current HAPI fork in the child app server', async () => {
+        harness.forkThreadResponse = { thread: { id: 'thread-forked' }, model: 'gpt-5.6-default' };
         harness.configReadResponse = {
             config: {
                 model_context_window: 400_000,
@@ -2660,6 +2661,7 @@ describe('codexRemoteLauncher', () => {
         }]);
         expect(foundSessionIds).toEqual(['thread-forked']);
         expect(harness.startTurnThreadIds).toEqual(['thread-forked']);
+        expect(session.getModel()).toBe('gpt-5.4');
         expect(session.codexForkRequest).toBeUndefined();
     });
 

@@ -3658,7 +3658,6 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             if (threadId === sourceThreadId) {
                 throw new Error('thread/fork did not return a distinct thread.id');
             }
-            applyResolvedModel(responseRecord?.model);
             this.currentThreadId = threadId;
             this.conversationHistory.setThreadId(threadId);
             session.onSessionFound(threadId);
