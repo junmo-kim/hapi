@@ -1538,18 +1538,22 @@ export class SessionCache {
 
                 const currentSession = this.sessions.get(sessionId)
                 const candidates: { id: string; session: Session }[] = []
-                const currentAgentId = currentSession?.metadata
-                    ? this.extractAgentSessionId(currentSession.metadata)
-                    : null
-                if (currentAgentId?.dedupeKey === agentId.dedupeKey && currentSession) {
-                    candidates.push({ id: sessionId, session: currentSession })
+                if (
+                    currentSession?.metadata
+                    && !currentSession.metadata.codexForkRequest
+                    && currentSession.metadata[agentId.field] === agentId.value
+                ) {
+                    if (agentId.field !== 'piSessionId' || currentSession.metadata.machineId === agentId.machineId) {
+                        candidates.push({ id: sessionId, session: currentSession })
+                    }
                 }
                 for (const [existingId, existing] of this.sessions) {
                     if (existingId === sessionId) continue
                     if (existing.namespace !== session.namespace) continue
                     if (!existing.metadata) continue
-                    const existingAgentId = this.extractAgentSessionId(existing.metadata)
-                    if (existingAgentId?.dedupeKey !== agentId.dedupeKey) continue
+                    if (existing.metadata.codexForkRequest) continue
+                    if (existing.metadata[agentId.field] !== agentId.value) continue
+                    if (agentId.field === 'piSessionId' && existing.metadata.machineId !== agentId.machineId) continue
                     candidates.push({ id: existingId, session: existing })
                 }
 
