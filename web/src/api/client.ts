@@ -34,6 +34,7 @@ import type {
 } from '@/types/api'
 import type {
     AgyModelsResponse,
+    AgentAvailabilityResponse,
     CodexModelsResponse,
     CursorMigrateOutcome,
     CursorMigrateToAcpRequest,
@@ -49,6 +50,7 @@ import type {
     MachineListDirectoryResponse,
     MachinePathsExistsResponse,
     OpencodeModelsResponse,
+    OpencodeModelVariantsResponse,
     OpencodeReasoningEffortResponse,
     PiModelsResponse,
     QueuedStateResponse,
@@ -818,6 +820,12 @@ export class ApiClient {
         )
     }
 
+    async getMachineAgentAvailability(machineId: string): Promise<AgentAvailabilityResponse> {
+        return await this.request<AgentAvailabilityResponse>(
+            `/api/machines/${encodeURIComponent(machineId)}/agent-availability`
+        )
+    }
+
     async checkMachinePathsExists(
         machineId: string,
         paths: string[]
@@ -926,6 +934,12 @@ export class ApiClient {
     async getMachineOpencodeModelsForCwd(machineId: string, cwd: string): Promise<OpencodeModelsResponse> {
         return await this.request<OpencodeModelsResponse>(
             `/api/machines/${encodeURIComponent(machineId)}/opencode-models?cwd=${encodeURIComponent(cwd)}`
+        )
+    }
+
+    async getMachineOpencodeModelVariants(machineId: string, cwd?: string | null): Promise<OpencodeModelVariantsResponse> {
+        return await this.request<OpencodeModelVariantsResponse>(
+            `/api/machines/${encodeURIComponent(machineId)}/opencode-model-variants${cwd ? `?cwd=${encodeURIComponent(cwd)}` : ''}`
         )
     }
 
