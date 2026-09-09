@@ -3,6 +3,7 @@ import { MessageQueue2 } from '@/utils/MessageQueue2';
 import type { OpencodeMode, PermissionMode } from './types';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { getOpencodeNativeToolInstruction } from './utils/systemPrompt';
+import { MessageBuffer } from '@/ui/ink/messageBuffer';
 
 const harness = vi.hoisted(() => ({
     setModelArgs: [] as Array<{ sessionId: string; modelId: string; flavor?: string }>,
@@ -267,7 +268,7 @@ const roundSummaryHarness = vi.hoisted(() => ({
         numTurns: 1,
         durationMs: 10
     } as unknown | null,
-    summaryImpl: null as null | (() => Promise<unknown>)
+    summaryImpl: null as null | ((opts: { promptText: string }) => Promise<unknown>)
 }));
 
 vi.mock('./utils/opencodeRoundSummary', () => ({
@@ -279,7 +280,7 @@ vi.mock('./utils/opencodeRoundSummary', () => ({
     fetchOpencodeRoundSummary: vi.fn(async (opts: { promptText: string; durationMs: number; snapshot: { messageIds: string[] } }) => {
         roundSummaryHarness.summaryCalls.push(opts);
         const summary = roundSummaryHarness.summaryImpl
-            ? await roundSummaryHarness.summaryImpl()
+            ? await roundSummaryHarness.summaryImpl(opts)
             : harness.events.lastIndexOf('prompt:start') > harness.events.lastIndexOf('prompt:end')
                 ? null
                 : roundSummaryHarness.summary;
@@ -2519,6 +2520,42 @@ describe('selectAbortStatusMessage', () => {
 
         expect(sentAgentMessages).toEqual([]);
         expect(sessionEvents).toEqual([{ type: 'ready' }]);
+    });
+
+    it('plain Stop during post-prompt summary settlement preserves the queued next prompt without reporting a false abort', async () => {
+        roundSummaryHarness.summaryImpl = ({ promptText }) => {
+            return promptText.includes('completed first prompt')
+                ? new Promise<unknown>(() => {})
+                : Promise.resolve(null);
+        };
+        const addMessage = vi.spyOn(MessageBuffer.prototype, 'addMessage');
+        const { session, rpcHandlers } = createSessionStub([
+            { message: 'completed first prompt', mode: createMode() }
+        ], { keepOpen: true });
+
+        const launchPromise = opencodeRemoteLauncher(session as never);
+        while (
+            !rpcHandlers.has(RPC_METHODS.Abort)
+            || !roundSummaryHarness.summaryCalls.some(({ promptText }) => promptText.includes('completed first prompt'))
+        ) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        expect(harness.events).toContain('prompt:end');
+
+        session.queue.push('queued second prompt', createMode());
+        const abortHandler = rpcHandlers.get(RPC_METHODS.Abort) as (() => Promise<void>) | undefined;
+        expect(abortHandler).toBeDefined();
+        await abortHandler!();
+        for (let attempt = 0; attempt < 50 && !JSON.stringify(harness.promptContents).includes('queued second prompt'); attempt++) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        session.queue.close();
+        await launchPromise;
+
+        expect(JSON.stringify(harness.promptContents)).toContain('queued second prompt');
+        expect(harness.cancelPrompt).not.toHaveBeenCalled();
+        expect(addMessage).not.toHaveBeenCalledWith('Turn aborted', 'status');
+        addMessage.mockRestore();
     });
 
     it('attempts and delivers a summary after a caught prompt error', async () => {

@@ -57,6 +57,7 @@ export type AbortStatusDecision = {
 };
 
 type CompactOperationPhase = 'idle' | 'snapshot' | 'summarize' | 'post-summarize' | 'verification';
+type RoundSummaryPhase = 'idle' | 'snapshot' | 'prompt' | 'settle';
 
 const ROUND_SUMMARY_SETTLE_TIMEOUT_MS = 1_000;
 
@@ -138,6 +139,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     // the launcher stays wedged until it eventually settles on its own.
     private compactAbortController: AbortController | null = null;
     private roundSummaryAbortController: AbortController | null = null;
+    /** Distinguishes an active prompt from read-only post-prompt work for Stop semantics. */
+    private roundSummaryPhase: RoundSummaryPhase = 'idle';
     /** Validated ID boundary returned by the previous post-prompt fetch; explicit history mutations clear it. */
     private nextRoundSnapshot: OpencodeRoundSnapshot | null = null;
     // A plain Stop must keep waiting only while the summarize POST is
@@ -680,6 +683,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             this.stallErrorReportedForPrompt = false;
             const roundSummaryAbortController = new AbortController();
             this.roundSummaryAbortController = roundSummaryAbortController;
+            this.roundSummaryPhase = 'snapshot';
             const roundSnapshot = this.nextRoundSnapshot ?? (this.baseUrl
                 ? await captureOpencodeRoundSnapshot({
                     baseUrl: this.baseUrl,
@@ -695,6 +699,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             ) {
                 if (this.roundSummaryAbortController === roundSummaryAbortController) {
                     this.roundSummaryAbortController = null;
+                    this.roundSummaryPhase = 'idle';
                 }
                 session.onThinkingChange(false);
                 if (session.queue.size() === 0 && !this.shouldExit) {
@@ -715,6 +720,7 @@ ${messageText}`;
             }];
 
             const promptStartedAt = performance.now();
+            this.roundSummaryPhase = 'prompt';
             session.onThinkingChange(true);
 
             try {
@@ -726,6 +732,7 @@ ${messageText}`;
                 logger.warn('[opencode-remote] prompt failed', error);
                 this.reportPromptFailure(error);
             } finally {
+                this.roundSummaryPhase = 'settle';
                 if (
                     this.roundSummaryAbortController === roundSummaryAbortController
                     && !roundSummaryAbortController.signal.aborted
@@ -752,10 +759,14 @@ ${messageText}`;
                 if (this.roundSummaryAbortController === roundSummaryAbortController) {
                     this.roundSummaryAbortController = null;
                 }
-                session.onThinkingChange(false);
-                await this.permissionHandler?.cancelAll('Prompt finished');
-                if (session.queue.size() === 0 && !this.shouldExit) {
-                    sendReady();
+                try {
+                    session.onThinkingChange(false);
+                    await this.permissionHandler?.cancelAll('Prompt finished');
+                    if (session.queue.size() === 0 && !this.shouldExit) {
+                        sendReady();
+                    }
+                } finally {
+                    this.roundSummaryPhase = 'idle';
                 }
             }
         }
@@ -1203,7 +1214,13 @@ ${messageText}`;
         // loop's own `finally` (once runCompactOperation() genuinely
         // returns) remains the sole source of truth for when this turn is
         // done.
-        this.roundSummaryAbortController?.abort();
+        const roundSummaryAbortController = this.roundSummaryAbortController;
+        roundSummaryAbortController?.abort();
+        // The answer is already complete. A plain Stop only abandons its
+        // read-only metadata fetch; queued prompts remain valid FIFO work.
+        if (!leavingRemote && this.roundSummaryPhase === 'settle') {
+            return;
+        }
         const compactAbortController = this.compactAbortController;
         if (compactAbortController) {
             this.compactResultSuppressed = true;
