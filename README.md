@@ -48,6 +48,8 @@ Fully native SwiftUI and Kotlin Compose clients are in development under `ios/` 
 
 ## Build from source
 
+Requires Bun 1.4.0.
+
 ```bash
 bun install
 bun run build:single-exe
