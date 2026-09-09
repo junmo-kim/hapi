@@ -22,7 +22,13 @@ function recoveryFixture(childCount = 1) {
     const io = { of: () => ({ to: () => ({ emit: (event: string, update: typeof emitted[number]) => {
         if (event === 'update') emitted.push(update)
     } }) }) }
-    const start = () => new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
+    const start = () => {
+        const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
+        spyOn(recoveryState(engine).rpcGateway, 'spawnSession').mockImplementation(async (...args) => ({
+            type: 'success', sessionId: args[12]!
+        }))
+        return engine
+    }
     const first = start()
     const source = first.getOrCreateSession('recovery-source', {
         path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'codex',
@@ -45,6 +51,143 @@ function recoveryFixture(childCount = 1) {
 }
 
 describe('Codex conversation-history hub integration', () => {
+    it('recovers a crash after transcript commit using the original child and launch settings', async () => {
+        const { store, source, start, bind } = recoveryFixture(0)
+        const first = start()
+        const state = recoveryState(first)
+        first.handleSessionAlive({ sid: source.id, time: Date.now(), mode: 'remote',
+            model: 'child-model', modelReasoningEffort: 'high', permissionMode: 'read-only',
+            serviceTier: 'fast', collaborationMode: 'plan' })
+        spyOn(state.rpcGateway, 'forkConversation').mockResolvedValue({
+            nativeSessionId: 'thread-source', codexForkRequest: { sourceThreadId: 'thread-source', lastTurnId: 'turn-a' }
+        })
+        store.messages.addMessage(source.id, { role: 'assistant', content: 'prefix' }, 'prefix')
+        store.messages.markMessagesInvoked(source.id, ['prefix'], Date.now())
+        const copy = store.messages.copyMessagesToSession.bind(store.messages)
+        const crash = spyOn(store.messages, 'copyMessagesToSession').mockImplementation((...args) => {
+            const result = copy(...args)
+            first.stop()
+            return result
+        })
+        const originalSpawn = spyOn(state.rpcGateway, 'spawnSession')
+        expect(await first.forkConversation(source.id, 'default')).toMatchObject({ type: 'error', message: 'Sync engine stopped during fork' })
+        crash.mockRestore()
+        expect(originalSpawn).not.toHaveBeenCalled()
+        const child = store.sessions.getSessions().find(session => session.id !== source.id)!
+        expect(child).toBeDefined()
+        const restarted = start()
+        const spawn = spyOn(recoveryState(restarted).rpcGateway, 'spawnSession').mockImplementation(async (...args) => {
+            expect(args[8]).toBe('thread-source')
+            expect(args[12]).toBe(child.id)
+            expect(args[3]).toBe('child-model')
+            expect(args[4]).toBe('high')
+            expect(args[10]).toBe('read-only')
+            expect(args[11]).toBe('fast')
+            expect(args[13]).toBe('plan')
+            expect(store.sessions.getSession(child.id)?.metadata).toHaveProperty('codexForkRequest.lastTurnId', 'turn-a')
+            bind(child.id)
+            restarted.handleSessionAlive({ sid: child.id, time: Date.now(), mode: 'remote' })
+            return { type: 'success', sessionId: child.id }
+        })
+        try {
+            await Promise.all(recoveryState(restarted).codexForkRecoveryByChildId.values())
+            expect(spawn).toHaveBeenCalledTimes(1)
+            expect(store.sessions.getSession(child.id)?.metadata).not.toHaveProperty('codexForkRequest')
+            expect(store.messages.getAllMessages(child.id).map(message => message.localId)).toEqual(['prefix'])
+        } finally {
+            restarted.stop()
+        }
+    })
+
+    for (const processStarted of [false, true, undefined]) {
+        it(`recovery respects spawn evidence and retries unknown (${processStarted})`, async () => {
+            const { store, children: [child], start, bind } = recoveryFixture()
+            const engine = start()
+            const state = recoveryState(engine)
+            const spawn = spyOn(state.rpcGateway, 'spawnSession').mockResolvedValue({ type: 'error', message: 'failure', processStarted })
+            const stop = spyOn(state.rpcGateway, 'stopRunnerSession').mockResolvedValue('still_alive')
+            try {
+                state.expireInactive()
+                state.expireInactive()
+                await Promise.all(state.codexForkRecoveryByChildId.values())
+                expect(spawn).toHaveBeenCalledTimes(1)
+                expect(stop).toHaveBeenCalledTimes(processStarted === true ? 1 : 0)
+                if (processStarted === false) expect(store.sessions.getSession(child.id)).toBeNull()
+                else if (processStarted === true) expect(store.sessions.getSession(child.id)?.metadata).toHaveProperty('codexForkCleanup')
+                else {
+                    expect(store.sessions.getSession(child.id)?.metadata).not.toHaveProperty('codexForkCleanup')
+                    spawn.mockReset().mockImplementation(async () => {
+                        bind(child.id)
+                        engine.handleSessionAlive({ sid: child.id, time: Date.now(), mode: 'remote' })
+                        return { type: 'success', sessionId: child.id }
+                    })
+                    state.expireInactive()
+                    await Promise.all(state.codexForkRecoveryByChildId.values())
+                    expect(spawn).toHaveBeenCalledTimes(1)
+                    expect(store.sessions.getSession(child.id)?.metadata).not.toHaveProperty('codexForkRequest')
+                }
+            } finally {
+                engine.stop()
+            }
+        })
+    }
+
+    it('re-drives the same pending child after a crash before spawn', async () => {
+        const { store, children: [child], start, bind } = recoveryFixture()
+        const wait = spyOn(SyncEngine.prototype as unknown as {
+            waitForCodexForkBound(): Promise<boolean>
+        }, 'waitForCodexForkBound').mockResolvedValue(true)
+        const engine = start()
+        const spawn = spyOn(recoveryState(engine).rpcGateway, 'spawnSession').mockImplementation(async (...args) => {
+            expect(args[0]).toBe('machine-1')
+            expect(args[8]).toBe('thread-source')
+            expect(args[12]).toBe(child.id)
+            bind(child.id)
+            return { type: 'success', sessionId: child.id }
+        })
+        try {
+            await Promise.all(recoveryState(engine).codexForkRecoveryByChildId.values())
+            expect(spawn).toHaveBeenCalledTimes(1)
+            expect(store.sessions.getSession(child.id)?.metadata).not.toHaveProperty('codexForkRequest')
+        } finally {
+            engine.stop()
+            spawn.mockRestore()
+            wait.mockRestore()
+        }
+    })
+
+    it('returns success when binding wins the cleanup ownership CAS', async () => {
+        const { store, source, start, bind } = recoveryFixture(0)
+        const engine = start()
+        const state = recoveryState(engine)
+        engine.handleSessionAlive({ sid: source.id, time: Date.now(), mode: 'remote' })
+        spyOn(state.rpcGateway, 'forkConversation').mockResolvedValue({
+            nativeSessionId: 'thread-source', codexForkRequest: { sourceThreadId: 'thread-source' }
+        })
+        let childId = ''
+        const update = store.sessions.updateSessionMetadata.bind(store.sessions)
+        const cas = spyOn(store.sessions, 'updateSessionMetadata').mockImplementation((...args) => {
+            if ((args[1] as Record<string, unknown>).codexForkCleanup) {
+                cas.mockRestore()
+                bind(childId)
+            }
+            return update(...args)
+        })
+        spyOn(state.rpcGateway, 'spawnSession').mockImplementation(async (...args) => {
+            childId = args[12]!
+            return { type: 'error', message: 'lost reply' }
+        })
+        const stop = spyOn(state.rpcGateway, 'stopRunnerSession').mockResolvedValue('stopped')
+        try {
+            expect(await engine.forkConversation(source.id, 'default')).toEqual({ type: 'success', sessionId: childId })
+            expect(stop).not.toHaveBeenCalled()
+            expect(store.sessions.getSession(childId)).not.toBeNull()
+        } finally {
+            cas.mockRestore()
+            engine.stop()
+        }
+    })
+
     it('preserves a bind between recovery refresh and cleanup, and refuses a stale ownership CAS', async () => {
         for (const race of ['refresh', 'cas'] as const) {
             const { store, children: [child], start, bind } = recoveryFixture()
@@ -52,7 +195,6 @@ describe('Codex conversation-history hub integration', () => {
                 waitForCodexForkBound(): Promise<boolean>
             }, 'waitForCodexForkBound').mockResolvedValue(false)
             const engine = start()
-            wait.mockRestore()
             const state = recoveryState(engine)
             const stop = spyOn(state.rpcGateway, 'stopRunnerSession').mockResolvedValue('stopped')
             let restoreRace: () => void
@@ -80,6 +222,7 @@ describe('Codex conversation-history hub integration', () => {
                 expect(store.sessions.getSession(child.id)?.metadata).not.toHaveProperty('codexForkCleanup')
                 expect(store.sessions.getSession(child.id)).not.toBeNull()
             } finally {
+                wait.mockRestore()
                 restoreRace()
                 engine.stop()
             }
@@ -492,6 +635,7 @@ describe('Codex conversation-history hub integration', () => {
         const stop = spyOn(state.rpcGateway, 'stopRunnerSession')
             .mockRejectedValue(new Error('runner unavailable'))
         try {
+            await Bun.sleep(0)
             now += 61_000
             await state.codexForkRecoveryByChildId.get(child.id)
             expect(stop).toHaveBeenCalledTimes(1)
@@ -668,6 +812,7 @@ describe('Codex conversation-history hub integration', () => {
             return new Promise((resolve) => { finishStop = resolve })
         })
         const waiter = recoveryState(first).codexForkRecoveryByChildId.get(child.id)
+        await Bun.sleep(0)
         now += 61_000
         let restarted: SyncEngine | undefined
         try {
@@ -723,6 +868,7 @@ describe('Codex conversation-history hub integration', () => {
             return new Promise((resolve) => { finishStop = resolve })
         })
         const waiter = recoveryState(first).codexForkRecoveryByChildId.get(child.id)
+        await Bun.sleep(0)
         now += 61_000
         await started
         first.stop()

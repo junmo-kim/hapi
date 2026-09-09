@@ -995,10 +995,38 @@ export class SyncEngine {
 
             const recovery = (async () => {
                 try {
+                    // Install the recovery owner before issuing a re-entrant RPC.
+                    await Promise.resolve()
                     if (this.codexForkShutdown.signal.aborted) return
+                    const latest = this.sessionCache.refreshSession(child.id)
+                    if (!latest) return
+                    if (request && !cleanup) {
+                        if (!latest.metadata?.codexForkRequest || latest.metadata.codexForkCleanup) return
+                        if (latest.namespace !== child.namespace || latest.metadata.flavor !== 'codex'
+                            || latest.metadata.machineId !== machineId
+                            || latest.metadata.codexForkRequest.sourceThreadId !== request.sourceThreadId
+                            || !latest.metadata.path) return
+                        const spawn = await this.rpcGateway.spawnSession(
+                            machineId, latest.metadata.path, 'codex', latest.model ?? undefined,
+                            latest.modelReasoningEffort ?? undefined, undefined, 'simple', undefined,
+                            request.sourceThreadId, latest.effort ?? undefined,
+                            request.spawnOptions ? request.spawnOptions.permissionMode : latest.permissionMode,
+                            request.spawnOptions ? request.spawnOptions.serviceTier : latest.serviceTier ?? undefined,
+                            child.id, request.spawnOptions ? request.spawnOptions.collaborationMode : latest.collaborationMode
+                        )
+                        if (this.codexForkShutdown.signal.aborted) return
+                        if (spawn.type !== 'success') {
+                            // A missing runner or lost reply is not evidence of a failed
+                            // process. Retry the same spawn when it reconnects.
+                            if (spawn.processStarted === undefined) return
+                            await this.cleanupFailedForkChild(child.id, machineId, spawn.processStarted !== false,
+                                { namespace: child.namespace, sourceThreadId: request.sourceThreadId })
+                            return
+                        }
+                    }
                     const bound = !cleanup && request
                         ? await this.waitForCodexForkBound(child.id, request.sourceThreadId, timeoutMs)
-                        : await Promise.resolve(false) // Register ownership before cleanup enters an RPC.
+                        : false
                     const metadata = this.sessionCache.refreshSession(child.id)?.metadata
                     if (!bound && !this.codexForkShutdown.signal.aborted
                         && (metadata?.codexForkRequest || metadata?.codexForkCleanup)) {
@@ -1563,7 +1591,14 @@ export class SyncEngine {
         }
         if (flavor === 'codex') {
             childMetadata.codexSessionId = rpcResult.nativeSessionId
-            childMetadata.codexForkRequest = codexForkRequest
+            childMetadata.codexForkRequest = {
+                ...codexForkRequest,
+                spawnOptions: {
+                    permissionMode: source.permissionMode,
+                    serviceTier: source.serviceTier ?? undefined,
+                    collaborationMode: source.collaborationMode
+                }
+            }
         } else if (flavor === 'grok') {
             childMetadata.grokSessionId = rpcResult.nativeSessionId
         } else if (flavor === 'pi') {
@@ -1733,7 +1768,17 @@ export class SyncEngine {
                 ...child.metadata,
                 codexForkCleanup: { sourceSessionId, machineId, ...(!processMayExist ? { processStarted: false as const } : {}) }
             }, child.metadataVersion, child.namespace, { touchUpdatedAt: false })
-            if (result.result !== 'success') throw new Error('Could not persist Codex fork cleanup ownership')
+            if (result.result !== 'success') {
+                const latest = this.sessionCache.refreshSession(childId)
+                if (expectedCodexFork && latest?.namespace === expectedCodexFork.namespace
+                    && latest.metadata?.flavor === 'codex'
+                    && !latest.metadata.codexForkRequest && !latest.metadata.codexForkCleanup
+                    && latest.metadata.codexSessionId
+                    && latest.metadata.codexSessionId !== expectedCodexFork.sourceThreadId) {
+                    return 'bound'
+                }
+                throw new Error('Could not persist Codex fork cleanup ownership')
+            }
             this.sessionCache.refreshSession(childId)
         }
         if (this.codexForkShutdown.signal.aborted) return

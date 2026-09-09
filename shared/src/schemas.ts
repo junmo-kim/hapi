@@ -68,7 +68,12 @@ export const MetadataSchema = z.object({
     codexForkRequest: z.object({
         sourceThreadId: z.string().min(1),
         lastTurnId: z.string().min(1).optional(),
-        beforeTurnId: z.string().min(1).optional()
+        beforeTurnId: z.string().min(1).optional(),
+        spawnOptions: z.object({
+            permissionMode: PermissionModeSchema.optional(),
+            serviceTier: z.string().optional(),
+            collaborationMode: CodexCollaborationModeSchema.optional()
+        }).optional()
     }).refine(
         (request) => !(request.lastTurnId && request.beforeTurnId),
         { message: 'Codex fork request cannot include both lastTurnId and beforeTurnId' }
