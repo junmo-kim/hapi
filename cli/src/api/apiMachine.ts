@@ -384,8 +384,8 @@ export class ApiMachineClient {
                 if (!parsed.success) return { success: false, error: 'Invalid Opencode sessions request' }
                 const rawCwd = typeof parsed.data.cwd === 'string' ? parsed.data.cwd.trim() : ''
                 if (rawCwd) {
-                    const resolvedCwd = await this.resolveForWorkspaceCheck(rawCwd)
-                    if (!this.isWithinWorkspaceRoots(resolvedCwd)) {
+                    const resolvedCwd = await this.pathPolicy.resolveForCheck(rawCwd)
+                    if (!this.pathPolicy.isWithinSpawnRoots(resolvedCwd)) {
                         return { success: false, error: 'Path is outside workspace roots' }
                     }
                 }
