@@ -537,6 +537,7 @@ describe('OpenCode session import', () => {
             machine: machine('machine-1'),
             transcript: transcript('native-active', [userMessage('native-active', 'msg-1', 'one', 1_000)])
         })
+        const staleInactive = store.sessions.getSession(first.hapiSessionId!)!
         store.sessions.setSessionActive(first.hapiSessionId!, true, 2_000, 'default')
         const before = store.sessions.getSession(first.hapiSessionId!)!
         const extended = transcript('native-active', [
@@ -546,11 +547,39 @@ describe('OpenCode session import', () => {
         extended.cwd = '/tmp/rejected-active'
         extended.title = 'Rejected active title'
 
-        const result = importOpencodeSession({ store, engine, namespace: 'default', machine: machine('machine-1'), transcript: extended })
-        expect(result.error?.code).toBe('session_active')
+        const result = importOpencodeSession({
+            store,
+            engine,
+            namespace: 'default',
+            machine: machine('machine-1'),
+            transcript: extended,
+            existingSession: staleInactive
+        })
+        expect(result).toMatchObject({ error: { code: 'session_active' }, appended: 0 })
         expect(store.messages.getAllMessages(first.hapiSessionId!)).toHaveLength(1)
         const after = store.sessions.getSession(first.hapiSessionId!)!
         expect(after.metadata).toEqual(before.metadata)
         expect(after.metadataVersion).toBe(before.metadataVersion)
+    })
+
+    it('fails closed when a captured existing session disappears before import', async () => {
+        const { store, engine } = setup()
+        const source = transcript('native-disappeared', [userMessage('native-disappeared', 'msg-1', 'one', 1_000)])
+        const first = importOpencodeSession({ store, engine, namespace: 'default', machine: machine('machine-1'), transcript: source })
+        const stale = store.sessions.getSession(first.hapiSessionId!)!
+        await store.sessions.deleteSession(stale.id, 'default')
+
+        const result = importOpencodeSession({
+            store,
+            engine,
+            namespace: 'default',
+            machine: machine('machine-1'),
+            transcript: source,
+            existingSession: stale
+        })
+
+        expect(result).toMatchObject({ error: { code: 'import_failed', message: 'Imported HAPI session disappeared' } })
+        expect(result.hapiSessionId).toBeUndefined()
+        expect(store.sessions.getSessionsByNamespace('default')).toHaveLength(0)
     })
 })

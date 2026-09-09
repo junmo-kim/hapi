@@ -186,7 +186,11 @@ export function importOpencodeSession(options: {
     try {
         const committed = store.runInTransaction(() => {
             const created = !stored
-            if (!stored) {
+            if (stored) {
+                const current = store.sessions.getSessionByNamespace(stored.id, namespace)
+                if (!current) throw new Error('Imported HAPI session disappeared')
+                stored = current
+            } else {
                 stored = store.sessions.getOrCreateSession(
                     `opencode-import:${machine.id}:${transcript.id}`,
                     buildOpencodeMetadata(transcript, machine, {}),
@@ -211,6 +215,7 @@ export function importOpencodeSession(options: {
                     result: {
                         opencodeSessionId: transcript.id,
                         hapiSessionId: stored.id,
+                        appended: 0,
                         error: { code: 'session_active', message: 'The HAPI OpenCode session is active; stop it before importing native history changes' }
                     } satisfies OpencodeImportResult,
                     appended: [] as StoredMessage[]
