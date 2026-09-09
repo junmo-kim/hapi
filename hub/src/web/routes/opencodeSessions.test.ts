@@ -228,10 +228,13 @@ describe('OpenCode session import', () => {
             userMessage('native-diverged', 'msg-1', 'one', 1_000)
         ])
         const first = importOpencodeSession({ store, engine, namespace: 'default', machine: machine('machine-1'), transcript: source })
+        const before = store.sessions.getSession(first.hapiSessionId!)!
 
         const rewritten = transcript('native-diverged', [
             userMessage('native-diverged', 'msg-1', 'changed', 1_000)
         ])
+        rewritten.cwd = '/tmp/rejected-diverged'
+        rewritten.title = 'Rejected divergent title'
         const result = importOpencodeSession({ store, engine, namespace: 'default', machine: machine('machine-1'), transcript: rewritten })
         expect(result.error?.code).toBe('transcript_diverged')
         expect(result.hapiSessionId).toBe(first.hapiSessionId)
@@ -239,6 +242,9 @@ describe('OpenCode session import', () => {
         expect(store.messages.getAllMessages(first.hapiSessionId!)[0]).toMatchObject({
             localId: 'opencode:native-diverged:msg-1'
         })
+        const after = store.sessions.getSession(first.hapiSessionId!)!
+        expect(after.metadata).toEqual(before.metadata)
+        expect(after.metadataVersion).toBe(before.metadataVersion)
     })
 
     it('fails when new native entries are inserted ahead of the imported boundary', () => {
@@ -532,13 +538,19 @@ describe('OpenCode session import', () => {
             transcript: transcript('native-active', [userMessage('native-active', 'msg-1', 'one', 1_000)])
         })
         store.sessions.setSessionActive(first.hapiSessionId!, true, 2_000, 'default')
+        const before = store.sessions.getSession(first.hapiSessionId!)!
         const extended = transcript('native-active', [
             userMessage('native-active', 'msg-1', 'one', 1_000),
             userMessage('native-active', 'msg-2', 'two', 2_000)
         ])
+        extended.cwd = '/tmp/rejected-active'
+        extended.title = 'Rejected active title'
 
         const result = importOpencodeSession({ store, engine, namespace: 'default', machine: machine('machine-1'), transcript: extended })
         expect(result.error?.code).toBe('session_active')
         expect(store.messages.getAllMessages(first.hapiSessionId!)).toHaveLength(1)
+        const after = store.sessions.getSession(first.hapiSessionId!)!
+        expect(after.metadata).toEqual(before.metadata)
+        expect(after.metadataVersion).toBe(before.metadataVersion)
     })
 })

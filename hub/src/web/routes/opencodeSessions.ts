@@ -193,8 +193,6 @@ export function importOpencodeSession(options: {
                     {},
                     namespace
                 )
-            } else {
-                updateMetadataWithRetry(store, stored.id, namespace, (metadata) => buildOpencodeMetadata(transcript, machine, metadata))
             }
 
             const delta = classifyImportDelta(store.messages.getAllMessages(stored.id), transcript)
