@@ -1745,7 +1745,7 @@ export function NewSession(props: {
                     machineId: opencodeImportMachineId ?? machineId,
                     model: resolvedModel ?? null,
                     modelReasoningEffort: resolvedModelReasoningEffort ?? null,
-                    permissionMode: codexFamilyPermissionMode
+                    permissionMode: nativePermissionMode
                 })
                 const imported = result.results.find((item) => item.opencodeSessionId === selectedOpencodeImportSession.id)
                 if (imported?.error) {
