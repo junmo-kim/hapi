@@ -318,7 +318,6 @@ export function createOpencodeSessionRoutes(options: {
         const byId = new Map(remote.sessions
             .filter((session): session is OpencodeLocalSessionWithMessages => 'messages' in session)
             .map((session) => [session.id, session]))
-        const importedByOpencodeId = importedOpencodeSessionsById(options.store, namespace, machine.id)
         const requestedModel = typeof body?.model === 'string' && body.model.trim().length > 0 ? body.model.trim() : null
         const requestedModelReasoningEffort = typeof body?.modelReasoningEffort === 'string' && body.modelReasoningEffort.trim().length > 0
             ? body.modelReasoningEffort.trim()
@@ -351,8 +350,7 @@ export function createOpencodeSessionRoutes(options: {
                     engine,
                     namespace,
                     machine,
-                    transcript,
-                    existingSession: importedByOpencodeId.get(sessionId) ?? null
+                    transcript
                 })
                 if (!imported.error && imported.hapiSessionId && Object.keys(launchConfig).length > 0) {
                     // The transcript is already persisted here; a config failure

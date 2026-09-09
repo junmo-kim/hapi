@@ -385,6 +385,8 @@ describe('OpenCode session import', () => {
         const responses = await Promise.all([first, second])
 
         expect(responses.map((response) => response.status)).toEqual([200, 200])
+        const bodies = await Promise.all(responses.map(async (response) => await response.json())) as Array<{ results: Array<{ action?: string }> }>
+        expect(bodies.map((body) => body.results[0]?.action)).toEqual(['created', 'unchanged'])
         expect(applied).toEqual(['yolo', 'default'])
     })
 
