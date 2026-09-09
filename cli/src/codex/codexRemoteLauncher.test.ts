@@ -1194,6 +1194,7 @@ function createSessionStub(
     let currentPermissionMode: EnhancedMode['permissionMode'] = mode.permissionMode;
     let currentModel: string | null | undefined = mode.model;
     let currentModelReasoningEffort = mode.modelReasoningEffort;
+    let currentServiceTier = mode.serviceTier;
     let currentCollaborationMode: EnhancedMode['collaborationMode'] | undefined = mode.collaborationMode;
     let agentState: FakeAgentState = {
         requests: {},
@@ -1252,8 +1253,10 @@ function createSessionStub(
         },
         getModelReasoningEffort() { return currentModelReasoningEffort; },
         pushKeepAlive() {},
-        getServiceTier() { return undefined; },
-        setServiceTier() {},
+        getServiceTier() { return currentServiceTier; },
+        setServiceTier(nextServiceTier: string | null | undefined) {
+            currentServiceTier = nextServiceTier;
+        },
         getCollaborationMode() {
             return currentCollaborationMode;
         },
@@ -1300,6 +1303,7 @@ function createSessionStub(
         },
         getModel: () => currentModel,
         getModelReasoningEffort: () => currentModelReasoningEffort,
+        getServiceTier: () => currentServiceTier,
         getCollaborationMode: () => currentCollaborationMode,
         collaborationModes,
         getAgentState: () => agentState
@@ -2897,6 +2901,33 @@ describe('codexRemoteLauncher', () => {
             lastTurnId: 'turn-a'
         }]);
         expect(harness.startTurnThreadIds).toEqual(['thread-forked']);
+    });
+
+    it('attaches a materialized HAPI fork to Luna Reserve without replacing the selected model', async () => {
+        harness.forkThreadResponse = {
+            thread: { id: 'thread-forked' },
+            model: 'gpt-reserve',
+            reasoningEffort: 'medium',
+            serviceTier: null
+        };
+        harness.reserveUsage = {
+            accountId: 'account-a', ordinaryUsageAllowed: false,
+            rateLimits: { limitId: 'codex', primary: { usedPercent: 100 } }
+        };
+        const { session, getModel } = createSessionStub(['first message'], {
+            ...createMode(), model: 'gpt-5.6-luna', modelReasoningEffort: 'high', serviceTier: 'fast'
+        });
+        session.sessionId = 'thread-source';
+        session.codexForkRequest = { sourceThreadId: 'thread-source' };
+
+        await codexRemoteLauncher(session as never);
+
+        expect(harness.startTurnParams[0]).toMatchObject({
+            threadId: 'thread-forked',
+            collaborationMode: { settings: { model: 'gpt-reserve', reasoning_effort: 'medium' } },
+            serviceTier: null
+        });
+        expect(getModel()).toBe('gpt-5.6-luna');
     });
 
     it('fails closed when child-side fork materialization fails', async () => {

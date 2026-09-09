@@ -3730,6 +3730,14 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             if (threadId === sourceThreadId) {
                 throw new Error('thread/fork did not return a distinct thread.id');
             }
+            const selected = currentMode();
+            reserve.attach(threadId, response, sourceThreadId);
+            if (selected.model !== undefined) session.setModel(selected.model);
+            if (selected.modelReasoningEffort !== undefined) {
+                session.setModelReasoningEffort(selected.modelReasoningEffort);
+            }
+            if (selected.serviceTier !== undefined) session.setServiceTier(selected.serviceTier);
+            session.pushKeepAlive();
             this.currentThreadId = threadId;
             this.conversationHistory.setThreadId(threadId);
             session.onSessionFound(threadId);
