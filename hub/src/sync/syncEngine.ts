@@ -1002,7 +1002,8 @@ export class SyncEngine {
                     const metadata = this.sessionCache.refreshSession(child.id)?.metadata
                     if (!bound && !this.codexForkShutdown.signal.aborted
                         && (metadata?.codexForkRequest || metadata?.codexForkCleanup)) {
-                        await this.cleanupFailedForkChild(child.id, machineId, true)
+                        await this.cleanupFailedForkChild(child.id, machineId, true,
+                            request ? { namespace: child.namespace, sourceThreadId: request.sourceThreadId } : undefined)
                     }
                 } catch (error) {
                     // Pending metadata is the gate; retain it and retry on the next tick.
@@ -1579,7 +1580,7 @@ export class SyncEngine {
         const forkEffort = flavor === 'pi' ? undefined : source.effort ?? undefined
 
         let childCreated = false
-        let spawnAttempted = false
+        let processMayExist = false
         try {
             if (this.codexForkShutdown.signal.aborted) throw new Error('Sync engine stopped during fork')
             this.sessionCache.getOrCreateSession(
@@ -1610,7 +1611,7 @@ export class SyncEngine {
             this.sessionCache.refreshSession(childId)
 
             if (this.codexForkShutdown.signal.aborted) throw new Error('Sync engine stopped during fork')
-            spawnAttempted = true
+            processMayExist = true
             const spawn = await this.rpcGateway.spawnSession(
                 machineId,
                 directory,
@@ -1631,6 +1632,7 @@ export class SyncEngine {
                 rpcResult.forkSession === true
             )
             if (spawn.type !== 'success') {
+                processMayExist = spawn.processStarted !== false
                 throw new Error(spawn.message)
             }
 
@@ -1690,7 +1692,9 @@ export class SyncEngine {
             }
             if (childCreated) {
                 try {
-                    await this.cleanupFailedForkChild(childId, machineId, spawnAttempted)
+                    const cleanup = await this.cleanupFailedForkChild(childId, machineId, processMayExist,
+                        flavor === 'codex' ? { namespace, sourceThreadId: rpcResult.nativeSessionId } : undefined)
+                    if (cleanup === 'bound') return { type: 'success', sessionId: childId }
                 } catch (cleanupError) {
                     const message = cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
                     return { type: 'error', message: `Fork failed; child cleanup was not confirmed: ${message}` }
@@ -1704,22 +1708,36 @@ export class SyncEngine {
     private async cleanupFailedForkChild(
         childId: string,
         machineId: string,
-        spawnAttempted: boolean
-    ): Promise<void> {
+        processMayExist: boolean,
+        expectedCodexFork?: { namespace: string; sourceThreadId: string }
+    ): Promise<'bound' | void> {
         if (this.codexForkShutdown.signal.aborted) return
         const child = this.sessionCache.refreshSession(childId)
+        if (this.codexForkShutdown.signal.aborted) return
+        // This read and the versioned ownership write must share the same snapshot.
+        // Binding wins until cleanup owns the row, including after a lost spawn ACK.
+        if (expectedCodexFork && child?.namespace === expectedCodexFork.namespace
+            && child.metadata?.flavor === 'codex'
+            && !child.metadata.codexForkRequest && !child.metadata.codexForkCleanup
+            && child.metadata.codexSessionId
+            && child.metadata.codexSessionId !== expectedCodexFork.sourceThreadId) {
+            return 'bound'
+        }
+        if (child?.metadata?.codexForkCleanup) {
+            processMayExist = child.metadata.codexForkCleanup.processStarted !== false
+        }
         if (child?.metadata?.flavor === 'codex' && !child.metadata.codexForkCleanup) {
             const sourceSessionId = child.metadata.forkedFrom
             if (!sourceSessionId) throw new Error('Codex fork cleanup is missing its source session')
             const result = this.store.sessions.updateSessionMetadata(childId, {
                 ...child.metadata,
-                codexForkCleanup: { sourceSessionId, machineId }
+                codexForkCleanup: { sourceSessionId, machineId, ...(!processMayExist ? { processStarted: false as const } : {}) }
             }, child.metadataVersion, child.namespace, { touchUpdatedAt: false })
             if (result.result !== 'success') throw new Error('Could not persist Codex fork cleanup ownership')
             this.sessionCache.refreshSession(childId)
         }
         if (this.codexForkShutdown.signal.aborted) return
-        if (spawnAttempted) {
+        if (processMayExist) {
             const status = await this.rpcGateway.stopRunnerSession(machineId, childId)
             if (this.codexForkShutdown.signal.aborted) return
             if (status === 'still_alive') {

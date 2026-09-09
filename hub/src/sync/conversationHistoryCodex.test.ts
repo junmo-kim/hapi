@@ -45,6 +45,144 @@ function recoveryFixture(childCount = 1) {
 }
 
 describe('Codex conversation-history hub integration', () => {
+    it('preserves a bind between recovery refresh and cleanup, and refuses a stale ownership CAS', async () => {
+        for (const race of ['refresh', 'cas'] as const) {
+            const { store, children: [child], start, bind } = recoveryFixture()
+            const wait = spyOn(SyncEngine.prototype as unknown as {
+                waitForCodexForkBound(): Promise<boolean>
+            }, 'waitForCodexForkBound').mockResolvedValue(false)
+            const engine = start()
+            wait.mockRestore()
+            const state = recoveryState(engine)
+            const stop = spyOn(state.rpcGateway, 'stopRunnerSession').mockResolvedValue('stopped')
+            let restoreRace: () => void
+            if (race === 'refresh') {
+                const refresh = state.sessionCache.refreshSession.bind(state.sessionCache)
+                const read = spyOn(state.sessionCache, 'refreshSession').mockImplementation((id) => {
+                    const snapshot = refresh(id)
+                    read.mockRestore()
+                    bind(child.id)
+                    return snapshot
+                })
+                restoreRace = () => read.mockRestore()
+            } else {
+                const update = store.sessions.updateSessionMetadata.bind(store.sessions)
+                const cas = spyOn(store.sessions, 'updateSessionMetadata').mockImplementation((...args) => {
+                    cas.mockRestore()
+                    bind(child.id)
+                    return update(...args)
+                })
+                restoreRace = () => cas.mockRestore()
+            }
+            try {
+                await Promise.all(state.codexForkRecoveryByChildId.values())
+                expect(stop).not.toHaveBeenCalled()
+                expect(store.sessions.getSession(child.id)?.metadata).not.toHaveProperty('codexForkCleanup')
+                expect(store.sessions.getSession(child.id)).not.toBeNull()
+            } finally {
+                restoreRace()
+                engine.stop()
+            }
+        }
+    })
+
+    it('preserves a child that binds between the catch read and cleanup ownership acquisition', async () => {
+        const { store, source, start, bind } = recoveryFixture(0)
+        const engine = start()
+        const state = recoveryState(engine)
+        engine.handleSessionAlive({ sid: source.id, time: Date.now(), mode: 'remote' })
+        spyOn(state.rpcGateway, 'forkConversation').mockResolvedValue({
+            nativeSessionId: 'thread-source', codexForkRequest: { sourceThreadId: 'thread-source' }
+        })
+        let childId = ''
+        spyOn(state.rpcGateway, 'spawnSession').mockImplementation(async (...args) => {
+            childId = args[12]!
+            const refresh = state.sessionCache.refreshSession.bind(state.sessionCache)
+            const read = spyOn(state.sessionCache, 'refreshSession').mockImplementation((id) => {
+                const snapshot = refresh(id)
+                if (id === childId) {
+                    read.mockRestore()
+                    bind(childId)
+                    store.messages.addMessage(childId, { role: 'user', content: 'accepted after bind' }, 'accepted')
+                }
+                return snapshot
+            })
+            return { type: 'error', message: 'lost reply' }
+        })
+        const stop = spyOn(state.rpcGateway, 'stopRunnerSession').mockResolvedValue('stopped')
+        try {
+            expect(await engine.forkConversation(source.id, 'default')).toEqual({ type: 'success', sessionId: childId })
+            expect(stop).not.toHaveBeenCalled()
+            expect(store.sessions.getSession(childId)).not.toBeNull()
+            expect(store.messages.getAllMessages(childId).map((message) => message.localId)).toEqual(['accepted'])
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('retains no-process proof across a failed deletion and hub restart', async () => {
+        const { store, source, start } = recoveryFixture(0)
+        const engine = start()
+        const state = recoveryState(engine)
+        engine.handleSessionAlive({ sid: source.id, time: Date.now(), mode: 'remote' })
+        spyOn(state.rpcGateway, 'forkConversation').mockResolvedValue({
+            nativeSessionId: 'thread-source', codexForkRequest: { sourceThreadId: 'thread-source' }
+        })
+        spyOn(state.rpcGateway, 'spawnSession').mockResolvedValue({ type: 'error', message: 'no PID', processStarted: false })
+        const stop = spyOn(state.rpcGateway, 'stopRunnerSession').mockResolvedValue('still_alive')
+        const deletion = spyOn(store.sessions, 'deleteSession').mockReturnValue(false)
+        try {
+            expect((await engine.forkConversation(source.id, 'default')).type).toBe('error')
+            expect(stop).not.toHaveBeenCalled()
+        } finally {
+            deletion.mockRestore()
+            engine.stop()
+        }
+        const restarted = start()
+        const recovery = recoveryState(restarted)
+        const recoveryStop = spyOn(recovery.rpcGateway, 'stopRunnerSession').mockResolvedValue('still_alive')
+        try {
+            await Promise.all(recovery.codexForkRecoveryByChildId.values())
+            expect(recoveryStop).not.toHaveBeenCalled()
+            expect(restarted.getSessions().filter((session) => session.metadata?.forkedFrom === source.id)).toEqual([])
+            await expect(restarted.sendMessage(source.id, { text: 'released' })).resolves.toBeUndefined()
+        } finally {
+            restarted.stop()
+        }
+    }, 10_000)
+
+    for (const processStarted of [false, true, undefined]) {
+        it(`only skips stop recovery for explicit no-process evidence (${processStarted})`, async () => {
+            const { store, source, start } = recoveryFixture(0)
+            const engine = start()
+            const state = recoveryState(engine)
+            engine.handleSessionAlive({ sid: source.id, time: Date.now(), mode: 'remote' })
+            spyOn(state.rpcGateway, 'forkConversation').mockResolvedValue({
+                nativeSessionId: 'thread-source', codexForkRequest: { sourceThreadId: 'thread-source' }
+            })
+            let childId = ''
+            spyOn(state.rpcGateway, 'spawnSession').mockImplementation(async (...args) => {
+                childId = args[12]!
+                return { type: 'error', message: 'spawn failure', processStarted }
+            })
+            const stop = spyOn(state.rpcGateway, 'stopRunnerSession').mockResolvedValue('still_alive')
+            try {
+                expect((await engine.forkConversation(source.id, 'default')).type).toBe('error')
+                if (processStarted === false) {
+                    expect(stop).not.toHaveBeenCalled()
+                    expect(store.sessions.getSession(childId)).toBeNull()
+                    await expect(engine.sendMessage(source.id, { text: 'released' })).resolves.toBeUndefined()
+                } else {
+                    expect(stop).toHaveBeenCalledTimes(1)
+                    expect(store.sessions.getSession(childId)?.metadata).toHaveProperty('codexForkCleanup')
+                    await expect(engine.sendMessage(source.id, { text: 'held' })).rejects.toThrow(/history action/)
+                }
+            } finally {
+                engine.stop()
+            }
+        })
+    }
+
     for (const [stopped, returnedError] of [[false, false], [false, true], [true, false]] as const) {
         it(`preserves a bound child after late spawn failure (stopped=${stopped}, returnedError=${returnedError})`, async () => {
             const { store, source, start, bind } = recoveryFixture(0)

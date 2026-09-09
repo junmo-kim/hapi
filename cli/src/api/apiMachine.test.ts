@@ -674,6 +674,26 @@ describe('ApiMachineClient SpawnHappySession handler', () => {
             client.shutdown()
         }
     })
+
+    it('preserves process provenance and proves preflight rejections without spawning', async () => {
+        const machine = makeMachine('spawn-provenance')
+        const client = new ApiMachineClient('cli-token', machine, [workspaceRoot])
+        const spawnSession = vi.fn()
+        client.setRPCHandlers({ spawnSession, stopSession: async () => 'stopped', requestShutdown() {} })
+        try {
+            for (const directory of [undefined, join(workspaceRoot, '..', 'outside-root')]) {
+                expect(await callSpawnHappySession(client, machine.id, { directory })).toMatchObject({ type: 'error', processStarted: false })
+            }
+            expect(spawnSession).not.toHaveBeenCalled()
+            for (const processStarted of [false, true, undefined]) {
+                spawnSession.mockResolvedValueOnce({ type: 'error', errorMessage: 'failure', processStarted })
+                const result = await callSpawnHappySession(client, machine.id, { directory: workspaceRoot }) as { processStarted?: boolean }
+                expect(result.processStarted).toBe(processStarted)
+            }
+        } finally {
+            client.shutdown()
+        }
+    })
 })
 
 describe('ApiMachineClient keepAlive lifecycle', () => {
