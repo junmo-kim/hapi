@@ -45,6 +45,7 @@ type RoundFetchOptions = {
 };
 
 const ROUND_FETCH_TIMEOUT_MS = 1_000;
+const ROUND_MESSAGE_LIMIT = 512;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null;
@@ -88,7 +89,7 @@ async function fetchMessages(options: RoundFetchOptions): Promise<OpencodeMessag
     try {
         const request = (async (): Promise<OpencodeMessage[] | null> => {
             const response = await fetchFn(
-                options.baseUrl + '/session/' + encodeURIComponent(options.sessionId) + '/message',
+                options.baseUrl + '/session/' + encodeURIComponent(options.sessionId) + '/message?limit=' + ROUND_MESSAGE_LIMIT,
                 { method: 'GET', signal: controller.signal }
             );
             if (!response.ok) return null;

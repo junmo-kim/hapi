@@ -38,7 +38,7 @@ function options(messages: unknown[], promptText = 'original prompt') {
 describe('captureOpencodeRoundSnapshot', () => {
     it('captures only valid persisted message IDs before a prompt', async () => {
         const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
-            expect(url).toBe('http://127.0.0.1:48273/session/ses_abc/message');
+            expect(url).toBe('http://127.0.0.1:48273/session/ses_abc/message?limit=512');
             expect(init).toMatchObject({ method: 'GET', signal: noSignal });
             return new Response(JSON.stringify([user('old-user', 'earlier'), assistant('old-assistant', 'old-user')]), { status: 200 });
         });
@@ -78,7 +78,12 @@ describe('fetchOpencodeRoundSummary', () => {
             })
         ];
 
-        const result = await fetchOpencodeRoundSummary(options(messages));
+        const request = options(messages);
+        const result = await fetchOpencodeRoundSummary(request);
+        expect(request.fetchImpl).toHaveBeenCalledWith(
+            'http://127.0.0.1:48273/session/ses_abc/message?limit=512',
+            expect.objectContaining({ method: 'GET' })
+        );
         expect(result?.snapshot.messageIds).toEqual([
             'old-user', 'old-assistant', 'prompt-user', 'tool-step', 'stop-step', 'other-model'
         ]);
