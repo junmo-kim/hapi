@@ -295,9 +295,11 @@ export const OpencodeLocalSessionWithMessagesSchema = OpencodeLocalSessionSummar
     messages: z.array(OpencodeImportedMessageSchema)
 })
 
+export const MAX_OPENCODE_SESSION_IMPORTS = 200
+
 export const ListOpencodeSessionsRpcRequestSchema = z.object({
     cwd: z.string().nullable().optional(),
-    sessionIds: z.array(z.string().min(1)).optional()
+    sessionIds: z.array(z.string().min(1)).max(MAX_OPENCODE_SESSION_IMPORTS).optional()
 })
 
 export const ListOpencodeSessionsRpcResponseSchema = z.union([

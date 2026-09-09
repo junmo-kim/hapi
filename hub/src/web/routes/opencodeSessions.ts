@@ -1,6 +1,7 @@
 import { dirname } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { Hono } from 'hono'
+import { MAX_OPENCODE_SESSION_IMPORTS } from '@hapi/protocol/apiTypes'
 import type { OpencodeLocalSessionSummary, OpencodeLocalSessionWithMessages } from '@hapi/protocol/apiTypes'
 import { isPermissionModeAllowedForFlavor } from '@hapi/protocol/modes'
 import type { PermissionMode } from '@hapi/protocol/modes'
@@ -11,7 +12,7 @@ import { truncateOversizedMessageContent } from '../../store/contentCodec'
 import type { Machine, SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 
-const importLocks = new Map<string, Promise<OpencodeImportResult>>()
+const importLocks = new Map<string, Promise<void>>()
 
 export type OpencodeSessionListItem = OpencodeLocalSessionSummary & {
     hapiSessionId?: string
@@ -179,77 +180,90 @@ export function importOpencodeSession(options: {
     existingSession?: StoredSession | null
 }): OpencodeImportResult {
     const { store, engine, namespace, machine, transcript, existingSession } = options
-    let stored = existingSession === undefined
+    let stored: StoredSession | null = existingSession === undefined
         ? findImportedOpencodeSession(store, namespace, machine.id, transcript.id)
         : existingSession
-    const created = !stored
-    if (!stored) {
-        const metadata = buildOpencodeMetadata(transcript, machine, {})
-        stored = store.sessions.getOrCreateSession(
-            `opencode-import:${machine.id}:${transcript.id}`,
-            metadata,
-            {},
-            namespace
-        )
-    } else {
-        updateMetadataWithRetry(store, stored.id, namespace, (metadata) => buildOpencodeMetadata(transcript, machine, metadata))
-    }
-
-    const delta = classifyImportDelta(store.messages.getAllMessages(stored.id), transcript)
-    if (delta.error) {
-        return {
-            opencodeSessionId: transcript.id,
-            hapiSessionId: stored.id,
-            error: { code: 'transcript_diverged', message: delta.error }
-        }
-    }
-    if (stored.active && delta.messages.length > 0) {
-        const message = 'The HAPI OpenCode session is active; stop it before importing native history changes'
-        return {
-            opencodeSessionId: transcript.id,
-            hapiSessionId: stored.id,
-            error: { code: 'session_active', message }
-        }
-    }
-
-    const appended: StoredMessage[] = []
     try {
-        for (const source of delta.messages) {
-            const result = store.messages.addImportedMessage(stored.id, source.content, source.localId, source.createdAt)
-            if (result.inserted) appended.push(result.message)
-        }
+        const committed = store.runInTransaction(() => {
+            const created = !stored
+            if (!stored) {
+                stored = store.sessions.getOrCreateSession(
+                    `opencode-import:${machine.id}:${transcript.id}`,
+                    buildOpencodeMetadata(transcript, machine, {}),
+                    {},
+                    namespace
+                )
+            } else {
+                updateMetadataWithRetry(store, stored.id, namespace, (metadata) => buildOpencodeMetadata(transcript, machine, metadata))
+            }
+
+            const delta = classifyImportDelta(store.messages.getAllMessages(stored.id), transcript)
+            if (delta.error) {
+                return {
+                    result: {
+                        opencodeSessionId: transcript.id,
+                        hapiSessionId: stored.id,
+                        error: { code: 'transcript_diverged', message: delta.error }
+                    } satisfies OpencodeImportResult,
+                    appended: [] as StoredMessage[]
+                }
+            }
+            if (stored.active && delta.messages.length > 0) {
+                return {
+                    result: {
+                        opencodeSessionId: transcript.id,
+                        hapiSessionId: stored.id,
+                        error: { code: 'session_active', message: 'The HAPI OpenCode session is active; stop it before importing native history changes' }
+                    } satisfies OpencodeImportResult,
+                    appended: [] as StoredMessage[]
+                }
+            }
+
+            const appended: StoredMessage[] = []
+            for (const source of delta.messages) {
+                const result = store.messages.addImportedMessage(stored.id, source.content, source.localId, source.createdAt)
+                if (result.inserted) appended.push(result.message)
+            }
+            updateMetadataWithRetry(store, stored.id, namespace, (metadata) => buildOpencodeMetadata(transcript, machine, metadata))
+            return {
+                result: {
+                    opencodeSessionId: transcript.id,
+                    hapiSessionId: stored.id,
+                    action: created ? 'created' : appended.length > 0 ? 'updated' : 'unchanged',
+                    appended: appended.length
+                } satisfies OpencodeImportResult,
+                appended
+            }
+        })
+        if (committed.result.error) return committed.result
+        const activityAt = committed.appended.at(-1)?.createdAt ?? transcript.modifiedAt
+        engine.recordSessionActivity(committed.result.hapiSessionId!, activityAt)
+        emitImportedMessages(engine, committed.result.hapiSessionId!, committed.appended)
+        engine.handleRealtimeEvent({ type: 'session-updated', sessionId: committed.result.hapiSessionId! })
+        return committed.result
     } catch (error) {
         const message = error instanceof Error ? error.message : 'Failed to persist imported OpenCode history'
         const code = error instanceof ImportedMessageConflictError ? 'transcript_diverged' : 'import_failed'
-        return { opencodeSessionId: transcript.id, hapiSessionId: stored.id, error: { code, message } }
-    }
-
-    try {
-        updateMetadataWithRetry(store, stored.id, namespace, (metadata) => buildOpencodeMetadata(transcript, machine, metadata))
-    } catch (error) {
-        const message = error instanceof Error ? error.message : 'Failed to finalize imported OpenCode history'
-        return { opencodeSessionId: transcript.id, hapiSessionId: stored.id, error: { code: 'import_failed', message } }
-    }
-    const activityAt = appended.at(-1)?.createdAt ?? transcript.modifiedAt
-    engine.recordSessionActivity(stored.id, activityAt)
-    emitImportedMessages(engine, stored.id, appended)
-    engine.handleRealtimeEvent({ type: 'session-updated', sessionId: stored.id })
-    return {
-        opencodeSessionId: transcript.id,
-        hapiSessionId: stored.id,
-        action: created ? 'created' : appended.length > 0 ? 'updated' : 'unchanged',
-        appended: appended.length
+        const surviving = stored ? store.sessions.getSessionByNamespace(stored.id, namespace) : null
+        return {
+            opencodeSessionId: transcript.id,
+            ...(surviving ? { hapiSessionId: surviving.id } : {}),
+            error: { code, message }
+        }
     }
 }
 
-async function importWithLock(key: string, work: () => OpencodeImportResult): Promise<OpencodeImportResult> {
-    const prior = importLocks.get(key)
-    if (prior) return prior
-    const current = Promise.resolve().then(work)
+async function importWithLock(key: string, work: () => Promise<OpencodeImportResult> | OpencodeImportResult): Promise<OpencodeImportResult> {
+    const prior = importLocks.get(key) ?? Promise.resolve()
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const current = prior.catch(() => {}).then(() => gate)
     importLocks.set(key, current)
+    await prior.catch(() => {})
     try {
-        return await current
+        return await work()
     } finally {
+        release()
         if (importLocks.get(key) === current) importLocks.delete(key)
     }
 }
@@ -279,9 +293,13 @@ export function createOpencodeSessionRoutes(options: {
 
     app.post('/opencode/import-sessions', async (c) => {
         const body = asRecord(await c.req.json().catch(() => null))
-        const sessionIds = Array.isArray(body?.sessionIds)
-            ? body.sessionIds.filter((id): id is string => typeof id === 'string' && id.trim().length > 0).map((id) => id.trim())
-            : []
+        const rawSessionIds = Array.isArray(body?.sessionIds) ? body.sessionIds : []
+        if (rawSessionIds.length > MAX_OPENCODE_SESSION_IMPORTS) {
+            return c.json({ success: false, error: `At most ${MAX_OPENCODE_SESSION_IMPORTS} OpenCode sessions can be imported at once`, results: [] }, 400)
+        }
+        const sessionIds = rawSessionIds
+            .filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
+            .map((id) => id.trim())
         if (sessionIds.length === 0) return c.json({ success: false, error: 'No OpenCode sessions selected', results: [] }, 400)
         const uniqueSessionIds = [...new Set(sessionIds)]
         const namespace = c.get('namespace')
@@ -316,7 +334,7 @@ export function createOpencodeSessionRoutes(options: {
         // preserved to clear stale selections on re-import.
         if (hasLaunchKey('model')) launchConfig.model = requestedModel
         if (hasLaunchKey('modelReasoningEffort')) launchConfig.modelReasoningEffort = requestedModelReasoningEffort
-        if (requestedPermissionMode) launchConfig.permissionMode = requestedPermissionMode as PermissionMode
+        if (hasLaunchKey('permissionMode')) launchConfig.permissionMode = (requestedPermissionMode ?? 'default') as PermissionMode
         const results: OpencodeImportResult[] = []
         for (const sessionId of uniqueSessionIds) {
             const transcript = byId.get(sessionId)
@@ -324,27 +342,30 @@ export function createOpencodeSessionRoutes(options: {
                 results.push({ opencodeSessionId: sessionId, error: { code: 'not_found', message: 'OpenCode session transcript not found' } })
                 continue
             }
-            const result = await importWithLock(`${namespace}:${machine.id}:${sessionId}`, () => importOpencodeSession({
-                store: options.store,
-                engine,
-                namespace,
-                machine,
-                transcript,
-                existingSession: importedByOpencodeId.get(sessionId) ?? null
-            }))
-            if (!result.error && result.hapiSessionId && Object.keys(launchConfig).length > 0) {
-                // The transcript is already persisted here; a config failure
-                // must stay scoped to this session's result instead of turning
-                // into an unstructured 500 that aborts the rest of a bulk run.
-                try {
-                    await engine.applySessionConfig(result.hapiSessionId, launchConfig)
-                } catch (error) {
-                    result.error = {
-                        code: 'config_failed',
-                        message: error instanceof Error ? error.message : 'Failed to apply OpenCode launch config'
+            const result = await importWithLock(`${namespace}:${machine.id}:${sessionId}`, async () => {
+                const imported = importOpencodeSession({
+                    store: options.store,
+                    engine,
+                    namespace,
+                    machine,
+                    transcript,
+                    existingSession: importedByOpencodeId.get(sessionId) ?? null
+                })
+                if (!imported.error && imported.hapiSessionId && Object.keys(launchConfig).length > 0) {
+                    // The transcript is already persisted here; a config failure
+                    // must stay scoped to this session's result instead of turning
+                    // into an unstructured 500 that aborts the rest of a bulk run.
+                    try {
+                        await engine.applySessionConfig(imported.hapiSessionId, launchConfig)
+                    } catch (error) {
+                        imported.error = {
+                            code: 'config_failed',
+                            message: error instanceof Error ? error.message : 'Failed to apply OpenCode launch config'
+                        }
                     }
                 }
-            }
+                return imported
+            })
             results.push(result)
         }
         return c.json({ success: results.every((result) => !result.error), results, machineId: machine.id })

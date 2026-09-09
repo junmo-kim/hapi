@@ -197,6 +197,31 @@ describe('OpenCode session import', () => {
         expect(store.messages.getAllMessages(initial.hapiSessionId!)).toHaveLength(2)
     })
 
+    it('rolls back the full import when a message insert fails', () => {
+        const { store, engine } = setup()
+        const original = store.messages.addImportedMessage.bind(store.messages)
+        let calls = 0
+        store.messages.addImportedMessage = (...args) => {
+            calls += 1
+            if (calls === 2) throw new Error('simulated insert failure')
+            return original(...args)
+        }
+
+        const result = importOpencodeSession({
+            store,
+            engine,
+            namespace: 'default',
+            machine: machine('machine-1'),
+            transcript: transcript('native-rollback', [
+                userMessage('native-rollback', 'msg-1', 'one', 1_000),
+                userMessage('native-rollback', 'msg-2', 'two', 2_000)
+            ])
+        })
+
+        expect(result.error?.code).toBe('import_failed')
+        expect(store.sessions.getSessionsByNamespace('default')).toHaveLength(0)
+    })
+
     it('fails with transcript_diverged and keeps stored history intact on content change', () => {
         const { store, engine } = setup()
         const source = transcript('native-diverged', [
@@ -312,6 +337,51 @@ describe('OpenCode session import', () => {
         expect(applied).toEqual([{ sessionId: importedSessionId, config: { model: 'opengpt/5.2-max', modelReasoningEffort: 'high', permissionMode: 'yolo' } }])
     })
 
+    it('serializes concurrent import configuration for the same native session', async () => {
+        const { store } = setup()
+        const selectedMachine = machine('machine-1')
+        const applied: string[] = []
+        let signalFirstStarted!: () => void
+        let releaseFirst!: () => void
+        const firstStarted = new Promise<void>((resolve) => { signalFirstStarted = resolve })
+        const firstRelease = new Promise<void>((resolve) => { releaseFirst = resolve })
+        const engine = {
+            getOnlineMachinesByNamespace: () => [selectedMachine],
+            listOpencodeSessionsForMachine: async () => ({
+                success: true,
+                sessions: [transcript('native-concurrent', [userMessage('native-concurrent', 'msg-1', 'one', 1_000)])]
+            }),
+            applySessionConfig: async (_sessionId: string, config: Record<string, unknown>) => {
+                applied.push(String(config.permissionMode))
+                if (config.permissionMode === 'yolo') {
+                    signalFirstStarted()
+                    await firstRelease
+                }
+            },
+            recordSessionActivity: (sessionId: string, updatedAt: number) => {
+                store.sessions.touchSessionUpdatedAt(sessionId, updatedAt, 'default')
+            },
+            handleRealtimeEvent: () => {}
+        } as unknown as SyncEngine
+        const app = appWith(store, engine)
+        const request = (permissionMode: string) => app.request('/api/opencode/import-sessions', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ sessionIds: ['native-concurrent'], permissionMode })
+        })
+
+        const first = request('yolo')
+        await firstStarted
+        const second = request('default')
+        await Promise.resolve()
+        expect(applied).toEqual(['yolo'])
+        releaseFirst()
+        const responses = await Promise.all([first, second])
+
+        expect(responses.map((response) => response.status)).toEqual([200, 200])
+        expect(applied).toEqual(['yolo', 'default'])
+    })
+
     it('reports a per-session config_failed result instead of a 500 when applySessionConfig throws', async () => {
         const { store } = setup()
         const selectedMachine = machine('machine-1')
@@ -370,7 +440,7 @@ describe('OpenCode session import', () => {
                 sessionIds: ['native-reset'],
                 model: null,
                 modelReasoningEffort: null,
-                permissionMode: 'default'
+                permissionMode: null
             })
         })
         expect(response.status).toBe(200)
@@ -384,6 +454,28 @@ describe('OpenCode session import', () => {
         expect(appliedCall!.config.model).toBeNull()
         expect(appliedCall!.config.modelReasoningEffort).toBeNull()
         expect(appliedCall!.config.permissionMode).toBe('default')
+    })
+
+    it('rejects more sessions than the machine RPC scan limit', async () => {
+        const { store } = setup()
+        let rpcCalls = 0
+        const engine = {
+            getOnlineMachinesByNamespace: () => [machine('machine-1')],
+            listOpencodeSessionsForMachine: async () => {
+                rpcCalls += 1
+                return { success: true, sessions: [] }
+            }
+        } as unknown as SyncEngine
+        const app = appWith(store, engine)
+
+        const response = await app.request('/api/opencode/import-sessions', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ sessionIds: Array.from({ length: 201 }, (_, index) => `native-${index}`) })
+        })
+
+        expect(response.status).toBe(400)
+        expect(rpcCalls).toBe(0)
     })
 
     it('does not touch launch config when the request omits the fields', async () => {

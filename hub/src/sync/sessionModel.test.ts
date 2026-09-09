@@ -3857,6 +3857,30 @@ describe('session model', () => {
             store.close()
         })
 
+        it('does not merge the same OpenCode session id across different machines', async () => {
+            const store = new Store(':memory:')
+            const events: SyncEvent[] = []
+            const cache = new SessionCache(store, createPublisher(events))
+            const s1 = cache.getOrCreateSession(
+                'opencode-tag-1',
+                { path: '/tmp/project', host: 'one', machineId: 'machine-1', flavor: 'opencode', opencodeSessionId: 'native-opencode-id' },
+                null,
+                'default'
+            )
+            const s2 = cache.getOrCreateSession(
+                'opencode-tag-2',
+                { path: '/tmp/project', host: 'two', machineId: 'machine-2', flavor: 'opencode', opencodeSessionId: 'native-opencode-id' },
+                null,
+                'default'
+            )
+
+            await cache.deduplicateByAgentSessionId(s2.id)
+
+            expect(cache.getSession(s1.id)).toBeDefined()
+            expect(cache.getSession(s2.id)).toBeDefined()
+            store.close()
+        })
+
         it('does not merge across namespaces', async () => {
             const store = new Store(':memory:')
             const events: SyncEvent[] = []

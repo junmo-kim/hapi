@@ -221,22 +221,37 @@ export async function listLocalOpencodeSessionSummaries(
     if (!db) return []
     try {
         if (!hasRequiredTables(db)) return []
+        const exec = db.exec?.bind(db)
+        const inTransaction = typeof exec === 'function'
+        if (inTransaction) exec('BEGIN DEFERRED')
         let rows: SessionRow[] = []
         try {
             rows = db.query(
                 `SELECT id, title, directory, time_updated FROM session WHERE time_archived IS NULL ORDER BY time_updated DESC LIMIT ?`
             ).all(limit) as SessionRow[]
         } catch {
+            if (inTransaction) {
+                try { exec('ROLLBACK') } catch {}
+            }
             return []
         }
-        return rows.map((row) => ({
-            id: row.id,
-            title: row.title ?? '',
-            lastUserMessage: extractLastUserMessage(db, row.id),
-            cwd: row.directory ?? null,
-            file: dbPath,
-            modifiedAt: normalizeTimestamp(row.time_updated, Date.now())
-        }))
+        try {
+            const summaries = rows.map((row) => ({
+                id: row.id,
+                title: row.title ?? '',
+                lastUserMessage: extractLastUserMessage(db, row.id),
+                cwd: row.directory ?? null,
+                file: dbPath,
+                modifiedAt: normalizeTimestamp(row.time_updated, Date.now())
+            }))
+            if (inTransaction) exec('COMMIT')
+            return summaries
+        } catch (error) {
+            if (inTransaction) {
+                try { exec('ROLLBACK') } catch {}
+            }
+            throw error
+        }
     } finally {
         db.close()
     }
