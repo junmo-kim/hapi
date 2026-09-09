@@ -73,6 +73,11 @@ export const MetadataSchema = z.object({
         (request) => !(request.lastTurnId && request.beforeTurnId),
         { message: 'Codex fork request cannot include both lastTurnId and beforeTurnId' }
     ).optional(),
+    // Hub-owned cleanup intent. Only confirmed child deletion releases it.
+    codexForkCleanup: z.object({
+        sourceSessionId: z.string().min(1),
+        machineId: z.string().min(1)
+    }).optional(),
     // 原始 Codex thread id。导入 Codex 历史后，HAPI 会 fork 出自己的续写 thread；
     // codexSessionId 保存 fork 后的 thread，codexSourceSessionId 保留来源 thread 便于同步/展示。
     codexSourceSessionId: z.string().optional(),

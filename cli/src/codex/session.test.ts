@@ -5,12 +5,14 @@ import type { EnhancedMode } from './loop'
 import type { Metadata } from '@/api/types'
 
 describe('CodexSession', () => {
-    it('atomically replaces the source thread id and removes pending fork metadata', () => {
+    it.each([undefined, { sourceSessionId: 'source-1', machineId: 'machine-1' }])(
+        'atomically binds the fork without removing cleanup ownership: %j', (codexForkCleanup) => {
         let metadata: Metadata = {
             path: '/tmp/project',
             host: 'localhost',
             codexSessionId: 'thread-source',
-            codexForkRequest: { sourceThreadId: 'thread-source' }
+            codexForkRequest: { sourceThreadId: 'thread-source' },
+            codexForkCleanup
         }
         const client = {
             keepAlive: vi.fn(),
@@ -38,7 +40,8 @@ describe('CodexSession', () => {
         expect(metadata).toEqual({
             path: '/tmp/project',
             host: 'localhost',
-            codexSessionId: 'thread-child'
+            codexSessionId: 'thread-child',
+            codexForkCleanup
         })
     })
 })

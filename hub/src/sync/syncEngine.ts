@@ -7,7 +7,7 @@
  * - No E2E encryption; data is stored as JSON in SQLite
  */
 
-import { isKnownFlavor, isSteeringSupportedForSession, type LocalResumeTarget, type ResumableSession, type SessionEndReason } from '@hapi/protocol'
+import { isKnownFlavor, isObject, isSteeringSupportedForSession, type LocalResumeTarget, type ResumableSession, type SessionEndReason } from '@hapi/protocol'
 import {
     cliBinaryUpdatedOnDisk,
     isMachineCapabilitySkewed,
@@ -201,7 +201,7 @@ export class SyncEngine {
     private readonly historyActionsInFlight = new Set<string>()
     /** Pending Codex fork children whose source transcript must remain frozen. */
     private readonly codexForkRecoveryByChildId = new Map<string, Promise<void>>()
-    private readonly codexForkRecoverySourceIdsByChildId = new Map<string, string>()
+    private readonly codexForkShutdown = new AbortController()
     /**
      * Hub owner id for accountable work-graph principals (A2A P1/P3).
      * Defaults to "1" for unit tests; startHub overwrites with getOrCreateOwnerId().
@@ -221,7 +221,8 @@ export class SyncEngine {
             store,
             io,
             this.eventPublisher,
-            (sessionId, updatedAt) => this.recordSessionActivity(sessionId, updatedAt)
+            (sessionId, updatedAt) => this.recordSessionActivity(sessionId, updatedAt),
+            (sessionId) => this.historyActionsInFlight.has(sessionId)
         )
         this.titleSuggestionService = createTitleSuggestionService(store)
         this.rpcGateway = new RpcGateway(io, rpcRegistry)
@@ -235,6 +236,7 @@ export class SyncEngine {
     }
 
     stop(): void {
+        this.codexForkShutdown.abort()
         if (this.inactivityTimer) {
             clearInterval(this.inactivityTimer)
             this.inactivityTimer = null
@@ -943,6 +945,7 @@ export class SyncEngine {
         // Piggybacked on the inactivity tick; not a logical part of expireInactive
         // but shares its 5s cadence (avoids a second timer).
         this.messageService.releaseMatureScheduledMessages(Date.now(), this.historyActionsInFlight)
+        this.recoverPendingCodexForks()
         void this.reconcileOpenCodeClears()
     }
 
@@ -976,32 +979,46 @@ export class SyncEngine {
     }
 
     private recoverPendingCodexForks(timeoutMs: number = 60_000): void {
-        for (const child of this.sessionCache.getSessions()) {
+        if (this.codexForkShutdown.signal.aborted) return
+        for (const stored of this.store.sessions.getSessions()) {
+            if (!isObject(stored.metadata) || (!stored.metadata.codexForkRequest && !stored.metadata.codexForkCleanup)) continue
+            const child = this.sessionCache.refreshSession(stored.id)
+            if (!child) continue
             const request = child.metadata?.codexForkRequest
-            const sourceId = child.metadata?.forkedFrom
-            const machineId = child.metadata?.machineId
-            if (!request || typeof sourceId !== 'string' || typeof machineId !== 'string') continue
+            const cleanup = child.metadata?.codexForkCleanup
+            const sourceId = cleanup?.sourceSessionId ?? child.metadata?.forkedFrom
+            const machineId = cleanup?.machineId ?? child.metadata?.machineId
+            if ((!request && !cleanup) || typeof sourceId !== 'string' || typeof machineId !== 'string') continue
             if (this.codexForkRecoveryByChildId.has(child.id)) continue
+            // The original fork owns spawn, binding and cleanup until its finally.
+            if (this.historyActionsInFlight.has(sourceId)) continue
 
-            this.historyActionsInFlight.add(sourceId)
-            this.codexForkRecoverySourceIdsByChildId.set(child.id, sourceId)
             const recovery = (async () => {
                 try {
-                    const bound = await this.waitForCodexForkBound(child.id, request.sourceThreadId, timeoutMs)
-                    if (!bound) {
+                    if (this.codexForkShutdown.signal.aborted) return
+                    const bound = !cleanup && request
+                        ? await this.waitForCodexForkBound(child.id, request.sourceThreadId, timeoutMs)
+                        : await Promise.resolve(false) // Register ownership before cleanup enters an RPC.
+                    const metadata = this.sessionCache.refreshSession(child.id)?.metadata
+                    if (!bound && !this.codexForkShutdown.signal.aborted
+                        && (metadata?.codexForkRequest || metadata?.codexForkCleanup)) {
                         await this.cleanupFailedForkChild(child.id, machineId, true)
                     }
-                } finally {
-                    if (this.codexForkRecoverySourceIdsByChildId.get(child.id) === sourceId) {
-                        this.historyActionsInFlight.delete(sourceId)
-                        this.codexForkRecoverySourceIdsByChildId.delete(child.id)
+                } catch (error) {
+                    // Pending metadata is the gate; retain it and retry on the next tick.
+                    if (!this.codexForkShutdown.signal.aborted) {
+                        console.warn(`[codex-fork] Recovery deferred for ${child.id}:`, error)
                     }
+                } finally {
                     this.codexForkRecoveryByChildId.delete(child.id)
                 }
             })()
             this.codexForkRecoveryByChildId.set(child.id, recovery)
-            void recovery.catch(() => {})
         }
+    }
+
+    private isConversationHistoryBlocked(sessionId: string): boolean {
+        return this.historyActionsInFlight.has(sessionId) || this.store.isCodexForkDeliveryGated(sessionId)
     }
 
     getOrCreateSession(
@@ -1048,9 +1065,6 @@ export class SyncEngine {
             deliveryMode?: MessageDeliveryMode
         }
     ): Promise<void> {
-        if (this.historyActionsInFlight.has(sessionId)) {
-            throw new Error('Conversation history action already in progress')
-        }
         const { actualSessionId, createdAt: activeTurnStartedAt } = await this.messageService.sendMessage(sessionId, payload)
         this.sessionCache.markMessageQueued(actualSessionId, Date.now(), activeTurnStartedAt)
         this.sessionCache.recordSessionActivity(actualSessionId, Date.now())
@@ -1081,6 +1095,9 @@ export class SyncEngine {
         sessionId: string,
         messageId: string
     ): Promise<SteerQueuedMessageResponse> {
+        if (this.isConversationHistoryBlocked(sessionId)) {
+            return { status: 'failed', error: 'Conversation history action already in progress', localId: null }
+        }
         const session = this.getSession(sessionId)
         if (!session) {
             return { status: 'failed', error: 'Session not found', localId: null }
@@ -1231,8 +1248,10 @@ export class SyncEngine {
     ): Promise<boolean> {
         const startedAt = Date.now()
         while (Date.now() - startedAt < timeoutMs) {
+            if (this.codexForkShutdown.signal.aborted) return false
             this.sessionCache.refreshSession(childId)
             const child = this.sessionCache.getSession(childId)
+            if (child?.metadata?.codexForkCleanup) return false
             const boundId = child?.metadata?.codexSessionId
             if (
                 typeof boundId === 'string'
@@ -1254,7 +1273,16 @@ export class SyncEngine {
             if (child && !child.active && Date.now() - startedAt > 5_000) {
                 return false
             }
-            await new Promise((resolve) => setTimeout(resolve, 250))
+            await new Promise<void>((resolve) => {
+                const signal = this.codexForkShutdown.signal
+                const finish = () => {
+                    clearTimeout(timer)
+                    signal.removeEventListener('abort', finish)
+                    resolve()
+                }
+                const timer = setTimeout(finish, 250)
+                signal.addEventListener('abort', finish, { once: true })
+            })
         }
         return false
     }
@@ -1408,7 +1436,7 @@ export class SyncEngine {
         namespace: string,
         messageLocalId?: string
     ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
-        if (this.historyActionsInFlight.has(sessionId)) {
+        if (this.isConversationHistoryBlocked(sessionId)) {
             return { type: 'error', message: 'Conversation history action already in progress' }
         }
         this.historyActionsInFlight.add(sessionId)
@@ -1465,6 +1493,9 @@ export class SyncEngine {
             return { type: 'error', message: error instanceof Error ? error.message : String(error) }
         }
 
+        if (this.codexForkShutdown.signal.aborted) {
+            return { type: 'error', message: 'Sync engine stopped during fork' }
+        }
         if (!rpcResult?.nativeSessionId) {
             return { type: 'error', message: 'Native fork did not return a session id' }
         }
@@ -1550,6 +1581,7 @@ export class SyncEngine {
         let childCreated = false
         let spawnAttempted = false
         try {
+            if (this.codexForkShutdown.signal.aborted) throw new Error('Sync engine stopped during fork')
             this.sessionCache.getOrCreateSession(
                 `fork:${childId}`,
                 childMetadata,
@@ -1577,6 +1609,7 @@ export class SyncEngine {
             this.sessionCache.rebuildTodosFromTranscript(childId)
             this.sessionCache.refreshSession(childId)
 
+            if (this.codexForkShutdown.signal.aborted) throw new Error('Sync engine stopped during fork')
             spawnAttempted = true
             const spawn = await this.rpcGateway.spawnSession(
                 machineId,
@@ -1642,6 +1675,19 @@ export class SyncEngine {
 
             return { type: 'success', sessionId: childId }
         } catch (error) {
+            if (this.codexForkShutdown.signal.aborted) {
+                return { type: 'error', message: 'Sync engine stopped during fork' }
+            }
+            // The spawn reply can be lost after the CLI has bound and accepted
+            // input. A confirmed native fork is stronger evidence than that reply.
+            const child = childCreated && flavor === 'codex' ? this.sessionCache.refreshSession(childId) : null
+            if (child?.namespace === namespace
+                && child.metadata?.codexSessionId
+                && child.metadata.codexSessionId !== rpcResult.nativeSessionId
+                && !child.metadata.codexForkRequest
+                && !child.metadata.codexForkCleanup) {
+                return { type: 'success', sessionId: childId }
+            }
             if (childCreated) {
                 try {
                     await this.cleanupFailedForkChild(childId, machineId, spawnAttempted)
@@ -1660,17 +1706,32 @@ export class SyncEngine {
         machineId: string,
         spawnAttempted: boolean
     ): Promise<void> {
+        if (this.codexForkShutdown.signal.aborted) return
+        const child = this.sessionCache.refreshSession(childId)
+        if (child?.metadata?.flavor === 'codex' && !child.metadata.codexForkCleanup) {
+            const sourceSessionId = child.metadata.forkedFrom
+            if (!sourceSessionId) throw new Error('Codex fork cleanup is missing its source session')
+            const result = this.store.sessions.updateSessionMetadata(childId, {
+                ...child.metadata,
+                codexForkCleanup: { sourceSessionId, machineId }
+            }, child.metadataVersion, child.namespace, { touchUpdatedAt: false })
+            if (result.result !== 'success') throw new Error('Could not persist Codex fork cleanup ownership')
+            this.sessionCache.refreshSession(childId)
+        }
+        if (this.codexForkShutdown.signal.aborted) return
         if (spawnAttempted) {
             const status = await this.rpcGateway.stopRunnerSession(machineId, childId)
+            if (this.codexForkShutdown.signal.aborted) return
             if (status === 'still_alive') {
                 throw new Error('Fork child termination was not confirmed')
             }
         }
-        const child = this.sessionCache.refreshSession(childId)
-        if (child?.active) {
+        const stoppedChild = this.sessionCache.refreshSession(childId)
+        if (stoppedChild?.active) {
             this.handleSessionEnd({ sid: childId, time: Date.now(), reason: 'error' })
         }
-        await this.deleteSession(childId)
+        // Private bypass: the runner confirmed termination (or spawn never began).
+        await this.sessionCache.deleteSession(childId)
     }
 
     async rewindConversation(
@@ -1678,7 +1739,7 @@ export class SyncEngine {
         namespace: string,
         messageLocalId: string
     ): Promise<{ type: 'success' } | { type: 'error'; message: string; code?: RewindConversationErrorCode; hydrateFailed?: boolean }> {
-        if (this.historyActionsInFlight.has(sessionId)) {
+        if (this.isConversationHistoryBlocked(sessionId)) {
             return { type: 'error', message: 'Conversation history action already in progress' }
         }
         this.historyActionsInFlight.add(sessionId)
@@ -1956,7 +2017,7 @@ export class SyncEngine {
     }
 
     async switchSession(sessionId: string, to: 'remote' | 'local'): Promise<void> {
-        if (this.historyActionsInFlight.has(sessionId)) {
+        if (this.isConversationHistoryBlocked(sessionId)) {
             throw new Error('Conversation history action already in progress')
         }
         await this.rpcGateway.switchSession(sessionId, to)
@@ -1975,6 +2036,10 @@ export class SyncEngine {
     }
 
     async deleteSession(sessionId: string): Promise<void> {
+        const metadata = this.store.sessions.getSession(sessionId)?.metadata
+        if (isObject(metadata) && (metadata.codexForkRequest || metadata.codexForkCleanup)) {
+            throw new Error('Codex fork termination must be confirmed before deletion')
+        }
         await this.sessionCache.deleteSession(sessionId)
     }
 
@@ -2889,6 +2954,9 @@ export class SyncEngine {
     }
 
     async resumeSession(sessionId: string, namespace: string, opts?: { permissionMode?: PermissionMode }): Promise<ResumeSessionResult> {
+        if (this.isConversationHistoryBlocked(sessionId)) {
+            return { type: 'error', message: 'Conversation history action already in progress', code: 'resume_unavailable' }
+        }
         const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
         if (!access.ok) {
             return {
