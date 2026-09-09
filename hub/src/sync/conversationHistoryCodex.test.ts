@@ -205,4 +205,79 @@ describe('Codex conversation-history hub integration', () => {
             engine.stop()
         }
     })
+
+    it('restores the source gate while a persisted Codex child materializes after restart', async () => {
+        const store = new Store(':memory:')
+        const first = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        const source = first.getOrCreateSession('codex-restart-source', {
+            path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'codex',
+            codexSessionId: 'thread-source', capabilities: { conversationHistory: { forkCurrent: true } }
+        }, null, 'default')
+        first.handleSessionAlive({ sid: source.id, time: Date.now(), mode: 'remote' })
+        first.getOrCreateSession('codex-restart-child', {
+            path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'codex',
+            codexSessionId: 'thread-source', codexForkRequest: { sourceThreadId: 'thread-source' },
+            forkedFrom: source.id
+        }, null, 'default', undefined, undefined, undefined, 'restart-child')
+        first.stop()
+
+        const restarted = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        try {
+            await expect(restarted.sendMessage(source.id, { text: 'held', localId: 'held-after-restart' }))
+                .rejects.toThrow(/history action/)
+            expect(await restarted.rewindConversation(source.id, 'default', 'missing')).toEqual({
+                type: 'error', message: 'Conversation history action already in progress'
+            })
+
+            const child = restarted.getSession('restart-child')
+            if (!child?.metadata) throw new Error('pending child missing')
+            const nextMetadata = { ...child.metadata, codexSessionId: 'thread-child' }
+            delete nextMetadata.codexForkRequest
+            const updated = store.sessions.updateSessionMetadata(
+                'restart-child', nextMetadata, child.metadataVersion, child.namespace
+            )
+            expect(updated.result).toBe('success')
+            restarted.handleSessionAlive({ sid: 'restart-child', time: Date.now(), mode: 'remote' })
+
+            await (restarted as any).codexForkRecoveryByChildId.get('restart-child')
+            expect((restarted as any).historyActionsInFlight.has(source.id)).toBe(false)
+            expect(await restarted.rewindConversation(source.id, 'default', 'missing')).toEqual({
+                type: 'error', message: 'Session must be active'
+            })
+        } finally {
+            restarted.stop()
+        }
+    })
+
+    it('cleans up a persisted Codex child when restart recovery cannot materialize it', async () => {
+        const store = new Store(':memory:')
+        const first = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        const source = first.getOrCreateSession('codex-restart-cleanup-source', {
+            path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'codex',
+            codexSessionId: 'thread-source'
+        }, null, 'default')
+        first.getOrCreateSession('codex-restart-cleanup-child', {
+            path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'codex',
+            codexSessionId: 'thread-source', codexForkRequest: { sourceThreadId: 'thread-source' },
+            forkedFrom: source.id
+        }, null, 'default', undefined, undefined, undefined, 'restart-cleanup-child')
+        first.stop()
+
+        const restarted = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        try {
+            ;(restarted as any).rpcGateway.stopRunnerSession = async () => 'already_gone'
+            ;(restarted as any).codexForkRecoveryByChildId.delete('restart-cleanup-child')
+            ;(restarted as any).codexForkRecoverySourceIdsByChildId.delete('restart-cleanup-child')
+            ;(restarted as any).historyActionsInFlight.delete(source.id)
+            ;(restarted as any).recoverPendingCodexForks(5)
+            await (restarted as any).codexForkRecoveryByChildId.get('restart-cleanup-child')
+            expect(restarted.getSession('restart-cleanup-child')).toBeUndefined()
+            expect((restarted as any).historyActionsInFlight.has(source.id)).toBe(false)
+            expect(await restarted.rewindConversation(source.id, 'default', 'missing')).toEqual({
+                type: 'error', message: 'Session must be active'
+            })
+        } finally {
+            restarted.stop()
+        }
+    })
 })

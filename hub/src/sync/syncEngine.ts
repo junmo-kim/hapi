@@ -199,6 +199,9 @@ export class SyncEngine {
     private readonly opencodeClearTails = new Map<string, Promise<ClearOpencodeSessionResult>>()
     /** Serialize fork/rewind per session so concurrent native rollbacks cannot stack. */
     private readonly historyActionsInFlight = new Set<string>()
+    /** Pending Codex fork children whose source transcript must remain frozen. */
+    private readonly codexForkRecoveryByChildId = new Map<string, Promise<void>>()
+    private readonly codexForkRecoverySourceIdsByChildId = new Map<string, string>()
     /**
      * Hub owner id for accountable work-graph principals (A2A P1/P3).
      * Defaults to "1" for unit tests; startHub overwrites with getOrCreateOwnerId().
@@ -223,6 +226,7 @@ export class SyncEngine {
         this.titleSuggestionService = createTitleSuggestionService(store)
         this.rpcGateway = new RpcGateway(io, rpcRegistry)
         this.reloadAll()
+        this.recoverPendingCodexForks()
         this.inactivityTimer = setInterval(() => this.expireInactive(), 5_000)
     }
 
@@ -969,6 +973,35 @@ export class SyncEngine {
     private reloadAll(): void {
         this.sessionCache.reloadAll()
         this.machineCache.reloadAll()
+    }
+
+    private recoverPendingCodexForks(timeoutMs: number = 60_000): void {
+        for (const child of this.sessionCache.getSessions()) {
+            const request = child.metadata?.codexForkRequest
+            const sourceId = child.metadata?.forkedFrom
+            const machineId = child.metadata?.machineId
+            if (!request || typeof sourceId !== 'string' || typeof machineId !== 'string') continue
+            if (this.codexForkRecoveryByChildId.has(child.id)) continue
+
+            this.historyActionsInFlight.add(sourceId)
+            this.codexForkRecoverySourceIdsByChildId.set(child.id, sourceId)
+            const recovery = (async () => {
+                try {
+                    const bound = await this.waitForCodexForkBound(child.id, request.sourceThreadId, timeoutMs)
+                    if (!bound) {
+                        await this.cleanupFailedForkChild(child.id, machineId, true)
+                    }
+                } finally {
+                    if (this.codexForkRecoverySourceIdsByChildId.get(child.id) === sourceId) {
+                        this.historyActionsInFlight.delete(sourceId)
+                        this.codexForkRecoverySourceIdsByChildId.delete(child.id)
+                    }
+                    this.codexForkRecoveryByChildId.delete(child.id)
+                }
+            })()
+            this.codexForkRecoveryByChildId.set(child.id, recovery)
+            void recovery.catch(() => {})
+        }
     }
 
     getOrCreateSession(
