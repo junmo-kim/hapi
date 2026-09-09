@@ -32,6 +32,7 @@ export interface InitializeResponse {
 }
 
 export interface ModelListParams {
+    cursor?: string;
     includeHidden?: boolean;
 }
 
@@ -385,4 +386,12 @@ export interface ExperimentalFeatureEnablementSetParams {
 export interface ExperimentalFeatureEnablementSetResponse {
     enablement: Record<string, boolean>;
     [key: string]: unknown;
+}
+
+export interface ThreadSettingsUpdateParams {
+    threadId: string;
+    model: string;
+    effort?: string | null;
+    serviceTier?: string | null;
+    collaborationMode?: CollaborationMode;
 }
