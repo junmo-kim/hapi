@@ -689,6 +689,9 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     baseUrl: this.baseUrl,
                     sessionId: acpSessionId,
                     signal: roundSummaryAbortController.signal
+                }).catch((error) => {
+                    logger.debug('[opencode-remote] round snapshot unavailable', error);
+                    return null;
                 })
                 : null);
             this.nextRoundSnapshot = null;

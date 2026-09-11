@@ -2512,6 +2512,27 @@ describe('selectAbortStatusMessage', () => {
         expect(sentAgentMessages).toEqual([]);
         expect(sessionEvents).toEqual([{ type: 'ready' }]);
     });
+    it('keeps the dequeued prompt and ready when pre-prompt snapshot metadata throws', async () => {
+        roundSummaryHarness.snapshotImpl = async () => {
+            throw new TypeError('malformed optional message metadata');
+        };
+        const promptCountBefore = harness.promptCount;
+        const { session, sentAgentMessages, sessionEvents } = createSessionStub([
+            { message: 'prompt survives malformed snapshot', mode: createMode() }
+        ]);
+
+        try {
+            await opencodeRemoteLauncher(session as never);
+        } finally {
+            roundSummaryHarness.snapshotImpl = null;
+        }
+
+        expect(harness.promptCount).toBe(promptCountBefore + 1);
+        expect(JSON.stringify(harness.promptContents)).toContain('prompt survives malformed snapshot');
+        expect(sentAgentMessages).toEqual([]);
+        expect(sessionEvents).toEqual([{ type: 'ready' }]);
+    });
+
     it('keeps ready unblocked when a summary fetch never settles', async () => {
         roundSummaryHarness.summaryImpl = () => new Promise<unknown>(() => {});
         const { session, sentAgentMessages, sessionEvents } = createSessionStub([{ message: 'stalled summary', mode: createMode() }]);

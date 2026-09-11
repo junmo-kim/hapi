@@ -59,8 +59,9 @@ function finiteNonNegative(value: unknown): number | null {
     return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
 }
 
-function messageId(message: OpencodeMessage): string | null {
-    return typeof message.info?.id === 'string' && message.info.id.length > 0 ? message.info.id : null;
+function messageId(message: unknown): string | null {
+    if (!isRecord(message) || !isRecord(message.info)) return null;
+    return typeof message.info.id === 'string' && message.info.id.length > 0 ? message.info.id : null;
 }
 
 function messageText(message: OpencodeMessage): string | null {

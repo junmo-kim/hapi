@@ -17,6 +17,23 @@ const assistant = (id: string) => ({
 });
 
 describe('OpenCode round message identity boundary', () => {
+    it('fails closed when the message API array contains a null entry', async () => {
+        const fetchImpl = vi.fn(async () => new Response(JSON.stringify([null]), { status: 200 }));
+
+        await expect(captureOpencodeRoundSnapshot({
+            ...base,
+            fetchImpl
+        })).resolves.toBeNull();
+
+        await expect(fetchOpencodeRoundSummary({
+            ...base,
+            promptText: 'prompt',
+            snapshot: { messageIds: ['old'] },
+            durationMs: 1,
+            fetchImpl
+        })).resolves.toBeNull();
+    });
+
     it('fails closed for duplicate message ids in the pre-snapshot or post-fetch response', async () => {
         await expect(captureOpencodeRoundSnapshot({
             ...base,
