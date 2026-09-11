@@ -529,4 +529,12 @@
     <string name="new_session_error_runner_upgrade_required">创建会话前，请升级并重启此机器上的 HAPI runner。</string>
     <string name="new_session_error_no_available_agents">此机器上没有安装受支持的代理。</string>
     <string name="new_session_error_selected_agent_unavailable">所选代理在此机器上不可用。</string>
+    <string name="chat_back_to_latest">回到最新 ↓</string>
+    <string name="chat_history_retry">历史加载失败，点此重试</string>
+    <string name="chat_history_continue">继续加载历史</string>
+    <string name="chat_history_load">加载更早的消息</string>
+    <string name="chat_history_beginning">已到会话起点</string>
+    <string name="chat_copy_full_content">复制完整内容</string>
+    <string name="chat_showing_parts">已显示 %1$d / %2$d 部分</string>
+    <string name="chat_load_more_content">加载更多内容</string>
 </resources>

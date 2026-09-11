@@ -40,8 +40,14 @@ import app.hapi.protocol.chat.ToolGroupSummary
  * [ToolCallBlockView]s. Codex exploration groups honor their `defaultOpen`.
  */
 @Composable
-fun ToolGroupBlockView(block: ToolGroupBlock, basePath: String?, modifier: Modifier = Modifier) {
-    var expanded by rememberSaveable(block.id) { mutableStateOf(block.defaultOpen) }
+fun ToolGroupBlockView(
+    block: ToolGroupBlock, basePath: String?, modifier: Modifier = Modifier,
+    expandedOverride: Boolean? = null,
+    onExpandedChange: ((Boolean) -> Unit)? = null,
+    showsTools: Boolean = true,
+) {
+    var localExpanded by rememberSaveable(block.id) { mutableStateOf(block.defaultOpen) }
+    val expanded = expandedOverride ?: localExpanded
     val colors = MaterialTheme.hapi
     val summaryText = remember(block) { groupSummaryText(block) }
 
@@ -54,7 +60,7 @@ fun ToolGroupBlockView(block: ToolGroupBlock, basePath: String?, modifier: Modif
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable { expanded = !expanded }
+                    .clickable { if (onExpandedChange != null) onExpandedChange(!expanded) else localExpanded = !expanded }
                     .padding(horizontal = 10.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -99,7 +105,7 @@ fun ToolGroupBlockView(block: ToolGroupBlock, basePath: String?, modifier: Modif
                     )
                 }
             }
-            if (expanded) {
+            if (showsTools && expanded) {
                 Column(
                     modifier = Modifier.padding(start = 10.dp, end = 10.dp, bottom = 10.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp),

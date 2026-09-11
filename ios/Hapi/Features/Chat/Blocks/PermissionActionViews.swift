@@ -35,6 +35,7 @@ private struct PermissionActionsRow: View {
     let tool: ChatToolCall
     let requestId: String
     let interactions: ChatInteractor
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         let override = interactions.permissionOverrides[requestId]
@@ -47,12 +48,16 @@ private struct PermissionActionsRow: View {
             let canAllowAllEdits = interactions.flavor == "claude"
                 && PermissionGates.editTools.contains(tool.name)
 
-            HStack(spacing: 8) {
+            let layout = dynamicTypeSize.isAccessibilitySize
+                ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+                : AnyLayout(HStackLayout(spacing: 8))
+            layout {
                 Button {
                     interactions.resolvePermission(requestId: requestId, action: .allow)
                 } label: {
                     Text("Allow")
-                        .frame(maxWidth: .infinity)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, minHeight: 44)
                 }
                 .buttonStyle(.bordered)
                 .tint(.green)
@@ -61,7 +66,8 @@ private struct PermissionActionsRow: View {
                     interactions.resolvePermission(requestId: requestId, action: codex ? .abort : .deny)
                 } label: {
                     Text(codex ? String(localized: "Abort") : String(localized: "Deny"))
-                        .frame(maxWidth: .infinity)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, minHeight: 44)
                 }
                 .buttonStyle(.bordered)
                 .tint(.red)
@@ -83,7 +89,7 @@ private struct PermissionActionsRow: View {
                         }
                     } label: {
                         Image(systemName: "ellipsis")
-                            .frame(width: 28, height: 28)
+                            .frame(minWidth: 44, minHeight: 44)
                             .contentShape(Rectangle())
                     }
                 }
@@ -120,8 +126,8 @@ private struct AskUserQuestionFooter: View {
     private let questions: [AskQuestion]
 
     /// Selection state per question index.
-    @State private var selected: [Int: Set<Int>] = [:]
-    @State private var otherText: [Int: String] = [:]
+    @ChatStoredState private var selected: [Int: Set<Int>]
+    @ChatStoredState private var otherText: [Int: String]
     @State private var validationError: String?
 
     init(tool: ChatToolCall, requestId: String, interactions: ChatInteractor) {
@@ -130,6 +136,8 @@ private struct AskUserQuestionFooter: View {
         self.interactions = interactions
         self.cursorDialect = isCursorAskQuestionToolName(tool.name)
         self.questions = parseAskUserQuestions(tool.input, cursorDialect: cursorDialect)
+        _selected = ChatStoredState(wrappedValue: [:], id: requestId, field: "ask.selected")
+        _otherText = ChatStoredState(wrappedValue: [:], id: requestId, field: "ask.other")
     }
 
     var body: some View {
@@ -289,8 +297,8 @@ private struct RequestUserInputFooter: View {
 
     private let questions: [RequestUserInputQuestion]
 
-    @State private var selected: [String: Set<String>] = [:]
-    @State private var notes: [String: String]
+    @ChatStoredState private var selected: [String: Set<String>]
+    @ChatStoredState private var notes: [String: String]
     @State private var validationError: String?
 
     init(tool: ChatToolCall, requestId: String, interactions: ChatInteractor) {
@@ -301,10 +309,11 @@ private struct RequestUserInputFooter: View {
         self.questions = parsed
         // Duplicate field ids are malformed input; keep the first rather
         // than trapping.
-        _notes = State(initialValue: Dictionary(
+        _selected = ChatStoredState(wrappedValue: [:], id: requestId, field: "input.selected")
+        _notes = ChatStoredState(wrappedValue: Dictionary(
             parsed.map { ($0.id, $0.prefill ?? "") },
             uniquingKeysWith: { first, _ in first }
-        ))
+        ), id: requestId, field: "input.notes")
     }
 
     var body: some View {

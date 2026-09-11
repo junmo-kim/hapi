@@ -57,7 +57,10 @@ final class GeneratedImageLoader {
             guard let payload = try? await api.generatedImage(sessionId: sessionId, imageId: imageId) else {
                 return nil
             }
-            return UIImage(data: payload.data)
+            let data = payload.data
+            return await Task.detached(priority: .utility) {
+                UIImage(data: data)?.preparingForDisplay()
+            }.value
         }
         inFlight[imageId] = task
         let image = await task.value
@@ -66,6 +69,10 @@ final class GeneratedImageLoader {
             cache.setObject(image, forKey: imageId as NSString)
         }
         return image
+    }
+
+    func cachedImage(for imageId: String) -> UIImage? {
+        cache.object(forKey: imageId as NSString)
     }
 }
 

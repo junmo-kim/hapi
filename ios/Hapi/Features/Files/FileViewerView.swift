@@ -194,7 +194,8 @@ struct FileViewerView: View {
         case .text(let text, let language, let isMarkdown):
             if isMarkdown && model.markdownPreview {
                 MarkdownView(markdown: text)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    // The outer viewer already supplies 12pt on each side.
+                    .hapiReadingColumn(horizontalInset: 4)
             } else {
                 CodeBlockView(language: language, code: text)
                     .frame(maxWidth: .infinity, alignment: .leading)

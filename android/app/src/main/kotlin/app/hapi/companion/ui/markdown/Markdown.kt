@@ -21,6 +21,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
@@ -53,6 +55,8 @@ import app.hapi.companion.ui.theme.hapi
 import app.hapi.protocol.markdown.HrefDecision
 import app.hapi.protocol.markdown.HrefPolicy
 import app.hapi.protocol.markdown.MarkdownTransforms
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.commonmark.ext.gfm.strikethrough.Strikethrough
 import org.commonmark.ext.gfm.tables.TableBlock
 import org.commonmark.ext.gfm.tables.TableCell
@@ -117,17 +121,28 @@ val LocalMarkdownLinkHandler = staticCompositionLocalOf<MarkdownLinkHandler> { N
  */
 @Composable
 fun Markdown(text: String, modifier: Modifier = Modifier) {
-    val parsed = remember(text) { prepareDocument(text) }
+    val cache = LocalMarkdownRenderCache.current
+    val parsed = if (cache == null) {
+        remember(text) { prepareDocument(text) }
+    } else {
+        // Ready hits have no placeholder frame when a LazyColumn cell returns.
+        // A miss retains the previous revision until background parsing settles.
+        val prepared by produceState(cache.cached(text), text, cache) {
+            value = withContext(Dispatchers.Default) { cache.document(text) }
+        }
+        cache.cached(text) ?: prepared
+    }
     val baseStyle = MaterialTheme.typography.bodyLarge.copy(fontSize = 15.sp, lineHeight = 22.sp)
     CompositionLocalProvider(LocalTextStyle provides baseStyle) {
         Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            MarkdownBlockChildren(parsed.document, parsed)
+            if (parsed != null) MarkdownBlockChildren(parsed.document, parsed)
+            else Text(text)
         }
     }
 }
 
 /** Parsed AST plus the task-list markers stripped out of it (identity-keyed). */
-private class ParsedMarkdown(val document: Node, val taskMarkers: Map<Node, Boolean>)
+internal class ParsedMarkdown(val document: Node, val taskMarkers: Map<Node, Boolean>)
 
 private val TASK_MARKER = Regex("""^\[([ xX])\]\s+""")
 
@@ -136,7 +151,7 @@ private val TASK_MARKER = Regex("""^\[([ xX])\]\s+""")
  * removed from the first text node and remembered per list item, so the walker
  * can draw a checkbox prefix (the task extension jar is not needed for this).
  */
-private fun prepareDocument(text: String): ParsedMarkdown {
+internal fun prepareDocument(text: String): ParsedMarkdown {
     val document = MarkdownTransforms.parse(text)
     val markers = HashMap<Node, Boolean>()
     var node: Node? = document
