@@ -16,6 +16,7 @@ struct UserTextBlockView: View {
     let block: UserTextBlock
 
     @Environment(\.chatInteractions) private var interactions
+    @Environment(\.hapiTypography) private var typography
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 0) {
@@ -24,7 +25,9 @@ struct UserTextBlockView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     if !block.text.isEmpty {
                         Text(block.text)
-                            .font(.subheadline)
+                            .font(typography.bodyFont)
+                            .lineSpacing(typography.bodyLineSpacing)
+                            .fixedSize(horizontal: false, vertical: true)
                             .textSelection(.enabled)
                     }
                     if let attachments = block.attachments, !attachments.isEmpty {
@@ -35,8 +38,8 @@ struct UserTextBlockView: View {
                         }
                     }
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
                 .background(.tint.opacity(0.16))
                 .clipShape(
                     .rect(
@@ -76,7 +79,7 @@ struct AgentTextBlockView: View {
     let block: AgentTextBlock
 
     var body: some View {
-        MarkdownView(markdown: block.text)
+        CachedMarkdownView(markdown: block.text)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
@@ -85,7 +88,12 @@ struct AgentTextBlockView: View {
 /// the full reasoning markdown (still subdued — it is meta-content).
 struct AgentReasoningBlockView: View {
     let block: AgentReasoningBlock
-    @State private var expanded = false
+    @ChatStoredState private var expanded: Bool
+
+    init(block: AgentReasoningBlock) {
+        self.block = block
+        _expanded = ChatStoredState(wrappedValue: false, id: block.id, field: "expanded")
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -103,7 +111,7 @@ struct AgentReasoningBlockView: View {
             }
             .buttonStyle(.plain)
             if expanded {
-                MarkdownView(markdown: block.text)
+                CachedMarkdownView(markdown: block.text)
                     .opacity(0.75)
                     .padding(.leading, 8)
             }
@@ -125,7 +133,7 @@ struct AgentEventBlockView: View {
             .font(.caption)
             .foregroundStyle(.secondary)
             .multilineTextAlignment(.center)
-            .lineLimit(3)
+            .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity)
             .padding(.horizontal, 24)
             .padding(.vertical, 2)
@@ -150,11 +158,13 @@ struct TerminalTextView: View {
     var isError = false
 
     @Environment(\.hapiTheme) private var theme
+    @Environment(\.hapiTypography) private var typography
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             Text(text)
-                .font(.system(size: 12, design: .monospaced))
+                .font(typography.codeFont)
+                .lineSpacing(typography.codeLineSpacing)
                 .foregroundStyle(isError ? AnyShapeStyle(theme.danger) : AnyShapeStyle(theme.textPrimary))
                 .textSelection(.enabled)
                 .padding(.horizontal, 12)

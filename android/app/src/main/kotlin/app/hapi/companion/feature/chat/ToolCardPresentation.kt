@@ -1,5 +1,6 @@
 package app.hapi.companion.feature.chat
 
+import app.hapi.companion.feature.chat.blocks.toolPresentationName
 import android.content.res.Resources
 import app.hapi.companion.R
 import app.hapi.protocol.chat.ChatToolCall
@@ -175,7 +176,7 @@ fun toolCardPresentation(
     res: Resources,
 ): ToolCardPresentation {
     val input = tool.input
-    val name = tool.name
+    val name = toolPresentationName(tool.name)
     val description = tool.description
 
     if (name.startsWith("mcp__")) {

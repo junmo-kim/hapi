@@ -10,7 +10,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -21,9 +20,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -50,7 +47,6 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -82,14 +78,12 @@ import app.hapi.companion.feature.files.FolderGlyph
 import app.hapi.companion.feature.sessions.DeleteSessionDialog
 import app.hapi.companion.feature.sessions.RenameSessionDialog
 import app.hapi.companion.ui.components.AgentFlavorIcon
+import app.hapi.companion.ui.markdown.LocalMarkdownRenderCache
 import app.hapi.companion.ui.markdown.LocalMarkdownLinkHandler
 import app.hapi.companion.ui.theme.hapi
 import app.hapi.protocol.chat.VisibleChatBlock
 import java.io.File
 import kotlinx.coroutines.launch
-
-/** How close to the oldest rendered block the viewport may get before paging. */
-private const val LOAD_OLDER_PREFETCH_ITEMS = 4
 
 /** Pending camera capture across rotation/process death: uri + scratch path. */
 private val CameraCaptureSaver = listSaver<CameraCapture?, String>(
@@ -142,6 +136,9 @@ fun ChatScreen(
     onOpenScratchlist: (() -> Unit)? = null,
 ) {
     val state by viewModel.uiState.collectAsState()
+    val historyPaging by viewModel.historyPaging.collectAsState()
+    val jumpToken by viewModel.jumpToken.collectAsState()
+    val jumpingLatest by viewModel.jumpingLatest.collectAsState()
     val composerState by viewModel.composer.collectAsState()
     val queuedRows by viewModel.queuedRows.collectAsState()
     val configState by viewModel.config.collectAsState()
@@ -168,6 +165,10 @@ fun ChatScreen(
 
     // ------------------------------------------------------------ dictation --
     val dictationState = dictation?.state?.collectAsState()?.value ?: DictationState.Idle
+    val dictationAvailable = dictation?.isAvailable?.collectAsState()?.value ?: false
+    LaunchedEffect(dictation) {
+        dictation?.refreshAvailability()
+    }
     LaunchedEffect(dictation, context) {
         dictation?.events?.collect { event ->
             when (event) {
@@ -368,7 +369,7 @@ fun ChatScreen(
                     onAttachmentRemove = viewModel.attachments::remove,
                     slashSuggestions = slashSuggestions,
                     onSlashCommandSelected = viewModel::selectSlashCommand,
-                    dictation = if (dictation != null) dictationState else null,
+                    dictation = if (dictationAvailable) dictationState else null,
                     onDictationToggle = onDictationToggle,
                     onDictationCancel = { dictation?.cancel() },
                 )
@@ -376,6 +377,7 @@ fun ChatScreen(
         },
     ) { padding ->
         CompositionLocalProvider(
+            LocalMarkdownRenderCache provides viewModel.markdownCache,
             LocalChatMedia provides media,
             LocalMarkdownLinkHandler provides rememberChatLinkHandler(onOpenFile = onOpenFile),
             LocalChatInteractions provides interactions,
@@ -392,8 +394,15 @@ fun ChatScreen(
                     when {
                         state.isInitialLoading -> InitialLoading()
                         state.loadFailed -> LoadFailed(onRetry = viewModel::retry)
-                        state.blocks.isEmpty() -> EmptyChat()
-                        else -> BlockList(state = state, onLoadOlder = viewModel::loadOlder)
+                        state.blocks.isEmpty() && !state.hasMore -> EmptyChat()
+                        else -> ChatTranscript(
+                            state = state, paging = historyPaging, jumpToken = jumpToken,
+                            jumpingLatest = jumpingLatest,
+                            onViewport = viewModel::readingViewportChanged,
+                            onLayout = viewModel::historyLaidOut,
+                            onRetryHistory = viewModel::loadOlder,
+                            onJumpToLatest = viewModel::jumpToLatest,
+                        )
                     }
                 }
             }
@@ -625,149 +634,6 @@ private fun DegradedBanner(warning: String, onRetry: () -> Unit) {
             )
             TextButton(onClick = onRetry) { Text(stringResource(R.string.chat_retry)) }
         }
-    }
-}
-
-// ------------------------------------------------------------------- list --
-
-@Composable
-private fun BlockList(state: ChatUiState, onLoadOlder: () -> Unit) {
-    val listState = rememberLazyListState()
-    val scope = rememberCoroutineScope()
-    // Newest-first for reverseLayout: index 0 renders at the bottom.
-    val reversed = remember(state.blocks) { state.blocks.asReversed() }
-
-    LoadOlderEffect(listState, state, onLoadOlder)
-
-    Box(modifier = Modifier.fillMaxSize()) {
-        LazyColumn(
-            state = listState,
-            reverseLayout = true,
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            items(
-                items = reversed,
-                key = { it.stableId },
-                contentType = { it.contentKind },
-            ) { block ->
-                ChatBlockCard(block = block, basePath = state.basePath)
-            }
-            if (state.hasMore || state.isLoadingOlder) {
-                item(key = "older-history", contentType = "older-history") {
-                    OlderHistoryRow(isLoading = state.isLoadingOlder)
-                }
-            }
-        }
-
-        NewMessagesPill(
-            listState = listState,
-            reversed = reversed,
-            sessionId = state.sessionId,
-            onClick = { scope.launch { listState.animateScrollToItem(0) } },
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 12.dp),
-        )
-    }
-}
-
-/** Sentinel: when the viewport nears the oldest rendered block, page older history. */
-@Composable
-private fun LoadOlderEffect(listState: LazyListState, state: ChatUiState, onLoadOlder: () -> Unit) {
-    val nearOldest by remember(listState) {
-        derivedStateOf {
-            val info = listState.layoutInfo
-            val lastVisible = info.visibleItemsInfo.lastOrNull()?.index ?: return@derivedStateOf false
-            lastVisible >= info.totalItemsCount - 1 - LOAD_OLDER_PREFETCH_ITEMS
-        }
-    }
-    LaunchedEffect(nearOldest, state.hasMore, state.isLoadingOlder, state.isSyncingTail) {
-        if (nearOldest && state.hasMore && !state.isLoadingOlder && !state.isSyncingTail) {
-            onLoadOlder()
-        }
-    }
-}
-
-@Composable
-private fun OlderHistoryRow(isLoading: Boolean) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 8.dp),
-        horizontalArrangement = Arrangement.Center,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        if (isLoading) {
-            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-            Spacer(modifier = Modifier.width(8.dp))
-            Text(
-                text = stringResource(R.string.chat_loading_older),
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.hapi.hint,
-            )
-        } else {
-            Text(
-                text = "· · ·",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.hapi.hint,
-            )
-        }
-    }
-}
-
-/**
- * "N new messages ↓" pill: appears when new blocks land while the reader is
- * scrolled up. At the bottom (reverse-layout index 0, offset 0) the list
- * auto-sticks and the pill stays hidden.
- */
-@Composable
-private fun NewMessagesPill(
-    listState: LazyListState,
-    reversed: List<VisibleChatBlock>,
-    sessionId: String,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val atBottom by remember(listState) {
-        derivedStateOf {
-            listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0
-        }
-    }
-    var newestSeenId by remember(sessionId) { mutableStateOf<String?>(null) }
-    val newestId = reversed.firstOrNull()?.stableId
-
-    LaunchedEffect(atBottom, newestId) {
-        if (atBottom) newestSeenId = newestId
-    }
-
-    val unseenCount = if (atBottom) {
-        0
-    } else {
-        val seenId = newestSeenId
-        if (seenId == null) 0
-        else reversed.indexOfFirst { it.stableId == seenId }.coerceAtLeast(0)
-    }
-    if (unseenCount == 0) return
-
-    Surface(
-        color = MaterialTheme.colorScheme.primary,
-        contentColor = MaterialTheme.colorScheme.onPrimary,
-        shape = CircleShape,
-        shadowElevation = 4.dp,
-        onClick = onClick,
-        modifier = modifier,
-    ) {
-        Text(
-            text = if (unseenCount == 1) {
-                stringResource(R.string.chat_new_messages_one)
-            } else {
-                stringResource(R.string.chat_new_messages_many, unseenCount)
-            },
-            style = MaterialTheme.typography.labelMedium,
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
-        )
     }
 }
 

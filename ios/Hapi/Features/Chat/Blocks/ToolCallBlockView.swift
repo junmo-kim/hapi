@@ -3,31 +3,20 @@ import HapiProtocol
 import HapiUI
 import SwiftUI
 
-/// One tool invocation (web `ToolCard`): collapsed header row — icon, title,
-/// subtitle, status — expanding to the per-tool body (`ToolCallBody`), the
-/// permission state, and nested children (sidechain transcript behind an
-/// indent rail). Cards with a pending permission start expanded and carry the
-/// "awaiting approval" banner; with a `\.chatInteractions` engine present
-/// (A-M3b) the banner grows the actionable approval footer.
+/// A bounded activity summary. Ordinary tools open the shared inspector;
+/// sidechains open their own transcript. Only approvals keep actions inline.
 struct ToolCallBlockView: View {
     let block: ToolCallBlock
     let basePath: String?
+    var compact = false
 
-    @State private var expanded: Bool
-    @State private var childrenOpen: Bool
     @Environment(\.hapiTheme) private var theme
+    @Environment(\.hapiTypography) private var typography
     @Environment(\.chatInteractions) private var interactions
-
-    init(block: ToolCallBlock, basePath: String?) {
-        self.block = block
-        self.basePath = basePath
-        let pending = block.tool.permission?.status == .pending
-        _expanded = State(initialValue: pending)
-        _childrenOpen = State(initialValue: pending)
-    }
+    @Environment(\.openChatTool) private var openTool
 
     var body: some View {
-        let presentation = toolCardPresentation(block.tool, basePath: basePath)
+        let presentation = toolSummaryPresentation(block.tool, basePath: basePath)
         VStack(alignment: .leading, spacing: 0) {
             headerRow(presentation)
             if let permission = block.tool.permission {
@@ -37,17 +26,23 @@ struct ToolCallBlockView: View {
                     PermissionStateRow(permission: permission)
                 }
             }
-            if expanded {
-                ToolCallBody(tool: block.tool, basePath: basePath)
-                    .padding(.horizontal, 10)
-                    .padding(.bottom, 10)
-            }
-            if !block.children.isEmpty {
-                childrenSection
+            if opensToolProcess(block) {
+                Button { openTool?(block) } label: {
+                    Label(
+                        String(format: String(localized: "View process · %lld steps"), Int64(block.children.count)),
+                        systemImage: "arrow.right"
+                    )
+                    .font(typography.captionFont)
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(theme.textSecondary)
+                .padding(.horizontal, 10)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(theme.surface)
+        .background(compact ? Color.clear : theme.surface)
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
@@ -63,6 +58,14 @@ struct ToolCallBlockView: View {
                 .foregroundStyle(.orange)
                 .padding(.horizontal, 10)
                 .padding(.top, 6)
+            if !isAskUserQuestionToolName(block.tool.name) && !isRequestUserInputToolName(block.tool.name) {
+                Button { openTool?(block) } label: {
+                    Label("View full input", systemImage: "arrow.up.right.square")
+                        .font(typography.toolSubtitleFont)
+                        .frame(minHeight: 44)
+                }
+                .padding(.horizontal, 10)
+            }
             PendingPermissionFooter(
                 tool: block.tool,
                 requestId: permission.id,
@@ -75,76 +78,57 @@ struct ToolCallBlockView: View {
 
     private func headerRow(_ presentation: ToolCardPresentation) -> some View {
         Button {
-            withAnimation(.easeInOut(duration: 0.15)) {
-                expanded.toggle()
-            }
+            openTool?(block)
         } label: {
-            HStack(spacing: 8) {
-                Image(systemName: presentation.icon)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 18)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(presentation.title)
-                        .font(.subheadline)
-                        .foregroundStyle(theme.textPrimary)
-                        .lineLimit(1)
-                    if let subtitle = presentation.subtitle {
-                        Text(subtitle)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                }
-                Spacer(minLength: 8)
-                ToolStatusIndicator(state: block.tool.state)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-
-    /// Sidechain children, nested behind an indent rail; collapsed to a
-    /// count row.
-    private var childrenSection: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.15)) {
-                    childrenOpen.toggle()
-                }
-            } label: {
-                Label(
-                    block.children.count == 1
-                        ? String(localized: "1 agent step")
-                        : String(format: String(localized: "%lld agent steps"), Int64(block.children.count)),
-                    systemImage: childrenOpen ? "chevron.down" : "chevron.right"
-                )
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            if childrenOpen {
-                HStack(alignment: .top, spacing: 10) {
-                    RoundedRectangle(cornerRadius: 1)
-                        .fill(theme.divider)
-                        .frame(width: 2)
-                    VStack(alignment: .leading, spacing: 8) {
-                        ForEach(block.children, id: \.id) { child in
-                            ChatSubBlockView(block: child, basePath: basePath)
+            let layout = typography.usesStackedToolLayout
+                ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+                : AnyLayout(HStackLayout(spacing: 8))
+            layout {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Image(systemName: presentation.icon)
+                        .font(typography.toolSubtitleFont)
+                        .foregroundStyle(theme.textSecondary)
+                        .frame(width: typography.toolIconWidth)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(presentation.title)
+                            .font(typography.toolTitleFont)
+                            .foregroundStyle(theme.textPrimary)
+                            .lineLimit(typography.usesStackedToolLayout ? 2 : 1)
+                            .truncationMode(.middle)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if let subtitle = presentation.subtitle {
+                            Text(subtitle)
+                                .font(typography.toolSubtitleFont)
+                                .foregroundStyle(theme.textSecondary)
+                                // Full commands belong in the inspector, not above approval controls.
+                                .lineLimit(typography.usesStackedToolLayout ? 2 : 1)
+                                .truncationMode(.tail)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                     }
                 }
-                .padding(.leading, 12)
-                .padding(.trailing, 8)
-                .padding(.bottom, 10)
+                if !typography.usesStackedToolLayout { Spacer(minLength: 8) }
+                HStack(spacing: 8) {
+                    if block.tool.state != .completed {
+                        ToolStatusIndicator(state: block.tool.state)
+                    }
+                    Image(systemName: "chevron.right")
+                        .font(typography.captionFont)
+                        .foregroundStyle(theme.textSecondary)
+                }
             }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .accessibilityValue(block.tool.state == .completed ? String(localized: "Completed") : "")
+        .accessibilityHint(opensToolProcess(block)
+            ? String(localized: "View agent process") : String(localized: "View tool details"))
+        .accessibilityIdentifier("tool-summary-\(block.id)")
     }
+
 }
 
 // MARK: - Status
@@ -157,6 +141,7 @@ struct ToolStatusIndicator: View {
         case .running:
             ProgressView()
                 .controlSize(.small)
+                .accessibilityLabel("Running")
         case .pending:
             StatusChip(text: String(localized: "pending"), tint: .secondary)
         case .error:
@@ -165,6 +150,7 @@ struct ToolStatusIndicator: View {
             Image(systemName: "checkmark")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .accessibilityLabel("Completed")
         }
     }
 }
@@ -175,7 +161,7 @@ private struct StatusChip: View {
 
     var body: some View {
         Text(text)
-            .font(.caption2)
+            .font(.footnote)
             .foregroundStyle(tint)
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
@@ -188,7 +174,7 @@ private struct StatusChip: View {
 /// Read-only permission verdict: highlighted banner while pending (shown only
 /// without a `\.chatInteractions` engine — previews/tests; the live chat
 /// renders `PendingPermissionFooter` instead), subdued line once decided.
-private struct PermissionStateRow: View {
+struct PermissionStateRow: View {
     let permission: ToolPermission
 
     var body: some View {
@@ -220,7 +206,7 @@ private struct PermissionLine: View {
 
     var body: some View {
         Text(text)
-            .font(.caption2)
+            .font(.footnote)
             .foregroundStyle(isError ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
             .padding(.horizontal, 10)
             .padding(.bottom, 6)

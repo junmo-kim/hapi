@@ -1,3 +1,4 @@
+import { formatDuration } from '@/chat/presentation'
 import type { RoundModelUsage, RoundSummary, UsageData } from '@/chat/types'
 
 export type MessageMetadataProps = {
@@ -26,6 +27,11 @@ function formatOneDecimal(value: number): string {
 
 function formatPercentage(value: number): string {
     return formatOneDecimal(value)
+}
+
+function formatRoundDuration(durationMs: number): string {
+    if (durationMs < 60_000) return formatOneDecimal(durationMs / 1000) + 's'
+    return formatDuration(durationMs)
 }
 
 function formatUsd(value: number): string {
@@ -62,21 +68,20 @@ function buildRoundSummaryLabels(summary: RoundSummary, fallbackModel?: string |
 
         const economics: string[] = []
         if (input > 0 && (usage.cache_read_input_tokens ?? 0) > 0) {
-            economics.push(`Cache read: ${formatPercentage(((usage.cache_read_input_tokens ?? 0) / input) * 100)}% of input`)
+            economics.push(`Cached input: ${formatPercentage(((usage.cache_read_input_tokens ?? 0) / input) * 100)}%`)
         }
         if (summary.totalCostUsd !== undefined && summary.totalCostUsd > 0) {
-            economics.push(`API-rate est.: ${formatUsd(summary.totalCostUsd)}`)
+            economics.push(`Cost: ${formatUsd(summary.totalCostUsd)}`)
         }
         if (economics.length > 0) parts.push(economics.join(' · '))
     } else if (summary.totalCostUsd !== undefined && summary.totalCostUsd > 0) {
-        parts.push(`API-rate est.: ${formatUsd(summary.totalCostUsd)}`)
+        parts.push(`Cost: ${formatUsd(summary.totalCostUsd)}`)
     }
 
     const round: string[] = []
-    if (summary.durationMs !== undefined && summary.durationMs >= 0) round.push(`${formatOneDecimal(summary.durationMs / 1000)}s`)
+    if (summary.durationMs !== undefined && summary.durationMs >= 0) round.push(formatRoundDuration(summary.durationMs))
     if (summary.numTurns !== undefined && summary.numTurns > 0) {
-        const turnLabel = summary.provider === 'codex' ? 'turn' : 'internal turn'
-        round.push(`${summary.numTurns} ${turnLabel}${summary.numTurns === 1 ? '' : 's'}`)
+        round.push(`${summary.numTurns} turn${summary.numTurns === 1 ? '' : 's'}`)
     }
     if (round.length > 0) parts.push(`Round: ${round.join(' · ')}`)
     return parts
@@ -92,7 +97,7 @@ export function buildMessageMetadataLabels({ durationMs, usage, model, turnCount
     const isAggregated = typeof turnCount === 'number' && turnCount >= 2
 
     if (typeof durationMs === 'number' && durationMs >= 0) {
-        parts.push(`Duration: ${(durationMs / 1000).toFixed(1)}s`)
+        parts.push(`Duration: ${formatDuration(durationMs)}`)
     }
 
     const tier = usage?.service_tier

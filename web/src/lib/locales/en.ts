@@ -372,10 +372,11 @@ export default {
   'newSession.model.loadFailed': 'Failed to load models',
   'newSession.model.selectVariant': 'Select variant',
   'newSession.model.cursorUnavailable': 'No Cursor models yet. Start a Cursor session once, or use Auto.',
-  'newSession.agyModel.checkingAuth': 'Checking Antigravity authentication…',
+  'newSession.agyModel.fetchingModels': 'Fetching available models…',
   'newSession.agyModel.authRequired': 'Authentication required',
   'newSession.agyModel.authHint': 'Please run `agy` in a terminal to sign in with Google.',
   'newSession.agyModel.retry': 'Retry',
+  'newSession.agyModel.notListed': 'no longer listed',
   'newSession.agyModel.noModels': 'No Antigravity models available',
   'newSession.opencodeModel.loading': 'Discovering OpenCode models…',
   'newSession.opencodeModel.loadFailed': 'Failed to load OpenCode models',
@@ -517,6 +518,12 @@ export default {
   'files.sort.newest': 'Newest first',
   'files.sort.smallest': 'Smallest first',
   'files.sort.largest': 'Largest first',
+
+  // File context menu
+  'file.menu.title': 'File actions',
+  'file.menu.copyPath': 'Copy path',
+  'file.menu.copyAbsolutePath': 'Copy absolute path',
+  'file.menu.addToComposer': 'Add to composer',
 
   // File page
   'file.page.fallbackName': 'File',
@@ -812,7 +819,7 @@ export default {
   'settings.usage.sessions': '{count} sessions with usage',
   'settings.general.description': 'Language, companion pairing, and general application preferences.',
   'settings.general.sessionSummary.title': 'Session status summaries',
-  'settings.general.sessionSummary.description': 'Choose whether supported agents emit a machine-readable status summary and whether it appears in chat.',
+  'settings.general.sessionSummary.description': 'Choose whether supported agents emit status summaries and whether they appear in chat.',
   'settings.general.sessionSummaryContract': 'Emit status summaries',
   'settings.general.sessionSummaryContract.desc': 'Off by default. When enabled, supported agents are asked to add a trailing AGENT_NOTIFY_SUMMARY line after each turn for notifications and background work records. Applies to new/resumed sessions. (Supported: Claude, Codex, OpenCode, remote Grok; not yet supported: local Grok, Cursor)',
   'settings.general.sessionSummaryInChat': 'Show status summaries in chat',
