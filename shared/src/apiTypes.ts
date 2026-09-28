@@ -941,6 +941,21 @@ export type PiModelsResponse = {
 
 export type ListPiModelsResponse = PiModelsResponse
 
+/** One row of the `claude` CLI's own model picker, as reported by its `initialize` control response. */
+export type ClaudeModelSummary = {
+    /** What `claude --model` accepts: an alias that follows the family (`opus`) or a full model id. */
+    value: string
+    displayName?: string
+    /** Effort levels the model accepts: `[]` = no effort control, undefined = unknown. */
+    effortLevels?: string[]
+}
+
+export type ClaudeModelsResponse = {
+    success: boolean
+    availableModels?: ClaudeModelSummary[]
+    error?: string
+}
+
 export type PiCommandSummary = {
     name: string
     description?: string
