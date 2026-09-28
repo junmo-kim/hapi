@@ -565,6 +565,71 @@ describe('NewSession launch preferences', () => {
         ])
     })
 
+    it('drops a launch effort the newly picked Claude model does not offer', async () => {
+        mocks.claudeModels = [
+            { value: 'opus', displayName: 'Opus 5.5', effortLevels: ['high', 'xhigh'] },
+            { value: 'haiku', displayName: 'Haiku 4.5', effortLevels: [] },
+        ]
+        mocks.nextModelValue = 'haiku'
+        savePreferredAgent('claude')
+        savePreferredLaunchSettings('machine-1', 'claude', {
+            model: 'opus',
+            cursorSelectedBase: 'auto',
+            effort: 'xhigh',
+            modelReasoningEffort: 'default'
+        })
+
+        render(
+            <NewSession
+                api={api}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory={'C:\\repo'}
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        await waitFor(() => {
+            expect(screen.getByTestId('launch-effort')).toHaveTextContent('xhigh')
+        })
+        fireEvent.click(screen.getByTestId('model'))
+
+        await waitFor(() => {
+            expect(screen.getByTestId('model')).toHaveTextContent('haiku')
+            expect(screen.getByTestId('launch-effort')).toHaveTextContent('auto')
+        })
+    })
+
+    it('drops a remembered launch effort the remembered Claude model does not offer', async () => {
+        mocks.claudeModels = [
+            { value: 'haiku', displayName: 'Haiku 4.5', effortLevels: [] },
+        ]
+        savePreferredAgent('claude')
+        savePreferredLaunchSettings('machine-1', 'claude', {
+            model: 'haiku',
+            cursorSelectedBase: 'auto',
+            effort: 'high',
+            modelReasoningEffort: 'default'
+        })
+
+        render(
+            <NewSession
+                api={api}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory={'C:\\repo'}
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        await waitFor(() => {
+            expect(screen.getByTestId('model')).toHaveTextContent('haiku')
+            expect(screen.getByTestId('launch-effort')).toHaveTextContent('auto')
+        })
+    })
+
     it('restores a remembered Kimi alias instead of resetting it to Default', async () => {
         mocks.kimiModels = [
             { modelId: 'GLM-5.3-flash', provider: 'thehive' }

@@ -306,7 +306,9 @@ export const SessionModelRequestSchema = z.object({
             provider: z.string().trim().min(1),
             modelId: z.string().trim().min(1),
         }),
-    ]).nullable()
+    ]).nullable(),
+    /** Effort to apply together with the model, e.g. cleared when the new model does not offer it. */
+    effort: z.string().trim().min(1).nullable().optional()
 })
 
 export type SessionModelRequest = z.infer<typeof SessionModelRequestSchema>
