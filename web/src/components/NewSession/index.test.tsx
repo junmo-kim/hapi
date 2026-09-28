@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ApiClient } from '@/api/client'
-import type { Machine, PiModelSummary } from '@/types/api'
+import type { ClaudeModelSummary, Machine, PiModelSummary } from '@/types/api'
 import { saveNewSessionFormDraft } from './newSessionFormDraft'
 import {
     loadPreferredLaunchSettings,
@@ -37,6 +37,7 @@ const mocks = vi.hoisted(() => ({
     piModels: [] as PiModelSummary[],
     piModelsLoading: false,
     piModelsError: null as string | null,
+    claudeModels: [] as ClaudeModelSummary[],
     nextModelValue: 'gpt-5.6-terra',
     refetchSessions: vi.fn(),
     addToast: vi.fn()
@@ -119,6 +120,9 @@ vi.mock('@/hooks/queries/useAgyModels', () => ({
         error: null,
         refetch: vi.fn()
     })
+}))
+vi.mock('@/hooks/queries/useClaudeModels', () => ({
+    useClaudeModels: () => ({ availableModels: mocks.claudeModels })
 }))
 vi.mock('@/hooks/queries/useCursorModelsForMachine', () => ({
     useCursorModelsForMachine: () => ({
@@ -324,6 +328,7 @@ describe('NewSession launch preferences', () => {
         mocks.piModels = []
         mocks.piModelsLoading = false
         mocks.piModelsError = null
+        mocks.claudeModels = []
         mocks.nextModelValue = 'gpt-5.6-terra'
         mocks.refetchSessions.mockReset()
         mocks.refetchSessions.mockResolvedValue(undefined)
@@ -522,6 +527,42 @@ describe('NewSession launch preferences', () => {
                 'Default,thehive — thehive / GLM-5.3-flash,thehive — thehive / hive-deepseek,charm-hyper — charm-hyper / Hyper · GLM-5.3-Flash,openrouter — openrouter-union-alpha'
             )
         })
+    })
+
+    it('offers the machine Claude catalog and keeps a remembered model it no longer lists', async () => {
+        mocks.claudeModels = [
+            { value: 'default', displayName: 'Default (recommended)' },
+            { value: 'opus', displayName: 'Opus 5.5' },
+            { value: 'claude-opus-4-7', displayName: 'Opus 4.7' },
+        ]
+        savePreferredAgent('claude')
+        savePreferredLaunchSettings('machine-1', 'claude', {
+            model: 'claude-opus-4-1',
+            cursorSelectedBase: 'auto',
+            effort: 'auto',
+            modelReasoningEffort: 'default'
+        })
+
+        render(
+            <NewSession
+                api={api}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory={'C:\\repo'}
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        await waitFor(() => {
+            expect(screen.getByTestId('model')).toHaveTextContent('claude-opus-4-1')
+        })
+        expect(screen.getByTestId('model-options').textContent?.split(',').slice(0, 4)).toEqual([
+            'Default',
+            'claude-opus-4-1 (newSession.claudeModel.notListed)',
+            'Opus 5.5',
+            'Opus 4.7',
+        ])
     })
 
     it('restores a remembered Kimi alias instead of resetting it to Default', async () => {

@@ -52,6 +52,7 @@ import type {
     OpencodeModelVariantsResponse,
     OpencodeReasoningEffortResponse,
     PiModelsResponse,
+    ClaudeModelsResponse,
     QueuedStateResponse,
     ReopenSessionResponse,
     SqliteStorageUsageResponse,
@@ -877,6 +878,12 @@ export class ApiClient {
         const query = options?.refresh ? '?refresh=true' : ''
         return await this.request<AgyModelsResponse>(
             `/api/machines/${encodeURIComponent(machineId)}/agy-models${query}`
+        )
+    }
+
+    async getMachineClaudeModels(machineId: string): Promise<ClaudeModelsResponse> {
+        return await this.request<ClaudeModelsResponse>(
+            `/api/machines/${encodeURIComponent(machineId)}/claude-models`
         )
     }
 

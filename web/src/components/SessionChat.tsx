@@ -61,6 +61,7 @@ import {
 } from '@/lib/messageDelivery'
 import type { MessageDeliveryMode } from '@hapi/protocol'
 import { isSteeringSupportedForSession } from '@hapi/protocol'
+import { getClaudeModelChoices } from '@hapi/protocol'
 import { createAttachmentAdapter } from '@/lib/attachmentAdapter'
 import { rewindMessageWindow, type OlderLoadOutcome } from '@/lib/message-window-store'
 import { ShareSeedConsumer } from '@/components/ShareSeedConsumer'
@@ -96,6 +97,7 @@ import { useCodexModels } from '@/hooks/queries/useCodexModels'
 import { useCursorModels } from '@/hooks/queries/useCursorModels'
 import { useCursorModelsForMachine } from '@/hooks/queries/useCursorModelsForMachine'
 import { useAgyModels } from '@/hooks/queries/useAgyModels'
+import { useClaudeModels } from '@/hooks/queries/useClaudeModels'
 import {
     mergeCursorCliModelSkus,
     resolveCursorBaseFromWire
@@ -1157,6 +1159,18 @@ function SessionChatInner(props: SessionChatProps) {
             ? buildAgyComposerModelOptions(agyModelsState.availableModels)
             : undefined
     ), [agentFlavor, agyModelsState.availableModels])
+    const claudeModelsState = useClaudeModels({
+        api: props.api,
+        machineId: sessionMachineId,
+        enabled: agentFlavor === 'claude' && props.session.active && Boolean(sessionMachineId)
+    })
+    // Until the catalog arrives (or on a runner without discovery) this stays
+    // undefined and the composer keeps its built-in Claude presets.
+    const claudeModelOptions = useMemo(() => (
+        agentFlavor === 'claude' && claudeModelsState.availableModels.length > 0
+            ? getClaudeModelChoices(claudeModelsState.availableModels)
+            : undefined
+    ), [agentFlavor, claudeModelsState.availableModels])
     const piModelsState = usePiModels({
         api: props.api,
         sessionId: props.session.id,
@@ -2096,8 +2110,9 @@ function SessionChatInner(props: SessionChatProps) {
                                         // cycler (getNextModelForFlavor) post a bare modelId string,
                                         // which loses the provider and can pick the wrong cached
                                         // match or throw in runPi. undefined makes the shortcut a no-op
-                                        // so Pi model changes go through the settings sheet only.
-                                        : undefined
+                                        // so Pi model changes go through the settings sheet only;
+                                        // claudeModelOptions is undefined for every non-Claude flavor.
+                                        : claudeModelOptions
                         }
                         piModels={piModels}
                         piSelectedModel={agentFlavor === 'pi' ? piSelectedModel : undefined}

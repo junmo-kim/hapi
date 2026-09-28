@@ -9,6 +9,8 @@ import { useSpawnSession } from '@/hooks/mutations/useSpawnSession'
 import { useCodexModels } from '@/hooks/queries/useCodexModels'
 import { useCursorModelsForMachine } from '@/hooks/queries/useCursorModelsForMachine'
 import { useAgyModels } from '@/hooks/queries/useAgyModels'
+import { useClaudeModels } from '@/hooks/queries/useClaudeModels'
+import { getClaudeLaunchModelOptions } from '@/components/AssistantChat/modelOptions'
 import { useOpencodeModelsForCwd } from '@/hooks/queries/useOpencodeModelsForCwd'
 import { useOpencodeModelVariants } from '@/hooks/queries/useOpencodeModelVariants'
 import { useGrokModelsForCwd } from '@/hooks/queries/useGrokModelsForCwd'
@@ -699,6 +701,16 @@ export function NewSession(props: {
         machineId,
         enabled: agent === 'pi' && Boolean(machineId)
     })
+    const claudeModelsState = useClaudeModels({
+        api: props.api,
+        machineId,
+        enabled: agent === 'claude' && Boolean(machineId)
+    })
+    const claudeModelOptions = useMemo(() => (
+        agent === 'claude'
+            ? getClaudeLaunchModelOptions(claudeModelsState.availableModels, model, t('newSession.claudeModel.notListed'))
+            : undefined
+    ), [agent, claudeModelsState.availableModels, model, t])
     // Pi models are grouped by provider (optionSource: 'machine' in the agent
     // config descriptor). Option values are provider-qualified
     // (`provider/modelId`) so two providers sharing a modelId stay distinct;
@@ -1935,7 +1947,7 @@ export function NewSession(props: {
                                             ? kimiModelOptions
                                             : agent === 'pi'
                                                 ? (showPiLaunchConfig ? piModelOptions : undefined)
-                                        : undefined
+                                        : claudeModelOptions
                         }
                         isDisabled={
                             isFormDisabled
