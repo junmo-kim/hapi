@@ -15,11 +15,13 @@ import {
     type SyntheticEvent as ReactSyntheticEvent,
     useCallback,
     useEffect,
+    useImperativeHandle,
     useMemo,
     useRef,
     useState
 } from 'react'
 import { useNarrowViewport } from '@/hooks/useNarrowViewport'
+import { shouldInvokeComposerDictateShortcut } from '@/lib/composerDictateShortcut'
 import { isRichComposerMentionsEnabled, resolveComposerPlaceholderKey } from '@/lib/composerSegments'
 import type { SessionMentionResolveResult } from '@/components/AssistantChat/RichComposerInput'
 import {
@@ -281,6 +283,7 @@ export function ModelEffortSettingsSection(props: {
 
 export function HappyComposer(props: {
     sessionId?: string
+    focusInputRef?: MutableRefObject<(() => void) | null>
     onUploadDraftSnapshot?: (text: string, attachments: AttachmentDraftInput[]) => void
     canRestoreAttachments?: boolean
     disabled?: boolean
@@ -301,6 +304,7 @@ export function HappyComposer(props: {
     /** Model for the context-window heuristic; see StatusBar.contextModel. */
     contextModel?: string | null
     controlledByUser?: boolean
+    concurrentClients?: boolean
     agentFlavor?: string | null
     availableModelOptions?: Array<{ value: string | null; label: string }>
     /** Full Pi model data with thinkingLevelMap for provider grouping + thinking level filtering */
@@ -361,6 +365,8 @@ export function HappyComposer(props: {
     ) => Promise<ScratchlistParkResult>
     /** Parent disables DragDropZone / scratchlist promote while park is in flight. */
     onScratchlistParkingChange?: (parking: boolean) => void
+    /** SessionChat binds Ctrl/Cmd+Shift+D; HappyComposer registers the effective voice toggle. */
+    dictateHotkeyRef?: MutableRefObject<(() => void) | null>
     // Set when the most recent send failed (4xx/5xx/network).  The composer
     // restores the original text once per `sendError.id` and renders an
     // inline error affordance until the user dismisses or starts editing.
@@ -407,6 +413,7 @@ export function HappyComposer(props: {
         contextWindow,
         contextModel,
         controlledByUser = false,
+        concurrentClients = false,
         agentFlavor,
         availableModelOptions,
         piModels,
@@ -903,6 +910,12 @@ export function HappyComposer(props: {
         }, 0)
     }, [haptic, richMentionsEnabled])
 
+    // Keep focus within the user's click gesture so mobile keyboards can open.
+    useImperativeHandle(props.focusInputRef, () => () => {
+        if (richMentionsEnabled) richInputRef.current?.focus()
+        else textareaRef.current?.focus()
+    }, [richMentionsEnabled])
+
     const handleSuggestionSelect = useCallback((index: number) => {
         const suggestion = suggestions[index]
         if (!suggestion) return
@@ -1002,8 +1015,8 @@ export function HappyComposer(props: {
     }, [switchDisabled, onSwitchToRemote, haptic])
 
     const permissionModeOptions = useMemo(
-        () => getPermissionModeOptionsForFlavor(agentFlavor),
-        [agentFlavor]
+        () => getPermissionModeOptionsForFlavor(agentFlavor).filter(option => !concurrentClients || option.mode !== 'safe-yolo'),
+        [agentFlavor, concurrentClients]
     )
     const collaborationModeOptions = useMemo(
         () => agentFlavor === 'codex' ? getCodexCollaborationModeOptions() : [],
@@ -1613,6 +1626,38 @@ export function HappyComposer(props: {
     )
     const showAbortButton = true
     const voiceEnabled = Boolean(effectiveVoiceToggle)
+    const routesToScratchlist = (props.scratchlistMode ?? false) && pendingSchedule == null
+
+    const invokeDictateHotkey = useCallback(() => {
+        if (!shouldInvokeComposerDictateShortcut({
+            controlsDisabled,
+            voiceEnabled,
+            dictationActive,
+            voiceStatus: effectiveVoiceStatus,
+            canSend,
+            routesToScratchlist,
+        })) {
+            return
+        }
+        effectiveVoiceToggle?.()
+    }, [
+        controlsDisabled,
+        voiceEnabled,
+        dictationActive,
+        effectiveVoiceStatus,
+        canSend,
+        routesToScratchlist,
+        effectiveVoiceToggle,
+    ])
+
+    useEffect(() => {
+        const ref = props.dictateHotkeyRef
+        if (!ref) return
+        ref.current = invokeDictateHotkey
+        return () => {
+            ref.current = null
+        }
+    }, [props.dictateHotkeyRef, invokeDictateHotkey])
 
     // Generic model/effort value buttons. The current value label doubles as
     // the button caption; clicking opens the settings sheet. Hidden on narrow
@@ -1635,10 +1680,9 @@ export function HappyComposer(props: {
         }
         if (modelOptions.length === 0) return undefined
         const rawKey = selectedModelBase !== undefined ? selectedModelBase : model
-        // `null` (default selection) and the `auto`/`default` wire values all
-        // mean "let the agent pick" — normalize them onto the `value: null`
-        // option so the localized option label is always found.
-        const normalizedKey = !rawKey || rawKey === 'auto' || rawKey === 'default' ? null : rawKey
+        const normalizedKey = agentFlavor === 'cursor'
+            ? (!rawKey || rawKey === 'auto' || rawKey === 'default' || rawKey === 'default[]' ? 'auto' : rawKey)
+            : (!rawKey || rawKey === 'auto' || rawKey === 'default' ? null : rawKey)
         const option = modelOptions.find((candidate) => candidate.value === normalizedKey)
         return option?.label ?? rawKey ?? undefined
     }, [isNarrowViewport, onModelChange, agentFlavor, selectedPiModel, model, modelOptions, selectedModelBase])

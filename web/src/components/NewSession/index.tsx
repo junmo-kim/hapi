@@ -13,6 +13,7 @@ import { useOpencodeModelsForCwd } from '@/hooks/queries/useOpencodeModelsForCwd
 import { useOpencodeModelVariants } from '@/hooks/queries/useOpencodeModelVariants'
 import { useGrokModelsForCwd } from '@/hooks/queries/useGrokModelsForCwd'
 import { useCopilotModelsForCwd } from '@/hooks/queries/useCopilotModelsForCwd'
+import { useKimiModelsForCwd } from '@/hooks/queries/useKimiModelsForCwd'
 import { usePiModelsForMachine } from '@/hooks/queries/usePiModelsForMachine'
 import { useAgentAvailability } from '@/hooks/queries/useAgentAvailability'
 import { useSessions } from '@/hooks/queries/useSessions'
@@ -57,6 +58,7 @@ import { OpencodeModelSelector } from './OpencodeModelSelector'
 import { EffortField } from './EffortField'
 import { shouldEnableOpencodeModelDiscovery } from './opencodeModelsGate'
 import { buildGrokEffortOptions, buildGrokModelOptions, shouldEnableGrokModelDiscovery } from './grokModels'
+import { buildKimiModelOptions, shouldEnableKimiModelDiscovery } from './grokModels'
 import { groupModelsByProvider } from '@/components/AssistantChat/piModelGroups'
 import { isThinkingLevelSupported } from '@/components/AssistantChat/piThinkingLevelOptions'
 import {
@@ -246,6 +248,7 @@ export function NewSession(props: {
         setOpencodeSelectedModel(
             draft.agent === 'opencode' && draft.model !== 'auto' ? draft.model : null
         )
+        agyModelPickedByUserRef.current = false
         setAgySelectedModel(
             draft.agent === 'agy' && draft.model !== 'auto' ? draft.model : null
         )
@@ -310,6 +313,12 @@ export function NewSession(props: {
         enabled: agent === 'codex' && Boolean(machineId)
     })
     const [agySelectedModel, setAgySelectedModel] = useState<string | null>(null)
+    // Whether the AGY model on screen is one the user picked here, as opposed to
+    // one restored from a draft or a saved preference. A restored model that the
+    // machine does not advertise is dropped (it may never have been runnable on
+    // this machine); one the user just picked is kept, because the catalog can
+    // change under an open form while they are looking at it.
+    const agyModelPickedByUserRef = useRef(false)
     const runnerSpawnError = useMemo(
         () => formatRunnerSpawnError(selectedMachine),
         [selectedMachine]
@@ -632,6 +641,21 @@ export function NewSession(props: {
         cwd: deferredDirectory,
         enabled: agent === 'copilot' && deferredDirectoryExists === true
     })
+    const kimiModelsState = useKimiModelsForCwd({
+        api: props.api,
+        machineId,
+        cwd: deferredDirectory,
+        enabled: shouldEnableKimiModelDiscovery({
+            agent,
+            machineId,
+            cwd: deferredDirectory,
+            cwdExists: deferredDirectoryExists,
+        })
+    })
+    const kimiModelOptions = useMemo(
+        () => buildKimiModelOptions(kimiModelsState.availableModels),
+        [kimiModelsState.availableModels]
+    )
     const copilotModelOptions = useMemo(
         () => [
             { value: 'auto', label: 'Auto' },
@@ -760,6 +784,7 @@ export function NewSession(props: {
         // (null → no --model → agy uses its own default); we intentionally do NOT
         // auto-pick the first model, so the user's explicit "Default" choice
         // sticks instead of snapping to the first option.
+        agyModelPickedByUserRef.current = false
         setAgySelectedModel(null)
     }, [agent, machineId])
 
@@ -769,6 +794,7 @@ export function NewSession(props: {
             || agyModelsState.isLoading
             || agyModelsState.error
             || agySelectedModel === null
+            || agyModelPickedByUserRef.current
         ) {
             return
         }
@@ -864,6 +890,7 @@ export function NewSession(props: {
         setOpencodeSelectedModel(
             agent === 'opencode' && preferred.model !== 'auto' ? preferred.model : null
         )
+        agyModelPickedByUserRef.current = false
         setAgySelectedModel(
             agent === 'agy' && preferred.model !== 'auto' ? preferred.model : null
         )
@@ -916,6 +943,25 @@ export function NewSession(props: {
         copilotModelsState.availableModels,
         copilotModelsState.error,
         copilotModelsState.isLoading,
+        deferredDirectoryExists,
+        model
+    ])
+    useEffect(() => {
+        if (
+            agent === 'kimi'
+            && deferredDirectoryExists === true
+            && !kimiModelsState.isLoading
+            && !kimiModelsState.error
+            && model !== 'auto'
+            && !kimiModelsState.availableModels.some((candidate) => candidate.modelId === model)
+        ) {
+            setModel('auto')
+        }
+    }, [
+        agent,
+        kimiModelsState.availableModels,
+        kimiModelsState.error,
+        kimiModelsState.isLoading,
         deferredDirectoryExists,
         model
     ])
@@ -1524,7 +1570,9 @@ export function NewSession(props: {
                 ? (opencodeSelectedModel ?? undefined)
                 : agent === 'agy'
                     ? (agySelectedModel ?? undefined)
-                    : (model !== 'auto' ? model : undefined)
+                    : agent === 'cursor'
+                        ? (model === 'auto' || !model ? 'auto' : model)
+                        : (model !== 'auto' ? model : undefined)
             const resolvedEffort = (agent === 'claude' || agent === 'grok' || agent === 'pi') && effort !== 'auto'
                 ? effort
                 : undefined
@@ -1689,6 +1737,13 @@ export function NewSession(props: {
                 deferredDirectoryExists === undefined
                 || (deferredDirectoryExists === true && copilotModelsState.isLoading)
             ))
+        || (agent === 'kimi'
+            && deferredDirectory !== ''
+            && model !== 'auto'
+            && (
+                deferredDirectoryExists === undefined
+                || (deferredDirectoryExists === true && kimiModelsState.isLoading)
+            ))
         || (agent === 'pi'
             && model !== 'auto'
             && piModelsState.isLoading)
@@ -1803,9 +1858,14 @@ export function NewSession(props: {
                     machineId={machineId}
                     isLoading={agyModelsState.isLoading}
                     error={agyModelsState.error}
+                    warning={agyModelsState.warning}
+                    isFetching={agyModelsState.isFetching}
                     availableModels={agyModelsState.availableModels}
                     selectedModel={agySelectedModel}
-                    onModelChange={setAgySelectedModel}
+                    onModelChange={(modelId) => {
+                        agyModelPickedByUserRef.current = modelId !== null
+                        setAgySelectedModel(modelId)
+                    }}
                     onRetry={agyModelsState.refetch}
                 />
             ) : agent === 'opencode' ? (
@@ -1871,20 +1931,24 @@ export function NewSession(props: {
                                     ? grokModelOptions
                                     : agent === 'copilot'
                                         ? copilotModelOptions
-                                        : agent === 'pi'
-                                            ? (showPiLaunchConfig ? piModelOptions : undefined)
-                                    : undefined
+                                        : agent === 'kimi'
+                                            ? kimiModelOptions
+                                            : agent === 'pi'
+                                                ? (showPiLaunchConfig ? piModelOptions : undefined)
+                                        : undefined
                         }
                         isDisabled={
                             isFormDisabled
                             || (agent === 'codex' && Boolean(codexModelsState.error))
                             || (agent === 'grok' && Boolean(grokModelsState.error))
                             || (agent === 'copilot' && Boolean(copilotModelsState.error))
+                            || (agent === 'kimi' && Boolean(kimiModelsState.error))
                             || (agent === 'pi' && Boolean(piModelsState.error))
                         }
                         isLoading={(agent === 'codex' && codexModelsState.isLoading)
                             || (agent === 'grok' && grokModelsState.isLoading)
                             || (agent === 'copilot' && copilotModelsState.isLoading)
+                            || (agent === 'kimi' && kimiModelsState.isLoading)
                             || (agent === 'pi' && piModelsState.isLoading)}
                         error={agent === 'codex' && codexModelsState.error
                             ? `${t('newSession.model.loadFailed')}: ${codexModelsState.error}`
@@ -1892,8 +1956,10 @@ export function NewSession(props: {
                                 ? `${t('newSession.model.loadFailed')}: ${grokModelsState.error}`
                                 : agent === 'copilot' && copilotModelsState.error
                                     ? `${t('newSession.model.loadFailed')}: ${copilotModelsState.error}`
-                                    : agent === 'pi' && piModelsState.error
-                                        ? `${t('newSession.model.loadFailed')}: ${piModelsState.error}`
+                                    : agent === 'kimi' && kimiModelsState.error
+                                        ? `${t('newSession.model.loadFailed')}: ${kimiModelsState.error}`
+                                        : agent === 'pi' && piModelsState.error
+                                            ? `${t('newSession.model.loadFailed')}: ${piModelsState.error}`
                                     : null}
                         onModelChange={setModel}
                     />
