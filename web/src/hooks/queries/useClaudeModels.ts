@@ -28,7 +28,13 @@ export function useClaudeModels(args: {
             if (!api || !machineId) {
                 throw new Error('Claude models target unavailable')
             }
-            return await api.getMachineClaudeModels(machineId)
+            const response = await api.getMachineClaudeModels(machineId)
+            // A failed probe arrives as success:false; as a query error it is
+            // not cached as an answer, so the next picker to open asks again.
+            if (!response.success) {
+                throw new Error(response.error ?? 'Failed to load Claude models')
+            }
+            return response
         },
         enabled,
         staleTime: 60_000,
@@ -38,6 +44,6 @@ export function useClaudeModels(args: {
     return {
         // Gated on `enabled` too: the query key is per machine, so a catalog
         // cached by a Claude session would otherwise reach other agents' sessions.
-        availableModels: enabled && query.data?.success ? (query.data.availableModels ?? NO_MODELS) : NO_MODELS,
+        availableModels: enabled ? (query.data?.availableModels ?? NO_MODELS) : NO_MODELS,
     }
 }

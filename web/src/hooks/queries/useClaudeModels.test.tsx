@@ -44,20 +44,32 @@ describe('useClaudeModels', () => {
         expect(getMachineClaudeModels).not.toHaveBeenCalled()
     })
 
-    it('treats a failed discovery as no catalog', async () => {
-        const getMachineClaudeModels = vi.fn(async () => ({
-            success: false,
-            error: 'Claude model discovery timed out',
-            availableModels: catalog.availableModels
-        }))
+    it('retries a failed discovery the next time a picker mounts', async () => {
+        // The machine answers a failed probe with success:false; caching that as
+        // a successful result would keep the built-in list for the stale time
+        // even after the user signs in.
+        const getMachineClaudeModels = vi.fn()
+            .mockResolvedValueOnce({
+                success: false,
+                error: 'Claude model discovery timed out',
+                availableModels: catalog.availableModels
+            })
+            .mockResolvedValueOnce(catalog)
         const api = { getMachineClaudeModels } as unknown as ApiClient
         const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
-        const { result } = renderHook(() => useClaudeModels({ api, machineId: 'machine-1', enabled: true }), {
+        const first = renderHook(() => useClaudeModels({ api, machineId: 'machine-1', enabled: true }), {
             wrapper: wrapper(queryClient)
         })
+        await waitFor(() => expect(getMachineClaudeModels).toHaveBeenCalledTimes(1))
+        await waitFor(() => expect(queryClient.getQueryState(queryKeys.machineClaudeModels('machine-1'))?.fetchStatus).toBe('idle'))
+        expect(first.result.current.availableModels).toEqual([])
+        first.unmount()
 
-        await waitFor(() => expect(queryClient.getQueryState(queryKeys.machineClaudeModels('machine-1'))?.status).toBe('success'))
-        expect(result.current.availableModels).toEqual([])
+        const second = renderHook(() => useClaudeModels({ api, machineId: 'machine-1', enabled: true }), {
+            wrapper: wrapper(queryClient)
+        })
+        await waitFor(() => expect(second.result.current.availableModels).toHaveLength(1))
+        expect(getMachineClaudeModels).toHaveBeenCalledTimes(2)
     })
 })
