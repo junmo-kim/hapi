@@ -121,8 +121,26 @@ the hub:
 export HAPI_CLOUDFLARE_ACCESS_TEAM_DOMAIN="myteam.cloudflareaccess.com"
 export HAPI_CLOUDFLARE_ACCESS_AUD="your-access-application-audience"
 export HAPI_CLOUDFLARE_ACCESS_USERS='{"alice@example.com":"default","bob@example.com":"work"}'
+hapi hub
 ```
 
+- Set these variables in the environment of the **Hub process** before it
+  starts. For systemd, use the service's `Environment` or `EnvironmentFile`;
+  for Docker Compose, use the Hub service's `environment` or `env_file`.
+  Restart the Hub after changing them. Browsers and CLI runners do not need
+  these variables.
+- `TEAM_DOMAIN` is the team's `<team>.cloudflareaccess.com` hostname without
+  `https://` or a path. To find `AUD`, open Cloudflare **Zero Trust → Access
+  controls → Applications → your application's Configure → Additional
+  settings → Application Audience (AUD) Tag**. See the
+  [official AUD instructions](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/#get-your-aud-tag).
+- Each Hub supports one Access team and one application audience. That
+  application can use multiple identity providers. Map each allowed email
+  to the intended existing HAPI namespace; `default` grants Hub owner access.
+- Open the Hub-hosted web app through the protected Access application,
+  complete Access login, and HAPI signs in automatically. Telegram, URL-token
+  and saved-token sources take precedence. To try automatic Access discovery,
+  open a URL without `token=` in a browser profile with no saved HAPI access token.
 - The variables are env-only and are never written to `settings.json`. The
   feature stays disabled unless all three are set; a partial or malformed
   bundle aborts startup.

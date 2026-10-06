@@ -67,6 +67,8 @@ All three variables are env-only (never persisted to `settings.json`); the featu
 - `HAPI_CLOUDFLARE_ACCESS_AUD` - Application audience (AUD) configured in the Cloudflare Access application.
 - `HAPI_CLOUDFLARE_ACCESS_USERS` - JSON object mapping exact email addresses to namespaces, e.g. `{"alice@example.com":"default","bob@example.com":"work"}`. Emails are matched case-insensitively after normalization; duplicates that differ only by case are rejected.
 
+Set these variables in the Hub process environment before running `hapi hub` (or in its systemd/Docker service environment), then restart the Hub when changing them. Browsers and runners do not need them. One team and one application audience are supported per Hub; multiple identity providers may be enabled in that application. See the [deployment setup](../docs/guide/deployment.md#cloudflare-access-optional-web-login) for a startup example and where to find the AUD tag.
+
 Access policy notes:
 
 - The allowlist is exact-email: an assertion whose email is not listed is rejected with 403. Identity-provider selection (e.g. Google) happens in the Cloudflare Access policy, not in HAPI — HAPI is provider-independent and only consumes the verified `sub`/`email` claims.
