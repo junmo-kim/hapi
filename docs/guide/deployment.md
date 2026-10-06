@@ -108,6 +108,46 @@ If you use the dev-only workaround, assume MITM risk; do not use on public netwo
 
 </details>
 
+## Cloudflare Access (optional web login)
+
+Instead of typing the long-lived HAPI access token, allowlisted users can open
+the web app directly when the hub is fronted by
+[Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/).
+Configure an Access application (for example with Google as the identity
+provider) in front of the hub origin, then set three environment variables on
+the hub:
+
+```bash
+export HAPI_CLOUDFLARE_ACCESS_TEAM_DOMAIN="myteam.cloudflareaccess.com"
+export HAPI_CLOUDFLARE_ACCESS_AUD="your-access-application-audience"
+export HAPI_CLOUDFLARE_ACCESS_USERS='{"alice@example.com":"default","bob@example.com":"work"}'
+```
+
+- The variables are env-only and are never written to `settings.json`. The
+  feature stays disabled unless all three are set; a partial or malformed
+  bundle aborts startup.
+- `HAPI_CLOUDFLARE_ACCESS_USERS` is an exact-email allowlist: assertions
+  whose email is not listed are rejected (403). Email matching is
+  case-insensitive. Identity-provider selection (Google, or any other IdP)
+  happens in the Cloudflare Access policy — HAPI is provider-independent and
+  only consumes the verified `sub` and `email` claims.
+- Assertions are verified at the hub origin (RS256, fixed issuer/audience,
+  expiry) against the team's JWKS endpoint. The issuer and JWKS URL are always
+  derived from `HAPI_CLOUDFLARE_ACCESS_TEAM_DOMAIN`, never from JWT claims or
+  incoming `Host`/`Forwarded` headers; the email-only forwarded header is
+  untrusted.
+- The issued web session is bound to the Access identity and expires at the
+  earlier of 4 hours and the Access assertion expiry. Protected REST/SSE
+  requests, terminal WebSocket handshakes, and voice WebSocket upgrades
+  re-verify the current Access assertion, so a captured bound JWT alone is not
+  enough to authenticate. Already-open SSE/WS streams are not continuously
+  revoked — the checks apply to HTTP requests/handshakes and authentication
+  refreshes.
+- The web app only attempts Cloudflare discovery for same-origin hub requests
+  and gives up after 5 s, so hubs without the capability (or older hubs)
+  fall back to the existing manual login. Telegram login, URL-token login,
+  and stored-token login are unchanged, and no native SSO pairing is added.
+
 ## Background service deployment
 
 Keep HAPI running persistently so it survives terminal closes, system restarts, and continues running in the background.

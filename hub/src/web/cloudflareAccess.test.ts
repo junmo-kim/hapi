@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test'
+import { afterEach, describe, expect, test } from 'bun:test'
 import { createLocalJWKSet, errors, exportJWK, generateKeyPair, SignJWT, type JWTHeaderParameters } from 'jose'
 import type { CloudflareAccessConfig } from '../config/cloudflareAccess'
 import { createCloudflareAccessVerifier } from './cloudflareAccess'
@@ -241,5 +241,92 @@ describe('createCloudflareAccessVerifier', () => {
         const result = await localVerifier().verify(assertion)
         expect(JSON.stringify(result)).not.toContain(assertion)
         expect(JSON.stringify(result)).not.toContain('mallory')
+    })
+
+    test('accepts assertions carrying extra IdP claims', async () => {
+        await initKeys()
+        const assertion = await signAssertion({
+            sub: 'subject-18',
+            email: 'alice@example.com',
+            idp: 'https://accounts.google.com',
+            custom_claims: { department: 'engineering', groups: ['admins'] },
+            country: 'US'
+        })
+        const result = await localVerifier().verify(assertion)
+        expect(result.kind).toBe('ok')
+        if (result.kind === 'ok') {
+            expect(result.subject).toBe('subject-18')
+            expect(result.email).toBe('alice@example.com')
+        }
+    })
+
+    test('rejects a service-like assertion without an email claim', async () => {
+        await initKeys()
+        const assertion = await signAssertion({
+            sub: 'subject-19',
+            idp: 'https://accounts.google.com',
+            custom_claims: { department: 'engineering' }
+        })
+        const result = await localVerifier().verify(assertion)
+        expect(result.kind).toBe('invalid')
+    })
+})
+
+describe('createCloudflareAccessVerifier — production remote resolver', () => {
+    const originalFetch = globalThis.fetch
+
+    afterEach(() => {
+        globalThis.fetch = originalFetch
+    })
+
+    function useSyntheticFetch(response: Response | Error): void {
+        globalThis.fetch = (async () => {
+            if (response instanceof Error) throw response
+            return response
+        }) as unknown as typeof fetch
+    }
+
+    test('reports unavailable when the JWKS endpoint returns HTTP 503', async () => {
+        await initKeys()
+        useSyntheticFetch(new Response('Service Unavailable', { status: 503 }))
+        const verifier = createCloudflareAccessVerifier(CONFIG)
+        const assertion = await signAssertion({ sub: 'subject-20', email: 'alice@example.com' })
+        const result = await verifier.verify(assertion)
+        expect(result.kind).toBe('unavailable')
+    })
+
+    test('reports unavailable when the JWKS endpoint returns malformed JSON', async () => {
+        await initKeys()
+        useSyntheticFetch(new Response('not json at all', {
+            status: 200,
+            headers: { 'content-type': 'application/json' }
+        }))
+        const verifier = createCloudflareAccessVerifier(CONFIG)
+        const assertion = await signAssertion({ sub: 'subject-21', email: 'alice@example.com' })
+        const result = await verifier.verify(assertion)
+        expect(result.kind).toBe('unavailable')
+    })
+
+    test('reports unavailable when the JWKS endpoint is unreachable', async () => {
+        await initKeys()
+        useSyntheticFetch(new TypeError('fetch failed'))
+        const verifier = createCloudflareAccessVerifier(CONFIG)
+        const assertion = await signAssertion({ sub: 'subject-22', email: 'alice@example.com' })
+        const result = await verifier.verify(assertion)
+        expect(result.kind).toBe('unavailable')
+    })
+
+    test('derives issuer and JWKS URL only from the configured team domain', async () => {
+        await initKeys()
+        const requestedUrls: string[] = []
+        globalThis.fetch = (async (input: string | URL) => {
+            requestedUrls.push(String(input))
+            return new Response('Service Unavailable', { status: 503 })
+        }) as unknown as typeof fetch
+        const verifier = createCloudflareAccessVerifier(CONFIG)
+        const assertion = await signAssertion({ sub: 'subject-23', email: 'alice@example.com' })
+        const result = await verifier.verify(assertion)
+        expect(result.kind).toBe('unavailable')
+        expect(requestedUrls).toEqual(['https://synthetic.cloudflareaccess.com/cdn-cgi/access/certs'])
     })
 })

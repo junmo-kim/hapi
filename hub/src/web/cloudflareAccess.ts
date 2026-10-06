@@ -69,13 +69,26 @@ export function createCloudflareAccessVerifier(
                 })
                 payload = verified.payload as Record<string, unknown>
             } catch (error) {
-                // A fetched-but-unusable key set or an unreachable key service is a
-                // 503-class condition; everything else (signature, algorithm,
-                // issuer, audience, expiry, no matching key) is an invalid token.
-                if (error instanceof errors.JWKSTimeout || error instanceof errors.JWKSInvalid) {
+                // JWKSNoMatchingKey means the key service answered successfully but
+                // holds no key for this token — an invalid token.
+                if (error instanceof errors.JWKSNoMatchingKey) {
+                    return { kind: 'invalid' }
+                }
+                // Key-service failures: timeout, non-200 response, malformed or
+                // ambiguous JWKS JSON, and network-level fetch errors.
+                if (error instanceof errors.JWKSTimeout
+                    || error instanceof errors.JWKSInvalid
+                    || error instanceof errors.JWKSMultipleMatchingKeys) {
                     return { kind: 'unavailable' }
                 }
                 if (error instanceof errors.JOSEError) {
+                    // The remote key set loader reports non-200 responses and
+                    // unparseable JWKS bodies as a generic JOSEError.
+                    if (error.code === 'ERR_JOSE_GENERIC') {
+                        return { kind: 'unavailable' }
+                    }
+                    // Token-level failures: algorithm, signature, expiry,
+                    // issuer, audience.
                     return { kind: 'invalid' }
                 }
                 return { kind: 'unavailable' }
