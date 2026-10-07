@@ -2598,6 +2598,86 @@ describe('opencodeRemoteLauncher mid-turn steer', () => {
         await stopTurn(stub, releasePrompt, runPromise);
     });
 
+    it('consumes an input accepted in native history before its concurrent prompt completes', async () => {
+        const receipts = await import('./utils/opencodeInputReceipt');
+        const text = 'mid-turn correction';
+        const receipt = vi.spyOn(receipts, 'fetchOpencodeUserMessages')
+            .mockResolvedValueOnce([{ id: 'existing-user', text }])
+            .mockResolvedValue([{ id: 'existing-user', text }, { id: 'new-user', text }]);
+        let releaseSoftSteer!: () => void;
+        harness.deferSoftSteer = new Promise<void>((resolve) => { releaseSoftSteer = resolve; });
+        const { stub, releasePrompt, runPromise } = await startTurn();
+        try {
+            stub.session.queue.push(text, createMode(), 'steer');
+            await expect(steerHandlerOf(stub)({ localId: 'steer' })).resolves.toEqual({ steered: true });
+            expect(stub.emitMessagesConsumedCalls).toContainEqual({ localIds: ['steer'], options: { steered: true } });
+            expect(stub.session.queue.cancelByLocalId('steer')).toBe('consumed');
+            expect(harness.cancelPrompt).not.toHaveBeenCalled();
+            releaseSoftSteer();
+            await vi.waitFor(() => expect(stub.emitMessagesConsumedCalls.filter(c => c.localIds.includes('steer'))).toHaveLength(1));
+        } finally {
+            releaseSoftSteer();
+            receipt.mockRestore();
+            harness.deferSoftSteer = null;
+            await stopTurn(stub, releasePrompt, runPromise);
+        }
+    });
+
+    it('does not restore an input accepted by native history when the prompt later fails', async () => {
+        const receipts = await import('./utils/opencodeInputReceipt');
+        const receipt = vi.spyOn(receipts, 'fetchOpencodeUserMessages')
+            .mockResolvedValueOnce([])
+            .mockResolvedValue([{ id: 'native-user', text: 'correction' }]);
+        let rejectSoftSteer!: (error: Error) => void;
+        harness.deferSoftSteer = new Promise<void>((_resolve, reject) => { rejectSoftSteer = reject; });
+        const { stub, releasePrompt, runPromise } = await startTurn();
+        try {
+            stub.session.queue.push('correction', createMode(), 'steer');
+            await steerHandlerOf(stub)({ localId: 'steer' });
+            rejectSoftSteer(new Error('provider failed after accepting input'));
+            await stopTurn(stub, releasePrompt, runPromise);
+            expect(harness.steerStateCalls).not.toContainEqual({ localIds: ['steer'], state: 'queued' });
+            expect(stub.steerIndeterminateCalls).toEqual([]);
+            expect(stub.session.queue.cancelByLocalId('steer')).toBe('consumed');
+            expect(stub.emitMessagesConsumedCalls.filter(c => c.localIds.includes('steer'))).toHaveLength(1);
+        } finally {
+            receipt.mockRestore();
+            harness.deferSoftSteer = null;
+            releasePrompt();
+            stub.session.queue.close();
+            await runPromise;
+        }
+    });
+
+    it('does not correlate overlapping identical steers using native text alone', async () => {
+        const receipts = await import('./utils/opencodeInputReceipt');
+        let releaseSnapshot!: (value: Array<{ id: string; text: string }>) => void;
+        const receipt = vi.spyOn(receipts, 'fetchOpencodeUserMessages')
+            .mockImplementationOnce(() => new Promise(resolve => { releaseSnapshot = resolve; }))
+            .mockResolvedValue([{ id: 'new-user', text: 'same correction' }]);
+        let releaseSoftSteer!: () => void;
+        harness.deferSoftSteer = new Promise<void>(resolve => { releaseSoftSteer = resolve; });
+        const { stub, releasePrompt, runPromise } = await startTurn();
+        try {
+            stub.session.queue.push('same correction', createMode(), 'steer-1');
+            const first = steerHandlerOf(stub)({ localId: 'steer-1' });
+            await vi.waitFor(() => expect(receipt).toHaveBeenCalledOnce());
+            stub.session.queue.push('same correction', createMode(), 'steer-2');
+            await steerHandlerOf(stub)({ localId: 'steer-2' });
+            releaseSnapshot([]);
+            await first;
+            expect(stub.emitMessagesConsumedCalls).toEqual([]);
+            releaseSoftSteer();
+            await vi.waitFor(() => expect(stub.emitMessagesConsumedCalls).toHaveLength(2));
+        } finally {
+            releaseSnapshot?.([]);
+            releaseSoftSteer();
+            receipt.mockRestore();
+            harness.deferSoftSteer = null;
+            await stopTurn(stub, releasePrompt, runPromise);
+        }
+    });
+
     it('rejects a steer while idle with no active turn', async () => {
         const stub = createSessionStub([], { keepOpen: true });
         const runPromise = opencodeRemoteLauncher(stub.session as never);

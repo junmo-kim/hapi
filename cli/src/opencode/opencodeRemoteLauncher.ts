@@ -26,6 +26,7 @@ import {
 import { OpencodePermissionHandler } from './utils/permissionHandler';
 import { getOpencodeNativeToolInstruction, PLAN_MODE_INSTRUCTION } from './utils/systemPrompt';
 import { resolveThoughtLevelEffort } from './thoughtLevelEffort';
+import { fetchOpencodeUserMessages } from './utils/opencodeInputReceipt';
 
 type OpencodeRemoteLauncherOptions = {
     onModelRollback?: (model: string | null) => void;
@@ -184,6 +185,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
      * while a steer is still restoring rows.
      */
     private pendingSteerOperations = new Set<OpencodeSteerOperation>();
+    private pendingSteerAcceptances = new Set<OpencodeSteerOperation>();
+    private nativeSteerReceiptGeneration = 0;
     /**
      * Soft requests the ACP backend is still counting, keyed by identity so a
      * late completion callback can only release *its own* entry and never
@@ -832,6 +835,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 // drain an empty set and advance to the next batch while this
                 // row is still being restored.
                 const { operation, release: releaseOperation } = this.beginSteerOperation();
+                const receiptGeneration = this.nativeSteerReceiptGeneration;
 
                 const isControlItem = Boolean(taken.item.isolate) || taken.item.mode.operation !== undefined;
                 if (isControlItem) {
@@ -880,7 +884,14 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     releaseOperation();
                     return { steered: false, error: 'Steer cancelled' };
                 }
-                // Recheck everything the durable await could have invalidated.
+                // Snapshot before dispatch: an older identical prompt must not
+                // count as acceptance. Overlapping unproven steers cannot be
+                // correlated by text, so they retain completion-based ACKs.
+                const nativeBefore = this.pendingSteerAcceptances.size === 1
+                    ? await fetchOpencodeUserMessages({ baseUrl: this.baseUrl, sessionId: acpSessionId })
+                    : null;
+                // Recheck everything the durable/native-history awaits could
+                // have invalidated before sending to the backend.
                 if (!this.promptInFlight
                     || this.shouldExit
                     || this.steerEpoch !== steerEpoch
@@ -967,20 +978,58 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     return { steered: false, error: 'Failed to soft-steer into active turn' };
                 }
 
-                // The row is committed only once the concurrent prompt
-                // settles: an explicit JSON-RPC rejection means ACP never
-                // accepted the instruction (restore it for the next prompt),
-                // while a transport failure keeps it held outside replay.
-                // Both branches are awaited before the operation is released,
-                // so a delayed queued-state ACK keeps gating the next prompt.
-                void steer.completed.then(() => {
-                    // Completion means ACP accepted the inject, so the ACK must
-                    // reach the hub even when an abort reset the queue in
-                    // between (existing queue-reset reservation contract).
+                let accepted = false;
+                const acknowledgeAcceptance = () => {
+                    if (accepted) return;
+                    accepted = true;
+                    this.pendingSteerAcceptances.delete(operation);
                     session.queue.commitReservation(taken);
-                    this.messageBuffer.addMessage(taken.item.message, 'user');
                     session.client.emitMessagesConsumed([localId], { steered: true });
-                }, (error) => {
+                    this.messageBuffer.addMessage(taken.item.message, 'user');
+                };
+                // OpenCode persists the user input before the concurrent
+                // session/prompt response (which waits for the model's entire
+                // turn). A new native id with the exact input proves acceptance
+                // now, allowing every UI to move the row into chat promptly.
+                // Never infer acceptance from stdin dispatch or elapsed time.
+                const nativeReceipt = (async () => {
+                    if (!nativeBefore) return;
+                    const previousIds = new Set(nativeBefore.map(message => message.id));
+                    const deadline = Date.now() + 3_000;
+                    while (!accepted && Date.now() < deadline
+                        && this.steerEpoch === steerEpoch
+                        && this.backend === backend
+                        && this.activeAcpSessionId === acpSessionId
+                        && this.nativeSteerReceiptGeneration === receiptGeneration
+                        && this.pendingSteerAcceptances.has(operation)) {
+                        const nativeMessages = await fetchOpencodeUserMessages({
+                            baseUrl: this.baseUrl,
+                            sessionId: acpSessionId,
+                            signal: AbortSignal.timeout(Math.max(1, deadline - Date.now()))
+                        });
+                        if (this.steerEpoch !== steerEpoch
+                            || this.backend !== backend
+                            || this.activeAcpSessionId !== acpSessionId
+                            || this.nativeSteerReceiptGeneration !== receiptGeneration) return;
+                        if (!nativeMessages) return;
+                        const matches = nativeMessages.filter(message =>
+                            !previousIds.has(message.id) && message.text === taken.item.message
+                        );
+                        if (matches.length === 1) {
+                            acknowledgeAcceptance();
+                            return;
+                        }
+                        if (matches.length > 1) return;
+                        await new Promise<void>(resolve => setTimeout(resolve, 100));
+                    }
+                })();
+                // Completion still gates the next normal prompt and settles
+                // backend ownership. A failure after proven native acceptance
+                // must never restore/replay that input. If no receipt is
+                // available, retain the rejection/indeterminate contract.
+                void steer.completed.then(acknowledgeAcceptance, async (error) => {
+                    await nativeReceipt;
+                    if (accepted) return;
                     if (isAcpIndeterminateError(error)) {
                         if (session.queue.markReservationIndeterminate(taken)) {
                             session.client.emitSteerIndeterminate([localId]);
@@ -996,6 +1045,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 }).finally(() => {
                     releaseOperation();
                 });
+                await nativeReceipt;
                 return { steered: true };
             }
         );
@@ -1062,11 +1112,14 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             release: () => {}
         };
         this.pendingSteerOperations.add(operation);
+        this.pendingSteerAcceptances.add(operation);
+        this.nativeSteerReceiptGeneration++;
         let released = false;
         operation.release = () => {
             if (released) return;
             released = true;
             this.pendingSteerOperations.delete(operation);
+            this.pendingSteerAcceptances.delete(operation);
             settle();
         };
         return { operation, release: operation.release };
