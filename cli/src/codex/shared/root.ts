@@ -526,7 +526,8 @@ export class SharedCodexRoot {
         const turn = (Array.isArray(thread.turns) ? thread.turns.map(record) : []).find(turn => turn.id === turnId);
         const first = (Array.isArray(turn?.items) ? turn.items.map(record) : []).find(item => item.type === 'userMessage');
         const firstId = string(first?.clientId ?? first?.clientUserMessageId) ?? (first?.id ? `codex:${this.threadId}:user:${first.id}` : undefined);
-        if (firstId !== localId) throw new Error('Cannot cut inside a steered native turn. Select its first message.');
+        const boundaryId = firstId ? this.queue.originalBoundaryId(firstId, first?.content) : undefined;
+        if (boundaryId !== localId) throw new Error('Cannot cut inside a steered native turn. Select its first message.');
         return thread;
     }
     freshParams(): Record<string, unknown> {

@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { SharedCodexQueue, type QueueInput } from './queue';
@@ -492,4 +492,183 @@ it('fails closed when a lost append leaves the group unresolved before steer', a
     expect(calls.filter(call => call.method === 'thread/queue/update')).toHaveLength(1);
     expect(calls.filter(call => call.method === 'turn/steer')).toHaveLength(0);
     expect(consumed).not.toHaveBeenCalled();
+});
+
+
+it('settles an acknowledged-by-snapshot cancellation before suspend and reload', async () => {
+    const f = await fixture();
+    await f.queue.enqueue('original-A', text('A'), false, 'same');
+    await f.queue.enqueue('original-B', text('B'), false, 'same');
+    f.overrides.set('thread/queue/update', params => {
+        f.native[0].input = structuredClone(params.input as QueueInput);
+        throw lost('cancel reply lost');
+    });
+    expect(await f.queue.cancel('original-A')).toBe('indeterminate');
+    f.overrides.delete('thread/queue/update');
+    await f.queue.reconcile();
+    expect(f.queue.state('original-A')).toBe('canceled');
+    await f.queue.suspend();
+    const restored = new SharedCodexQueue(f.client, 'thread', join(f.directory, 'ledger.json'), vi.fn(), vi.fn());
+    await restored.load();
+    expect(restored.state('original-A')).toBe('canceled');
+    expect(restored.state('original-B')).toBe('released');
+    expect(f.mirror).toHaveBeenCalledWith('original-A', null);
+});
+
+it.each(['native-delete', 'suspend'] as const)('keeps lost detached steering unknown after sibling %s and reload', async action => {
+    const f = await fixture();
+    await f.queue.enqueue('original-A', text('A'), false, 'same');
+    await f.queue.enqueue('original-B', text('B'), false, 'same');
+    f.overrides.set('turn/steer', () => { throw lost('steer reply lost'); });
+    expect(await f.queue.steer('original-A', 'active-turn')).toEqual({ steered: false, indeterminate: true });
+    const restored = new SharedCodexQueue(f.client, 'thread', join(f.directory, 'ledger.json'), vi.fn(), vi.fn(), f.mirror);
+    await restored.load();
+    if (action === 'suspend') await restored.suspend();
+    else await restored.nativeMutation('thread/queue/delete', { threadId: 'thread', queuedSubmissionId: f.native[0].id });
+    expect(restored.state('original-A')).toBe('unknown');
+    expect(restored.state('original-B')).toBe(action === 'suspend' ? 'released' : 'canceled');
+    expect(f.mirror).not.toHaveBeenCalledWith('original-A', null);
+    const reloaded = new SharedCodexQueue(f.client, 'thread', join(f.directory, 'ledger.json'), vi.fn(), vi.fn());
+    await reloaded.load();
+    expect(reloaded.state('original-A')).toBe('unknown');
+    const adds = f.calls.filter(call => call.method === 'thread/queue/add').length;
+    await reloaded.enqueue('original-A', text('A'), false, 'same');
+    expect(f.calls.filter(call => call.method === 'thread/queue/add')).toHaveLength(adds);
+});
+
+it('requeues only rejected steering input when the sibling batch has already drained', async () => {
+    const f = await fixture();
+    await f.queue.enqueue('original-A', text('A'), false, 'same');
+    await f.queue.enqueue('original-B', text('B'), false, 'same');
+    const batchId = f.native[0].clientUserMessageId;
+    f.overrides.set('turn/steer', async () => {
+        f.native.splice(0);
+        await f.queue.committed(batchId, text('B'));
+        throw new Error('expected active turn id mismatch');
+    });
+    expect((await f.queue.steer('original-A', 'active-turn')).steered).toBe(false);
+    expect(f.queue.state('original-A')).toBe('queued');
+    expect(f.queue.state('original-B')).toBe('consumed');
+    expect(f.native).toHaveLength(1);
+    expect(f.native[0].input).toEqual(text('A'));
+    await f.queue.committed(f.native[0].clientUserMessageId, f.native[0].input);
+    expect(f.queue.state('original-A')).toBe('consumed');
+    expect(f.consumed).not.toHaveBeenCalledWith(['original-A', 'original-B']);
+});
+
+
+it('reconciles a lost restoration response without replacing the original aliases', async () => {
+    const f = await fixture();
+    await f.queue.enqueue('original-A', text('A'), false, 'same');
+    await f.queue.enqueue('original-B', text('B'), false, 'same');
+    f.overrides.set('turn/steer', () => {
+        f.overrides.set('thread/queue/update', params => {
+            f.native[0].input = structuredClone(params.input as QueueInput);
+            throw lost('restoration response lost');
+        });
+        throw new Error('expected active turn id mismatch');
+    });
+    expect((await f.queue.steer('original-A', 'active-turn')).steered).toBe(false);
+    expect(f.queue.state('original-A')).toBe('unknown');
+    f.overrides.delete('thread/queue/update');
+    await f.queue.reconcile();
+    expect(f.queue.state('original-A')).toBe('queued');
+    expect(f.queue.state('original-B')).toBe('queued');
+    expect(f.mirror).not.toHaveBeenCalledWith('original-A', null);
+    await f.queue.suspend();
+    expect(f.queue.state('original-A')).toBe('released');
+    expect(f.queue.state('original-B')).toBe('released');
+});
+
+it('keeps a lost fresh-add outcome unknown without replaying the consumed sibling', async () => {
+    const f = await fixture();
+    await f.queue.enqueue('original-A', text('A'), false, 'same');
+    await f.queue.enqueue('original-B', text('B'), false, 'same');
+    const batchId = f.native[0].clientUserMessageId;
+    f.overrides.set('turn/steer', async () => {
+        f.native.splice(0);
+        await f.queue.committed(batchId, text('B'));
+        f.overrides.set('thread/queue/add', params => {
+            f.native.push({ id: 'restored-A', clientUserMessageId: params.clientUserMessageId as string, input: params.input as QueueInput });
+            throw lost('fresh add response lost');
+        });
+        throw new Error('expected active turn id mismatch');
+    });
+    await f.queue.steer('original-A', 'active-turn');
+    expect(f.queue.state('original-A')).toBe('unknown');
+    expect(f.queue.state('original-B')).toBe('consumed');
+    f.overrides.delete('thread/queue/add');
+    const reloaded = new SharedCodexQueue(f.client, 'thread', join(f.directory, 'ledger.json'), vi.fn(), vi.fn());
+    await reloaded.load();
+    await reloaded.enqueue('original-A', text('A'), false, 'same');
+    expect(f.native).toHaveLength(1);
+    expect(f.native[0].input).toEqual(text('A'));
+    expect(f.calls.filter(c => c.method === 'thread/queue/add')).toHaveLength(2);
+});
+
+
+it('recovers detached steering ownership from an older v2 ledger without the flag', async () => {
+    const f = await fixture();
+    await f.queue.enqueue('original-A', text('A'), false, 'same');
+    await f.queue.enqueue('original-B', text('B'), false, 'same');
+    f.overrides.set('turn/steer', () => { throw lost('steer reply lost'); });
+    await f.queue.steer('original-A', 'active-turn');
+    const file = join(f.directory, 'ledger.json');
+    const saved = JSON.parse(await readFile(file, 'utf8'));
+    delete saved.entries['original-A'].detachedSteer;
+    await writeFile(file, JSON.stringify(saved));
+    const reloaded = new SharedCodexQueue(f.client, 'thread', file, vi.fn(), vi.fn(), f.mirror);
+    await reloaded.load();
+    await reloaded.nativeMutation('thread/queue/delete', { threadId: 'thread', queuedSubmissionId: f.native[0].id });
+    expect(reloaded.state('original-A')).toBe('unknown');
+    expect(reloaded.state('original-B')).toBe('canceled');
+});
+
+it('preserves original identities when restoration is consumed before its update response', async () => {
+    const f = await fixture();
+    await f.queue.enqueue('original-A', text('A'), false, 'same');
+    await f.queue.enqueue('original-B', text('B'), false, 'same');
+    const batchId = f.native[0].clientUserMessageId;
+    f.overrides.set('turn/steer', () => {
+        f.overrides.set('thread/queue/update', async params => {
+            f.native[0].input = structuredClone(params.input as QueueInput);
+            await f.queue.committed(batchId, params.input);
+            return { queuedSubmission: structuredClone(f.native[0]) };
+        });
+        throw new Error('expected active turn id mismatch');
+    });
+    await f.queue.steer('original-A', 'active-turn');
+    expect(f.queue.state('original-A')).toBe('consumed');
+    expect(f.queue.state('original-B')).toBe('consumed');
+    expect(f.consumed).toHaveBeenCalledWith(['original-A', 'original-B']);
+});
+
+it('never retries restoration whose missing-submission response is itself uncertain', async () => {
+    const f = await fixture();
+    await f.queue.enqueue('original-A', text('A'), false, 'same');
+    await f.queue.enqueue('original-B', text('B'), false, 'same');
+    f.overrides.set('turn/steer', () => {
+        f.overrides.set('thread/queue/update', () => { throw lost('queued submission not found'); });
+        throw new Error('expected active turn id mismatch');
+    });
+    await f.queue.steer('original-A', 'active-turn');
+    expect(f.queue.state('original-A')).toBe('unknown');
+    expect(f.calls.filter(c => c.method === 'thread/queue/add')).toHaveLength(1);
+});
+
+it('does not reattach a restored standalone input when delayed sibling consumption arrives', async () => {
+    const f = await fixture();
+    await f.queue.enqueue('original-A', text('A'), false, 'same');
+    await f.queue.enqueue('original-B', text('B'), false, 'same');
+    const batchId = f.native[0].clientUserMessageId;
+    f.overrides.set('turn/steer', () => {
+        f.native.splice(0);
+        throw new Error('expected active turn id mismatch');
+    });
+    await f.queue.steer('original-A', 'active-turn');
+    await f.queue.committed(batchId, text('B'));
+    expect(f.queue.state('original-A')).toBe('queued');
+    await f.queue.suspend();
+    expect(f.queue.state('original-A')).toBe('released');
+    expect(f.queue.state('original-B')).toBe('consumed');
 });

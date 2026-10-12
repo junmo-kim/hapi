@@ -53,11 +53,12 @@ afterEach(async () => {
     finally { vi.useRealTimers(); }
 });
 
-async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end'] }) {
+async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; create?: RootHost['create'] }) {
     const directory = await mkdtemp('/tmp/hapi-shared-root-');
     let state: AgentState = { steeringActive: true };
     let metadata: Metadata = { path: directory, host: 'test', flavor: 'codex' };
     let reconnect: (() => void) | null = null;
+    let userMessage: Parameters<ApiSessionClient['onUserMessage']>[0] | undefined;
     const updateState = vi.fn((fn: (value: AgentState) => AgentState) => { state = fn(state); });
     const rpc = new Map<string, (raw: unknown) => Promise<unknown>>();
     const send = vi.fn();
@@ -67,7 +68,8 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end'] }) 
         hubArchived: opts?.hubArchived ?? false,
         updateMetadata: (fn: (value: Metadata) => Metadata) => { metadata = fn(metadata); },
         updateAgentState: updateState, keepAlive() {},
-        onUserMessage() {}, onCancelQueuedMessage() {}, onRetryQueuedMessage() {},
+        onUserMessage: (callback: Parameters<ApiSessionClient['onUserMessage']>[0]) => { userMessage = callback; },
+        onCancelQueuedMessage() {}, onRetryQueuedMessage() {},
         onReconnect: (fn: (() => void) | null) => { reconnect = fn; },
         on(event: string, listener: () => void) {
             if (event === 'hub-archived') hubArchivedListeners.push(listener);
@@ -80,7 +82,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end'] }) 
     const end = opts?.end ?? (async () => { throw new Error('Unexpected root archive'); });
     const root = new SharedCodexRoot({ session, workingDirectory: directory } as SessionBootstrapResult, {
         directory, generation: 'test', endpoint: 'mock', settingsFor: () => undefined,
-        create: async () => { throw new Error('Unexpected root creation'); },
+        create: opts?.create ?? (async () => { throw new Error('Unexpected root creation'); }),
         end
     } satisfies RootHost);
     cleanups.push(async () => { await root.close(false); await rm(directory, { recursive: true, force: true }); });
@@ -94,7 +96,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end'] }) 
         abandoned(): void;
     };
     return {
-        root, native, rpc, send, metadata: () => metadata, state: () => state, updateState,
+        root, native, rpc, send, submit: (text: string, id: string) => userMessage?.({ role: 'user', content: { type: 'text', text } }, id), metadata: () => metadata, state: () => state, updateState,
         reconnect: () => reconnect?.(),
         emitHubArchived: () => { for (const listener of hubArchivedListeners) listener(); },
         hubArchivedListenerCount: () => hubArchivedListeners.length,
@@ -372,5 +374,45 @@ describe('shared root Abort retains the native queue (control: no drain/resume p
 
         expect(requests.filter((r) => r.method === 'turn/interrupt')).toEqual([]);
         expect(f.native.queue.length).toBe(0);
+    });
+});
+
+
+describe('batch history fork boundaries', () => {
+    it.each([1, 2])('forks at the first original member of a %i-member accepted batch', async count => {
+        const create = vi.fn().mockResolvedValue({
+            threadId: 'child-thread', session: { sessionId: 'child-session' }, initialSettings: vi.fn()
+        });
+        const f = await fixture({ create });
+        await f.root.activate();
+        f.submit('A', 'original-A');
+        await vi.waitFor(() => expect(f.native.queue).toHaveLength(1));
+        if (count === 2) {
+            vi.spyOn(f.root.client, 'request').mockImplementation(async (method, raw) => {
+                const params = raw as Record<string, unknown>;
+                if (method === 'thread/queue/list') return { data: f.native.queue } as never;
+                if (method === 'thread/queue/update') {
+                    f.native.queue[0].input = params.input;
+                    return { queuedSubmission: f.native.queue[0] } as never;
+                }
+                if (method === 'thread/read') return { thread: structuredClone(f.native.thread) } as never;
+                throw new Error(`Unexpected ${method}`);
+            });
+            f.submit('B', 'original-B');
+            await vi.waitFor(() => expect(f.native.queue[0].input).toEqual([{ type: 'text', text: 'A' }, { type: 'text', text: 'B' }]));
+        }
+        const item = { id: 'user-batch', type: 'userMessage',
+            clientId: f.native.queue[0].clientUserMessageId, content: f.native.queue[0].input };
+        f.native.thread.turns.push({ id: 'batch-turn', status: 'completed', items: [item] });
+        f.native.notify('item/completed', { threadId: 'thread', turnId: 'batch-turn', item });
+        await vi.waitFor(() => expect(f.metadata().conversationHistoryPoints?.['original-A']).toBe(true));
+        const fork = f.rpc.get(RPC_METHODS.ForkConversation)!;
+        expect(await fork({ messageLocalId: 'original-A' })).toEqual({ nativeSessionId: 'child-thread', sessionId: 'child-session' });
+        expect(create).toHaveBeenCalledWith('thread/fork', expect.objectContaining({ threadId: 'thread', beforeTurnId: 'batch-turn' }), f.root);
+        if (count === 2) {
+            await expect(fork({ messageLocalId: 'original-B' })).rejects.toThrow('Cannot cut inside');
+        }
+        item.content = [{ type: 'text', text: 'unmatched native content' }];
+        await expect(fork({ messageLocalId: 'original-A' })).rejects.toThrow('Cannot cut inside');
     });
 });

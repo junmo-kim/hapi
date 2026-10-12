@@ -9,7 +9,8 @@ const InputSchema = z.array(z.object({ type: z.string() }).passthrough());
 export const SubmissionSchema = z.object({ id: z.string(), input: InputSchema, clientUserMessageId: z.string() });
 const StateSchema = z.enum(['unknown', 'queued', 'consumed', 'canceled', 'rejected', 'released']);
 const EntrySchema = z.object({
-    input: InputSchema, state: StateSchema, nativeId: z.string().optional(), batchId: z.string().optional()
+    input: InputSchema, state: StateSchema, nativeId: z.string().optional(), batchId: z.string().optional(),
+    detachedSteer: z.boolean().optional()
 });
 const MemberSchema = z.object({ id: z.string(), input: InputSchema });
 const RemovalSchema = z.object({
@@ -86,7 +87,17 @@ export class SharedCodexQueue {
         try { raw = JSON.parse(await readFile(this.file, 'utf8')); }
         catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; return; }
         const current = LedgerV2Schema.safeParse(raw);
-        if (current.success) { this.entries = current.data.entries; this.batches = current.data.batches; return; }
+        if (current.success) {
+            this.entries = current.data.entries; this.batches = current.data.batches;
+            // Earlier v2 ledgers recorded confirmed shrink versions but no detached flag.
+            for (const batch of Object.values(this.batches)) {
+                const version = this.currentVersion(batch);
+                const proven = version?.status === 'consumed' || (batch.current > 0
+                    && batch.versions.slice(0, batch.current).every(prior => prior.status !== 'eligible'));
+                if (version && proven) this.withdrawRemovals(batch, version);
+            }
+            return;
+        }
         // Old record-only ledger: no batches, entries are authoritative.
         this.entries = LedgerSchema.parse(raw); this.batches = {};
     }
@@ -108,6 +119,7 @@ export class SharedCodexQueue {
     state(id: string): Entry['state'] | undefined { return this.entries[id]?.state; }
 
     private nativeIdFor(entry: Entry): string | undefined {
+        if (entry.detachedSteer) return undefined;
         // An append can lose its ACK before the new member receives nativeId.
         // Its persisted group still identifies the sole native submission.
         return (entry.batchId ? this.batches[entry.batchId]?.nativeId : undefined) || entry.nativeId;
@@ -150,12 +162,21 @@ export class SharedCodexQueue {
         if (submission.id !== batch.nativeId || submission.clientUserMessageId !== batch.clientId
             || normalizeContent(submission.input) !== normalizeContent(expected)) throw new z.ZodError([]);
     }
-    private withdrawRemovals(version: Version): void {
+    /** Native history proves the accepted batch boundary, never an interior member. */
+    originalBoundaryId(id: string, actualContent: unknown): string | undefined {
+        const batch = this.batches[id];
+        return batch ? this.matchAccepted(batch, normalizeContent(actualContent))?.members[0]?.id : id;
+    }
+    private withdrawRemovals(batch: Batch, version: Version): void {
         for (const removal of version.removed ?? []) {
-            // Steer removals are owned by the steer path and must never be canceled here.
-            if (removal.intent === 'steer') continue;
             const entry = this.entries[removal.id];
-            if (entry && entry.state !== 'consumed') { entry.state = 'canceled'; this.mirror?.(removal.id, null); }
+            // Delayed proof for an old group cannot change a restored/new submission.
+            if (!entry || entry.batchId !== batch.clientId) continue;
+            if (removal.intent === 'steer') {
+                entry.detachedSteer = true;
+            } else if (entry.state !== 'consumed' && entry.state !== 'canceled') {
+                entry.state = 'canceled'; this.mirror?.(removal.id, null);
+            }
         }
     }
 
@@ -212,7 +233,7 @@ export class SharedCodexQueue {
                 entry.state = 'consumed';
             }
         }
-        this.withdrawRemovals(version);
+        this.withdrawRemovals(batch, version);
         version.status = 'consumed';
         if (batch.versions[batch.current] === version && batch.state !== 'canceled') batch.state = 'consumed';
         await this.save();
@@ -272,6 +293,7 @@ export class SharedCodexQueue {
             // An older snapshot cannot prove an unresolved newer proposal failed.
             if (index >= batch.current) {
                 this.supersedeOlder(batch, version);
+                this.withdrawRemovals(batch, version);
                 if (batch.state !== 'consumed' && batch.state !== 'canceled' && batch.state !== 'released') batch.state = 'queued';
             }
             batch.nativeId = item.id;
@@ -305,6 +327,7 @@ export class SharedCodexQueue {
             if (entry.state === 'consumed' || entry.state === 'canceled') continue;
             const changed = entry.nativeId !== item.id || JSON.stringify(entry.input) !== JSON.stringify(member.input);
             entry.nativeId = item.id; entry.input = member.input; entry.state = 'queued';
+            delete entry.detachedSteer;
             if (changed) this.mirror?.(member.id, member.input);
         }
     }
@@ -718,6 +741,8 @@ export class SharedCodexQueue {
                 return { steered: false, error: error instanceof Error ? error.message : String(error) };
             }
         }
+        // The confirmed shrink/delete separates this request from its siblings.
+        entry.detachedSteer = true; await this.save();
         try {
             await this.client.request('turn/steer', { threadId: this.threadId, expectedTurnId, input, clientUserMessageId: id });
             entry.state = 'consumed'; await this.save(); this.consumed([id], true); return { steered: true };
@@ -726,26 +751,39 @@ export class SharedCodexQueue {
             if (isIndeterminateError(error)) { batch.state = 'unknown'; this.uncertain([id]); return { steered: false, indeterminate: true }; }
             // Definite rejection: restore the removed input safely, keeping siblings.
             if (proposal) {
+                const restoration = this.version(version.input, version.members);
+                batch.versions.push(restoration); batch.current = batch.versions.length - 1;
+                await this.save();
                 try {
                     const response = await this.client.request('thread/queue/update', { threadId: this.threadId, queuedSubmissionId: batch.nativeId, input: version.input });
                     this.validateUpdate(response, batch, version.input);
                     // The proven restored group is authoritative again; keep its aliases ACKable.
                     proposal.status = 'superseded';
-                    this.supersedeOlder(batch, version);
-                    entry.state = 'queued';
-                } catch { entry.state = 'unknown'; batch.state = 'unknown'; this.uncertain([id]); }
+                    this.supersedeOlder(batch, restoration);
+                    if (this.state(id) !== 'consumed') entry.state = 'queued';
+                    delete entry.detachedSteer;
+                } catch (restoreError) {
+                    if (this.state(id) === 'consumed') return { steered: true };
+                    if (!indeterminate(restoreError) && queuedSubmissionNotFound(restoreError)) {
+                        restoration.status = 'superseded';
+                        await this.restoreDetachedSteer(entry, id, input);
+                    } else { entry.state = 'unknown'; batch.state = 'unknown'; this.uncertain([id]); }
+                }
             } else {
-                try {
-                    const response = z.object({ queuedSubmission: SubmissionSchema }).parse(await this.client.request('thread/queue/add', {
-                        threadId: this.threadId, input, clientUserMessageId: id
-                    }));
-                    delete this.batches[batch.clientId]; delete entry.batchId;
-                    entry.state = 'queued'; entry.nativeId = response.queuedSubmission.id;
-                } catch { entry.state = 'unknown'; this.uncertain([id]); }
+                await this.restoreDetachedSteer(entry, id, input);
             }
             await this.save();
             return { steered: false, error: error instanceof Error ? error.message : String(error) };
         }
+    }
+
+    private async restoreDetachedSteer(entry: Entry, id: string, input: QueueInput): Promise<void> {
+        // Both the steer rejection and missing/deleted sibling submission are proven.
+        // Persist replay eligibility before the new add journals its own uncertainty.
+        delete entry.batchId; delete entry.nativeId; delete entry.detachedSteer;
+        entry.input = input; entry.state = 'released'; await this.save();
+        try { await this.enqueueLegacy(id, input, false); }
+        catch { if (this.state(id) === 'unknown') this.uncertain([id]); }
     }
 
     async flush(): Promise<void> { await this.operations.catch(() => {}); await this.writes; }
