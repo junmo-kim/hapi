@@ -130,7 +130,6 @@ vi.mock('@/components/AssistantChat/ComposerButtons', () => ({
         onModelValueToggle?: () => void
     }) => (
         <div>
-            <button type="button" onClick={props.onSend}>send</button>
             <button type="button" disabled={props.abortDisabled} onClick={props.onAbort}>Abort</button>
             <button type="button" onClick={props.onExpandedToggle}>
                 {props.expanded ? 'collapse' : 'expand'}
@@ -143,6 +142,12 @@ vi.mock('@/components/AssistantChat/ComposerButtons', () => ({
             <output data-testid="pending-schedule">{JSON.stringify(props.pendingSchedule)}</output>
         </div>
     ),
+    // HappyComposer places UnifiedButton beside the card (omitPrimaryButton).
+    UnifiedButton: (props: { onSend: () => void }) => (
+        <button type="button" onClick={props.onSend}>send</button>
+    ),
+    DictationButton: () => null,
+    isComposerPrimaryFillHeight: () => true,
 }))
 
 type HarnessControls = {
