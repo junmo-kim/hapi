@@ -1,8 +1,47 @@
 import { createServer } from 'node:net';
+import { spawn } from 'node:child_process';
 import { AcpSdkBackend } from '@/agent/backends/acp';
 import { buildOpencodeEnv } from './config';
 import { getInvokedCwd } from '@/utils/invokedCwd';
 import { getAgentLaunchCommand } from '@/agent/agentLaunchCommand';
+
+/**
+ * Detects whether the installed `opencode` binary speaks the v1 (≤1.x) or
+ * v2 (≥2.x) CLI contract. v2 dropped the `opencode acp` `--cwd/--port/
+ * --hostname` flags and redesigned the internal HTTP API (see the
+ * opencode-v2-compat plan), so the launcher needs the major version before
+ * spawning. Runs `command --version` (5s timeout) and parses the first
+ * `v?N.` from stdout; any spawn failure, timeout or unparseable output
+ * falls back to 'v1' — the pre-v2-aware behavior.
+ */
+export async function detectOpencodeFlavorVersion(command = 'opencode'): Promise<'v1' | 'v2'> {
+    try {
+        const stdout = await new Promise<string>((resolve, reject) => {
+            const child = spawn(command, ['--version'], { stdio: ['ignore', 'pipe', 'ignore'] });
+            let out = '';
+            const timer = setTimeout(() => {
+                child.kill();
+                reject(new Error('opencode --version timed out'));
+            }, 5000);
+            child.stdout?.on('data', (chunk) => {
+                out += String(chunk);
+            });
+            child.on('error', (error) => {
+                clearTimeout(timer);
+                reject(error instanceof Error ? error : new Error(String(error)));
+            });
+            child.on('close', () => {
+                clearTimeout(timer);
+                resolve(out);
+            });
+        });
+        const match = /v?(\d+)\./.exec(stdout);
+        const major = match ? Number.parseInt(match[1]!, 10) : Number.NaN;
+        return major === 2 ? 'v2' : 'v1';
+    } catch {
+        return 'v1';
+    }
+}
 
 function filterEnv(env: NodeJS.ProcessEnv): Record<string, string> {
     const result: Record<string, string> = {};
