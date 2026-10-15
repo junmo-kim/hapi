@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { captureCompactionMarkerSnapshot, fetchCompactionResult, splitProviderModel, triggerOpencodeCompact } from './opencodeCompactBridge';
+import { captureCompactionMarkerSnapshot, fetchCompactionResult, readOpencodeV2ServerPassword, splitProviderModel, triggerOpencodeCompact, triggerOpencodeCompactV2 } from './opencodeCompactBridge';
 
 // `signal` is a required field (see OpencodeCompactCallOpts's doc comment) —
 // most tests below don't exercise abort behavior at all, so this is a
@@ -351,5 +351,134 @@ describe('fetchCompactionResult', () => {
         await expect(resultPromise).resolves.toEqual({
             status: 'unverified', reason: 'Compaction result could not be verified.'
         });
+    });
+});
+
+describe('triggerOpencodeCompactV2', () => {
+    it('posts to /api/session/:id/compact with Basic auth and providerID/modelID body', async () => {
+        const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+        await triggerOpencodeCompactV2({
+            baseUrl: 'http://127.0.0.1:48273',
+            sessionId: 'ses_abc/1',
+            providerId: 'anthropic',
+            modelId: 'claude-sonnet-4-5',
+            password: 'secret-pw',
+            fetchImpl
+        });
+        expect(fetchImpl).toHaveBeenCalledTimes(1);
+        const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+        expect(url).toBe('http://127.0.0.1:48273/api/session/ses_abc%2F1/compact');
+        expect(init.method).toBe('POST');
+        expect((init.headers as Record<string, string>).authorization)
+            .toBe('Basic ' + Buffer.from('opencode:secret-pw').toString('base64'));
+        expect((init.headers as Record<string, string>)['content-type']).toBe('application/json');
+        expect(JSON.parse(String(init.body))).toEqual({ providerID: 'anthropic', modelID: 'claude-sonnet-4-5' });
+    });
+
+    it('encodes the Basic credentials from the OPENCODE_PASSWORD value', async () => {
+        const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+        await triggerOpencodeCompactV2({
+            baseUrl: 'http://127.0.0.1:1',
+            sessionId: 's',
+            providerId: 'p',
+            modelId: 'm',
+            password: 'user:pass@with/special',
+            fetchImpl
+        });
+        const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+        expect((init.headers as Record<string, string>).authorization)
+            .toBe('Basic ' + Buffer.from('opencode:user:pass@with/special').toString('base64'));
+    });
+
+    it('throws an Error including status and body on non-2xx responses', async () => {
+        const fetchImpl = vi.fn(async () => new Response('denied', { status: 401 }));
+        await expect(triggerOpencodeCompactV2({
+            baseUrl: 'http://127.0.0.1:1',
+            sessionId: 's',
+            providerId: 'p',
+            modelId: 'm',
+            password: 'pw',
+            fetchImpl
+        })).rejects.toThrow(/401/);
+        await expect(triggerOpencodeCompactV2({
+            baseUrl: 'http://127.0.0.1:1',
+            sessionId: 's',
+            providerId: 'p',
+            modelId: 'm',
+            password: 'pw',
+            fetchImpl
+        })).rejects.toThrow(/denied/);
+    });
+
+    it('propagates fetch failures as errors', async () => {
+        const fetchImpl = vi.fn(async () => {
+            throw new Error('connection refused');
+        });
+        await expect(triggerOpencodeCompactV2({
+            baseUrl: 'http://127.0.0.1:1',
+            sessionId: 's',
+            providerId: 'p',
+            modelId: 'm',
+            password: 'pw',
+            fetchImpl
+        })).rejects.toThrow('connection refused');
+    });
+});
+
+describe('readOpencodeV2ServerPassword', () => {
+    it('extracts OPENCODE_PASSWORD from a parsed /proc environ payload (linux)', async () => {
+        const environ = 'PATH=/usr/bin\0HOME=/home/u\0OPENCODE_PASSWORD=abc123\0TERM=xterm\0';
+        const password = await readOpencodeV2ServerPassword(4242, {
+            platform: 'linux',
+            listChildPids: async () => [5150],
+            readChildEnviron: async () => environ
+        });
+        expect(password).toBe('abc123');
+    });
+
+    it('returns null when the environ payload has no OPENCODE_PASSWORD', async () => {
+        const password = await readOpencodeV2ServerPassword(4242, {
+            platform: 'linux',
+            listChildPids: async () => [5150],
+            readChildEnviron: async () => 'PATH=/usr/bin\0HOME=/home/u\0'
+        });
+        expect(password).toBeNull();
+    });
+
+    it('returns null when environ parsing fails (read error)', async () => {
+        const password = await readOpencodeV2ServerPassword(4242, {
+            platform: 'linux',
+            listChildPids: async () => [5150],
+            readChildEnviron: async () => {
+                throw new Error('ENOENT');
+            }
+        });
+        expect(password).toBeNull();
+    });
+
+    it('extracts OPENCODE_PASSWORD from ps Eww output on non-linux platforms', async () => {
+        const password = await readOpencodeV2ServerPassword(4242, {
+            platform: 'darwin',
+            execImpl: async (command, args) => {
+                if (command === 'pgrep') {
+                    expect(args).toEqual(['-P', '4242']);
+                    return '5150\n';
+                }
+                expect(command).toBe('ps');
+                expect(args).toEqual(['Eww', '-p', '5150']);
+                return '  PID TTY      STAT   TIME COMMAND\n  5150 ?      Ss     0:00 /bin/opencode serve --stdio OPENCODE_PASSWORD=darwin-pw PATH=/usr/bin';
+            }
+        });
+        expect(password).toBe('darwin-pw');
+    });
+
+    it('returns null when pgrep/ps path yields nothing', async () => {
+        const password = await readOpencodeV2ServerPassword(4242, {
+            platform: 'darwin',
+            execImpl: async () => {
+                throw new Error('no such process');
+            }
+        });
+        expect(password).toBeNull();
     });
 });

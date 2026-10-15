@@ -392,6 +392,23 @@ export class AcpSdkBackend implements AgentBackend {
         // in-flight prompt to drain so we never interleave a switch with a session/prompt.
         await this.waitForResponseComplete();
 
+        // opencode v2 removed `session/set_model` from the wire (verified
+        // 2026-10-15: "Method not found"); the replacement is
+        // `session/set_config_option` with the fixed configId "model". Only
+        // taken when the launcher opted in via `acpModelSwitchViaConfigOption`
+        // AND the session actually advertises a model config option —
+        // otherwise fall through to the legacy path below unchanged.
+        if (this.options.acpModelSwitchViaConfigOption === true) {
+            const modelOption = this.sessionConfigOptions.get(sessionId)?.find((option) => option.id === 'model');
+            if (modelOption) {
+                await this.setConfigOption(sessionId, 'model', modelId);
+                if (opts?.flavor === 'opencode' || opts?.flavor === 'grok') {
+                    this.updateCurrentModelOptimistic(sessionId, modelId);
+                }
+                return;
+            }
+        }
+
         // ACP defines `session/set_model` ({ sessionId, modelId }) for inline model
         // switching — see ACP SDK schema `x-method: session/set_model`. OpenCode
         // 1.14.30 implements this exact wire name (the SDK's TypeScript helper is

@@ -1,3 +1,13 @@
+import { execFile } from 'node:child_process';
+import { readFile, readdir } from 'node:fs/promises';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
+
+function readFileUtf8(path: string): Promise<string> {
+    return readFile(path, 'utf8');
+}
+
 export type OpencodeCompactResult =
     | { ok: true; summaryText?: string }
     | { ok: false; error: string };
@@ -130,6 +140,132 @@ export async function triggerOpencodeCompact(opts: OpencodeCompactCallOpts & {
             ok: false,
             error: error instanceof Error ? error.message : String(error)
         };
+    }
+}
+
+/**
+ * v2 variant of `triggerOpencodeCompact` for opencode 2.x: the internal API
+ * was redesigned (verified 2026-10-15 against 2.0.29) — `POST /api/session/
+ * :id/compact` replaces `/session/:id/summarize`, and Basic Auth is now
+ * required (username `opencode`, password from the acp parent's
+ * `OPENCODE_PASSWORD` env). Non-2xx responses throw (the launcher's v2
+ * compact path has no result-verification GET to coordinate with, unlike the
+ * v1 `{ok:false}` contract).
+ *
+ * Like the v1 path, `timeout: false` (Bun-only fetch option) disables Bun's
+ * hardcoded ~5min idle timeout — compaction can legitimately take minutes.
+ */
+export async function triggerOpencodeCompactV2(opts: {
+    baseUrl: string;
+    sessionId: string;
+    providerId: string;
+    modelId: string;
+    password: string;
+    fetchImpl?: FetchLike;
+}): Promise<void> {
+    const fetchFn: FetchLike = opts.fetchImpl ?? fetch;
+    const url = `${opts.baseUrl}/api/session/${encodeURIComponent(opts.sessionId)}/compact`;
+    const init: BunFetchInit = {
+        method: 'POST',
+        headers: {
+            authorization: 'Basic ' + Buffer.from(`opencode:${opts.password}`).toString('base64'),
+            'content-type': 'application/json'
+        },
+        body: JSON.stringify({ providerID: opts.providerId, modelID: opts.modelId }),
+        // Bun-specific: disables Bun's hardcoded ~5min fetch timeout.
+        timeout: false
+    };
+    const response = await fetchFn(url, init as RequestInit);
+    if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        throw new Error(`OpenCode v2 compact request failed (${response.status}): ${text.slice(0, 300)}`);
+    }
+}
+
+/**
+ * Extracts the OPENCODE_PASSWORD value from a NUL-separated `/proc/<pid>/
+ * environ` payload. Exported for fixture tests.
+ */
+export function parseOpencodeEnvironPassword(environ: string): string | null {
+    for (const entry of environ.split('\0')) {
+        if (entry.startsWith('OPENCODE_PASSWORD=')) {
+            const value = entry.slice('OPENCODE_PASSWORD='.length);
+            return value.length > 0 ? value : null;
+        }
+    }
+    return null;
+}
+
+/**
+ * Extracts the OPENCODE_PASSWORD value from `ps Eww -p <pid>` output (the
+ * non-Linux fallback; Eww prints the full environment in COMMAND). Exported
+ * for fixture tests.
+ */
+export function parsePsEnvironPassword(output: string): string | null {
+    const match = /(?:^|\s)OPENCODE_PASSWORD=([^\s]+)/.exec(output);
+    if (!match) return null;
+    return match[1]!.length > 0 ? match[1]! : null;
+}
+
+/**
+ * Reads the OPENCODE_PASSWORD the v2 `opencode acp` parent generated and
+ * injected into its `serve --stdio` child's environment (verified
+ * 2026-10-15: the parent acp process's own env does not carry it — only the
+ * child's). On Linux, resolves the first child via the per-task `children`
+ * files under `/proc/<acpPid>/task/`; elsewhere falls back to `pgrep -P` +
+ * `ps Eww`. Returns null on
+ * any failure — callers disable the v2 compact bridge rather than guessing.
+ */
+export async function readOpencodeV2ServerPassword(acpPid: number, opts?: {
+    platform?: NodeJS.Platform;
+    listChildPids?: (acpPid: number) => Promise<number[]>;
+    readChildEnviron?: (childPid: number) => Promise<string>;
+    execImpl?: (command: string, args: string[]) => Promise<string>;
+}): Promise<string | null> {
+    const platform = opts?.platform ?? process.platform;
+    try {
+        if (platform === 'linux') {
+            const readEnviron = opts?.readChildEnviron ?? (async (childPid: number) =>
+                await readFile(`/proc/${childPid}/environ`, 'utf8'));
+            const childPids = opts?.listChildPids ?? (async (pid: number) => {
+                const tasks = await readdir(`/proc/${pid}/task`);
+                for (const task of tasks) {
+                    try {
+                        const children = await readFileUtf8(`/proc/${pid}/task/${task}/children`);
+                        const firstChild = children.trim().split(/\s+/)[0];
+                        if (firstChild) {
+                            return [Number.parseInt(firstChild, 10)];
+                        }
+                    } catch {
+                        // Try the next task; fall through to [] if none yields.
+                    }
+                }
+                return [];
+            });
+            for (const childPid of await childPids(acpPid)) {
+                try {
+                    const password = parseOpencodeEnvironPassword(await readEnviron(childPid));
+                    if (password) return password;
+                } catch {
+                    // Fall through to null if no child yields a password.
+                }
+            }
+            return null;
+        }
+        const run = async (command: string, args: string[]): Promise<string> => {
+            if (opts?.execImpl) {
+                return await opts.execImpl(command, args);
+            }
+            const { stdout } = await execFileAsync(command, args, { timeout: 5000 });
+            return stdout;
+        };
+        const childrenOutput = await run('pgrep', ['-P', String(acpPid)]);
+        const firstChild = childrenOutput.trim().split('\n')[0];
+        if (!firstChild) return null;
+        const psOutput = await run('ps', ['Eww', '-p', firstChild.trim()]);
+        return parsePsEnvironPassword(psOutput);
+    } catch {
+        return null;
     }
 }
 
