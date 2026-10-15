@@ -137,4 +137,30 @@ describe('createOpencodeBackend', () => {
         createOpencodeBackend({ cwd: '/tmp/x' });
         expect(constructorCalls[0]?.args).toEqual(['acp', '--cwd', '/tmp/x']);
     });
+
+    it('v1: keeps existing args even when majorVersion is explicitly v1', () => {
+        createOpencodeBackend({ cwd: '/tmp/x', port: 5555, hostname: '127.0.0.1', majorVersion: 'v1' });
+        expect(constructorCalls[0]?.args).toEqual([
+            'acp', '--cwd', '/tmp/x', '--port', '5555', '--hostname', '127.0.0.1'
+        ]);
+    });
+
+    it('v2: passes only [acp] args with spawnCwd and config-option model switch', () => {
+        createOpencodeBackend({ cwd: '/tmp/x', majorVersion: 'v2' });
+        const call = constructorCalls[0] as unknown as {
+            args?: string[];
+            spawnCwd?: string;
+            acpModelSwitchViaConfigOption?: boolean;
+        };
+        expect(call.args).toEqual(['acp']);
+        expect(call.spawnCwd).toBe('/tmp/x');
+        expect(call.acpModelSwitchViaConfigOption).toBe(true);
+    });
+
+    it('v2: defaults spawnCwd to the invoked cwd when opts.cwd is absent', () => {
+        createOpencodeBackend({ majorVersion: 'v2' });
+        const call = constructorCalls[0] as unknown as { spawnCwd?: string };
+        expect(typeof call.spawnCwd).toBe('string');
+        expect(call.spawnCwd?.length).toBeGreaterThan(0);
+    });
 });

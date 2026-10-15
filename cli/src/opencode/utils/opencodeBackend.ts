@@ -90,8 +90,23 @@ export function createOpencodeBackend(opts: {
     cwd?: string;
     port?: number;
     hostname?: string;
+    majorVersion?: 'v1' | 'v2';
 }): AcpSdkBackend {
     const env = buildOpencodeEnv();
+    if (opts.majorVersion === 'v2') {
+        // opencode v2 rejects `acp --cwd/--port/--hostname` ("Unrecognized
+        // flag"); the working directory is taken from the spawn cwd instead,
+        // and the internal HTTP API port is bound randomly (post-discovered).
+        return new AcpSdkBackend({
+            command: getAgentLaunchCommand('opencode'),
+            args: ['acp'],
+            env: filterEnv(env),
+            spawnCwd: opts.cwd ?? getInvokedCwd(),
+            acpModelSwitchViaConfigOption: true,
+            textChunkMode: 'delta',
+            flavor: 'opencode',
+        });
+    }
     const args = ['acp', '--cwd', opts.cwd ?? getInvokedCwd()];
     if (opts.port !== undefined) {
         args.push('--port', String(opts.port));

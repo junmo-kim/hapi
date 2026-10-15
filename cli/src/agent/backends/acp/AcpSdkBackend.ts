@@ -136,6 +136,10 @@ export class AcpSdkBackend implements AgentBackend {
         command: string;
         args?: string[];
         env?: Record<string, string>;
+        /** Working directory passed to the spawned process (v2 `opencode acp` ignores `--cwd`). */
+        spawnCwd?: string;
+        /** v2 model switching: use `session/set_config_option('model')` instead of `session/set_model` (removed in v2). */
+        acpModelSwitchViaConfigOption?: boolean;
         textChunkMode?: AcpTextChunkMode;
         flavor?: AgentFlavor;
     }) {}
@@ -161,7 +165,8 @@ export class AcpSdkBackend implements AgentBackend {
         const transport = await AcpStdioTransport.create({
             command: this.options.command,
             args: this.options.args,
-            env: this.options.env
+            env: this.options.env,
+            cwd: this.options.spawnCwd
         });
 
         if (this.transport) {
