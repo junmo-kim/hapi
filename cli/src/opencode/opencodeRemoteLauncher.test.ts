@@ -48,7 +48,16 @@ const harness = vi.hoisted(() => ({
         sessionId: string;
         onRetry: (retry: { attempt: number; message: string }) => void;
     }>,
-    eventStreamCloseCount: 0
+    eventStreamCloseCount: 0,
+    // v2-compat harness: flavor detection + port/password discovery stubs.
+    detectedVersion: null as null | 'v1' | 'v2',
+    loopbackListeners: [] as number[],
+    discoveredPort: null as null | number,
+    discoveredPassword: null as null | string,
+    backendPid: 4242 as null | number,
+    createBackendArgs: [] as Array<Record<string, unknown>>,
+    v2DiscoveryCalls: [] as Array<{ beforeSnapshot: Set<number> }>,
+    v2PasswordCalls: [] as Array<{ pid: number }>
 }));
 
 // Captures the RemoteLauncherDisplayContext (including onExit/
@@ -70,7 +79,9 @@ vi.mock('ink', () => ({
 
 vi.mock('./utils/opencodeBackend', () => ({
     allocateFreePort: vi.fn(async () => 48273),
-    createOpencodeBackend: vi.fn(() => ({
+    createOpencodeBackend: vi.fn((opts?: Record<string, unknown>) => {
+        harness.createBackendArgs.push(opts ?? {});
+        return {
         initialize: vi.fn(async () => {}),
         newSession: vi.fn(async () => {
             if (harness.newSessionImpl) {
@@ -152,8 +163,20 @@ vi.mock('./utils/opencodeBackend', () => ({
         // handler around `fn`; that detail is irrelevant to these
         // launcher-level tests (which never assert on ACP session/update
         // forwarding), so the stub is a transparent pass-through.
-        suppressUpdatesDuring: vi.fn(async <T>(fn: () => Promise<T>): Promise<T> => fn())
-    }))
+        suppressUpdatesDuring: vi.fn(async <T>(fn: () => Promise<T>): Promise<T> => fn()),
+        getProcessPid: vi.fn(() => harness.backendPid)
+        };
+    }),
+    detectOpencodeFlavorVersion: vi.fn(async () => harness.detectedVersion ?? 'v1'),
+    listLoopbackListeners: vi.fn(async () => new Set(harness.loopbackListeners)),
+    discoverOpencodeV2RestPort: vi.fn(async (opts: { beforeSnapshot: Set<number> }) => {
+        harness.v2DiscoveryCalls.push({ beforeSnapshot: opts.beforeSnapshot });
+        return harness.discoveredPort;
+    }),
+    readOpencodeV2ServerPassword: vi.fn(async (pid: number) => {
+        harness.v2PasswordCalls.push({ pid });
+        return harness.discoveredPassword;
+    })
 }));
 
 vi.mock('@/codex/utils/buildHapiMcpBridge', () => ({
@@ -395,7 +418,7 @@ function createClearMode(): OpencodeMode {
 }
 
 describe('opencodeRemoteLauncher inline model switch', () => {
-    afterEach(() => {
+    afterEach(async () => {
         harness.setModelArgs = [];
         harness.setConfigOptionArgs = [];
         harness.promptCount = 0;
@@ -431,7 +454,20 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         harness.serverStopError = null;
         harness.eventStreamOptions = [];
         harness.eventStreamCloseCount = 0;
+        harness.detectedVersion = null;
+        harness.loopbackListeners = [];
+        harness.discoveredPort = null;
+        harness.discoveredPassword = null;
+        harness.backendPid = 4242;
+        harness.createBackendArgs = [];
+        harness.v2DiscoveryCalls = [];
+        harness.v2PasswordCalls = [];
         inkHarness.lastRenderProps = null;
+        const backendModule = await import('./utils/opencodeBackend');
+        const backendModuleFns = backendModule as unknown as Record<string, ReturnType<typeof vi.fn>>;
+        for (const name of ['createOpencodeBackend', 'detectOpencodeFlavorVersion', 'discoverOpencodeV2RestPort', 'listLoopbackListeners']) {
+            backendModuleFns[name]?.mockClear();
+        }
     });
 
     it('reaches /clear only after the earlier prompt settles, without starting another OpenCode turn', async () => {

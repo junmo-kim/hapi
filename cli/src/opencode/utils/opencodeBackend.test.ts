@@ -11,7 +11,8 @@ type FakeChild = {
 
 let fakeSpawnImpl: ((command: string, args: string[]) => FakeChild) | null = null;
 
-vi.mock('node:child_process', () => ({
+vi.mock('node:child_process', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('node:child_process')>()),
     spawn: (command: string, args: string[]) => {
         spawnCalls.push({ command, args });
         if (!fakeSpawnImpl) {
@@ -64,7 +65,7 @@ vi.mock('@/agent/backends/acp', () => ({
     })
 }));
 
-import { allocateFreePort, createOpencodeBackend, detectOpencodeFlavorVersion } from './opencodeBackend';
+import { allocateFreePort, createOpencodeBackend, detectOpencodeFlavorVersion, discoverOpencodeV2RestPort, listLoopbackListeners, parseLsofListeners, parseSsListeners } from './opencodeBackend';
 
 describe('detectOpencodeFlavorVersion', () => {
     beforeEach(() => {
@@ -162,5 +163,121 @@ describe('createOpencodeBackend', () => {
         const call = constructorCalls[0] as unknown as { spawnCwd?: string };
         expect(typeof call.spawnCwd).toBe('string');
         expect(call.spawnCwd?.length).toBeGreaterThan(0);
+    });
+});
+
+describe('parseSsListeners', () => {
+    it('extracts only 127.0.0.1 LISTEN ports from ss -tln output', () => {
+        const output = [
+            'State   Recv-Q  Send-Q   Local Address:Port    Peer Address:Port  Process',
+            'LISTEN  0       128      127.0.0.1:40941      0.0.0.0:*',
+            'LISTEN  0       511          [::1]:40942          [::]:*',
+            'LISTEN  0       4096       0.0.0.0:22             0.0.0.0:*',
+            'LISTEN  0       128      127.0.0.1:39999      0.0.0.0:*'
+        ].join('\n');
+        expect(parseSsListeners(output)).toEqual(new Set([40941, 39999]));
+    });
+
+    it('returns empty set for output without loopback listeners', () => {
+        expect(parseSsListeners('State Recv-Q Send-Q\nLISTEN 0 128 0.0.0.0:22 0.0.0.0:*')).toEqual(new Set());
+        expect(parseSsListeners('')).toEqual(new Set());
+    });
+});
+
+describe('parseLsofListeners', () => {
+    it('extracts only 127.0.0.1 LISTEN ports from lsof output', () => {
+        const output = [
+            'COMMAND   PID  USER   FD   TYPE             DEVICE  SIZE/OFF NODE NAME',
+            'node    12345 lupin   24u  IPv4  0x1234567890abcdef      0t0  TCP 127.0.0.1:40941 (LISTEN)',
+            'node    12345 lupin   25u  IPv6  0x1234567890abcdee      0t0  TCP [::1]:40942 (LISTEN)',
+            'sshd     1000  root    3u   IPv4  0x1234567890abcddf      0t0  TCP *:22 (LISTEN)'
+        ].join('\n');
+        expect(parseLsofListeners(output)).toEqual(new Set([40941]));
+    });
+
+    it('returns empty set for output without loopback listeners', () => {
+        expect(parseLsofListeners('COMMAND PID USER\nsshd 1000 root 3u IPv4 *:22 (LISTEN)')).toEqual(new Set());
+        expect(parseLsofListeners('')).toEqual(new Set());
+    });
+});
+
+describe('listLoopbackListeners', () => {
+    it('parses ss output on linux', async () => {
+        const listeners = await listLoopbackListeners({
+            execImpl: async (command, args) => {
+                expect(command).toBe('ss');
+                expect(args).toEqual(['-tln']);
+                return 'LISTEN 0 128 127.0.0.1:41000 0.0.0.0:*';
+            }
+        });
+        expect(listeners).toEqual(new Set([41000]));
+    });
+
+    it('falls back to lsof on darwin', async () => {
+        const listeners = await listLoopbackListeners({
+            platform: 'darwin',
+            execImpl: async (command, args) => {
+                expect(command).toBe('lsof');
+                expect(args).toEqual(['-iTCP', '-sTCP:LISTEN', '-n', '-P']);
+                return 'node 1 u 4u IPv4 TCP 127.0.0.1:41001 (LISTEN)';
+            }
+        });
+        expect(listeners).toEqual(new Set([41001]));
+    });
+
+    it('returns empty set when both commands fail', async () => {
+        const listeners = await listLoopbackListeners({
+            execImpl: async () => {
+                throw new Error('no ss, no lsof');
+            }
+        });
+        expect(listeners.size).toBe(0);
+    });
+});
+
+describe('discoverOpencodeV2RestPort', () => {
+    it('returns the first port newly bound since the before snapshot', async () => {
+        const beforeSnapshot = new Set([1000, 2000]);
+        let call = 0;
+        const port = await discoverOpencodeV2RestPort({
+            beforeSnapshot,
+            pollIntervalMs: 1,
+            scanImpl: async () => {
+                call++;
+                return call === 1 ? new Set([1000, 2000]) : new Set([1000, 2000, 41234]);
+            }
+        });
+        expect(port).toBe(41234);
+    });
+
+    it('prefers the lowest new port when several appear', async () => {
+        const port = await discoverOpencodeV2RestPort({
+            beforeSnapshot: new Set(),
+            pollIntervalMs: 1,
+            scanImpl: async () => new Set([55555, 40000, 47777])
+        });
+        expect(port).toBe(40000);
+    });
+
+    it('returns null on timeout when no new port appears', async () => {
+        const port = await discoverOpencodeV2RestPort({
+            beforeSnapshot: new Set([1000]),
+            timeoutMs: 30,
+            pollIntervalMs: 10,
+            scanImpl: async () => new Set([1000])
+        });
+        expect(port).toBeNull();
+    });
+
+    it('returns null when scanning always fails', async () => {
+        const port = await discoverOpencodeV2RestPort({
+            beforeSnapshot: new Set(),
+            timeoutMs: 30,
+            pollIntervalMs: 10,
+            scanImpl: async () => {
+                throw new Error('scan failed');
+            }
+        });
+        expect(port).toBeNull();
     });
 });

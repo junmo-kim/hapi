@@ -1,5 +1,8 @@
+import { execFile, spawn } from 'node:child_process';
 import { createServer } from 'node:net';
-import { spawn } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 import { AcpSdkBackend } from '@/agent/backends/acp';
 import { buildOpencodeEnv } from './config';
 import { getInvokedCwd } from '@/utils/invokedCwd';
@@ -122,4 +125,108 @@ export function createOpencodeBackend(opts: {
         textChunkMode: 'delta',
         flavor: 'opencode',
     });
+}
+
+
+/**
+ * Parses `ss -tln` output and returns the set of ports bound to 127.0.0.1.
+ * Accepts the real header row and arbitrary column spacing; non-loopback
+ * (0.0.0.0, [::1], [::]) listeners are excluded.
+ */
+export function parseSsListeners(output: string): Set<number> {
+    const ports = new Set<number>();
+    for (const line of output.split('\n')) {
+        if (!/\bLISTEN\b/.test(line)) continue;
+        const match = /127\.0\.0\.1:(\d+)/.exec(line);
+        if (match) {
+            ports.add(Number.parseInt(match[1]!, 10));
+        }
+    }
+    return ports;
+}
+
+/**
+ * Parses `lsof -iTCP -sTCP:LISTEN -n -P` output (macOS fallback) and returns
+ * the set of ports bound to 127.0.0.1.
+ */
+export function parseLsofListeners(output: string): Set<number> {
+    const ports = new Set<number>();
+    for (const line of output.split('\n')) {
+        const match = /127\.0\.0\.1:(\d+)/.exec(line);
+        if (match) {
+            ports.add(Number.parseInt(match[1]!, 10));
+        }
+    }
+    return ports;
+}
+
+/**
+ * Lists loopback TCP listeners via `ss -tln` (Linux), falling back to
+ * `lsof -iTCP -sTCP:LISTEN -n -P` (darwin). Both failing yields an empty
+ * set — callers treat that as "no new ports will ever be discovered" and
+ * take the compact-unavailable fallback.
+ */
+export async function listLoopbackListeners(opts?: {
+    platform?: NodeJS.Platform;
+    execImpl?: (command: string, args: string[]) => Promise<string>;
+}): Promise<Set<number>> {
+    const platform = opts?.platform ?? process.platform;
+    const run = async (command: string, args: string[]): Promise<string> => {
+        if (opts?.execImpl) {
+            return await opts.execImpl(command, args);
+        }
+        const { stdout } = await execFileAsync(command, args, { timeout: 5000 });
+        return stdout;
+    };
+    if (platform === 'darwin') {
+        try {
+            return parseLsofListeners(await run('lsof', ['-iTCP', '-sTCP:LISTEN', '-n', '-P']));
+        } catch {
+            return new Set();
+        }
+    }
+    try {
+        return parseSsListeners(await run('ss', ['-tln']));
+    } catch {
+        try {
+            return parseLsofListeners(await run('lsof', ['-iTCP', '-sTCP:LISTEN', '-n', '-P']));
+        } catch {
+            return new Set();
+        }
+    }
+}
+
+/**
+ * Discovers the random loopback port opencode v2 bound for its internal HTTP
+ * API. v2 (unlike v1's `--port` flag) picks the port itself and exposes it
+ * nowhere (verified 2026-10-15: stdout/stderr/ACP responses all lack it), so
+ * the caller snapshots listeners before spawning and this polls for the
+ * first 127.0.0.1 port that appeared since. Returns null on timeout.
+ */
+export async function discoverOpencodeV2RestPort(opts: {
+    beforeSnapshot: Set<number>;
+    timeoutMs?: number;
+    pollIntervalMs?: number;
+    scanImpl?: () => Promise<Set<number>>;
+}): Promise<number | null> {
+    const timeoutMs = opts.timeoutMs ?? 10_000;
+    const pollIntervalMs = opts.pollIntervalMs ?? 500;
+    const scan = opts.scanImpl ?? (() => listLoopbackListeners());
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        try {
+            const current = await scan();
+            const newPorts = [...current]
+                .filter((port) => !opts.beforeSnapshot.has(port))
+                .sort((a, b) => a - b);
+            if (newPorts.length > 0) {
+                return newPorts[0]!;
+            }
+        } catch {
+            // Transient scan failures (e.g. command missing) are retried until
+            // the deadline; a persistently broken scan path times out to null.
+        }
+        await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+    }
+    return null;
 }
