@@ -8,6 +8,8 @@ import { buildOpencodeEnv } from './config';
 import { getInvokedCwd } from '@/utils/invokedCwd';
 import { getAgentLaunchCommand } from '@/agent/agentLaunchCommand';
 
+export type OpencodeFlavorVersion = 'v1' | 'v2';
+
 /**
  * Detects whether the installed `opencode` binary speaks the v1 (≤1.x) or
  * v2 (≥2.x) CLI contract. v2 dropped the `opencode acp` `--cwd/--port/

@@ -12,8 +12,22 @@ import { OpencodeDisplay } from '@/ui/ink/OpencodeDisplay';
 import type { OpencodeSession } from './session';
 import type { OpencodeMode, PermissionMode } from './types';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
-import { allocateFreePort, createOpencodeBackend } from './utils/opencodeBackend';
-import { captureCompactionMarkerSnapshot, fetchCompactionResult, splitProviderModel, triggerOpencodeCompact } from './utils/opencodeCompactBridge';
+import {
+    allocateFreePort,
+    createOpencodeBackend,
+    detectOpencodeFlavorVersion,
+    discoverOpencodeV2RestPort,
+    listLoopbackListeners,
+    type OpencodeFlavorVersion
+} from './utils/opencodeBackend';
+import {
+    captureCompactionMarkerSnapshot,
+    fetchCompactionResult,
+    readOpencodeV2ServerPassword,
+    splitProviderModel,
+    triggerOpencodeCompact,
+    triggerOpencodeCompactV2
+} from './utils/opencodeCompactBridge';
 import { formatOpencodePromptError } from './utils/opencodeErrorText';
 import {
     formatOpencodeRetryStatus,
@@ -135,6 +149,10 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     /** Subscription to the agent's own server event stream; null until the ACP session id is known, closed in cleanup(). */
     private eventStream: OpencodeEventSubscription | null = null;
     private stallErrorReportedForPrompt = false;
+    /** opencode major version detected once per session; v2 changes spawn args and baseUrl discovery. */
+    private majorVersion: OpencodeFlavorVersion | null = null;
+    /** OPENCODE_PASSWORD discovered from the v2 serve --stdio child env; null unless v2 discovery succeeded. */
+    private v2CompactPassword: string | null = null;
 
     constructor(
         session: OpencodeSession,
@@ -165,22 +183,41 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         });
         this.happyServer = happyServer;
 
-        // Pre-select a loopback port for the ACP subprocess's internal HTTP
-        // API and pass it explicitly via --port/--hostname. opencode does not
-        // announce the bound port anywhere (stdout/stderr/ACP responses) when
-        // launched with --port 0, so HAPI must choose it up front to be able
-        // to reach that HTTP API later (e.g. for /compact — see
-        // opencodeCompactBridge.ts).
-        const hostname = '127.0.0.1';
-        const port = await allocateFreePort(hostname);
-        const baseUrl = `http://${hostname}:${port}`;
-        this.baseUrl = baseUrl;
+        // opencode v2 dropped the `acp --cwd/--port/--hostname` flags and
+        // binds its internal HTTP API to a random loopback port it exposes
+        // nowhere (verified 2026-10-15), so the spawn strategy and the
+        // baseUrl discovery differ per major version. Detected once per
+        // session; any detection failure falls back to the v1 path.
+        this.majorVersion = await detectOpencodeFlavorVersion();
+        const isV2 = this.majorVersion === 'v2';
 
-        const backend = createOpencodeBackend({
-            cwd: session.path,
-            port,
-            hostname
-        });
+        // v1: pre-select a loopback port for the ACP subprocess's internal
+        // HTTP API and pass it explicitly via --port/--hostname. opencode
+        // does not announce the bound port anywhere (stdout/stderr/ACP
+        // responses) when launched with --port 0, so HAPI must choose it up
+        // front to be able to reach that HTTP API later (e.g. for /compact —
+        // see opencodeCompactBridge.ts).
+        const hostname = '127.0.0.1';
+        let beforeSnapshot: Set<number> | null = null;
+        let v1Port: number | null = null;
+        if (isV2) {
+            beforeSnapshot = await listLoopbackListeners();
+            this.baseUrl = null;
+        } else {
+            v1Port = await allocateFreePort(hostname);
+            this.baseUrl = `http://${hostname}:${v1Port}`;
+        }
+
+        const backend = isV2
+            ? createOpencodeBackend({
+                cwd: session.path,
+                majorVersion: 'v2' as OpencodeFlavorVersion
+            })
+            : createOpencodeBackend({
+                cwd: session.path,
+                port: v1Port!,
+                hostname
+            });
         this.backend = backend;
         registerAcpSessionTitleSync(backend, session.client);
 
@@ -220,6 +257,24 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         session.onSessionFound(acpSessionId);
         this.activeAcpSessionId = acpSessionId;
 
+        // v2: the internal HTTP API port is bound randomly after spawn and
+        // exposed nowhere, so discover it now that the ACP session is up
+        // (the server is listening by then). Both the port and the
+        // OPENCODE_PASSWORD (injected into the serve --stdio child env by
+        // the acp parent) must be found; otherwise /compact stays disabled
+        // exactly like the pre-v2 "not yet supported" fallback.
+        if (isV2) {
+            const discoveredPort = await discoverOpencodeV2RestPort({ beforeSnapshot: beforeSnapshot ?? new Set() });
+            const acpPid = backend.getProcessPid?.() ?? null;
+            const password = acpPid !== null ? await readOpencodeV2ServerPassword(acpPid) : null;
+            if (discoveredPort !== null && password) {
+                this.baseUrl = `http://127.0.0.1:${discoveredPort}`;
+                this.v2CompactPassword = password;
+            } else {
+                logger.warn('[opencode-remote] opencode v2 internal HTTP API discovery failed; /compact disabled for this session');
+            }
+        }
+
         // Upstream retries are announced only on the agent's own event
         // stream — not as ACP notifications and not on stderr. Measured
         // against a provider stubbed to answer 429: 40 minutes, 85 retries,
@@ -233,14 +288,18 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         // nothing else, so it is deliberately neither awaited nor
         // error-checked; the subscription reports its own failures at debug
         // level and keeps the session running.
+        // v2 keeps baseUrl null until discovery succeeds above; skipping the
+        // subscription then only degrades upstream-retry visibility.
+        if (this.baseUrl) {
         this.eventStream = subscribeToOpencodeEvents({
-            baseUrl,
+            baseUrl: this.baseUrl,
             // Required. Omitting it yields heartbeats and no session events
             // at all, with no error to notice — see the subscription's doc.
             directory: session.path,
             sessionId: acpSessionId,
             onRetry: (retry) => this.surfaceUpstreamRetry(retry)
         });
+        }
 
         // Seed currentBackendModel from the ACP session metadata so the first
         // batch — whose model the hub mirrors from the just-discovered session —
@@ -304,7 +363,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         // here — the same flag requestExit() already set — keeps
         // availability from ever un-flipping once a switch/exit is
         // underway.
-        if (!this.shouldExit) {
+        if (!this.shouldExit && this.baseUrl) {
             this.options.onCompactAvailabilityChange?.(true);
         }
 
@@ -972,6 +1031,16 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             this.compactOperationPhase = 'summarize';
             const requestResult = await backend.suppressUpdatesDuring(async () => {
                 try {
+                    if (this.majorVersion === 'v2') {
+                        await triggerOpencodeCompactV2({
+                            baseUrl,
+                            sessionId: acpSessionId,
+                            providerId: split.providerId,
+                            modelId: split.modelId,
+                            password: this.v2CompactPassword!
+                        });
+                        return { ok: true } as const;
+                    }
                     return await triggerOpencodeCompact({
                         baseUrl,
                         sessionId: acpSessionId,
@@ -979,6 +1048,14 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                         modelId: split.modelId,
                         signal: compactAbortController.signal
                     });
+                } catch (error) {
+                    if (this.majorVersion === 'v2') {
+                        return {
+                            ok: false,
+                            error: error instanceof Error ? error.message : String(error)
+                        } as const;
+                    }
+                    throw error;
                 } finally {
                     // suppressUpdatesDuring may still quiet-drain after the
                     // POST settles. It is no longer server-side compaction.

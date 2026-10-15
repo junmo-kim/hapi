@@ -171,11 +171,7 @@ vi.mock('./utils/opencodeBackend', () => ({
     listLoopbackListeners: vi.fn(async () => new Set(harness.loopbackListeners)),
     discoverOpencodeV2RestPort: vi.fn(async (opts: { beforeSnapshot: Set<number> }) => {
         harness.v2DiscoveryCalls.push({ beforeSnapshot: opts.beforeSnapshot });
-        return harness.discoveredPort;
-    }),
-    readOpencodeV2ServerPassword: vi.fn(async (pid: number) => {
-        harness.v2PasswordCalls.push({ pid });
-        return harness.discoveredPassword;
+return harness.discoveredPort;
     })
 }));
 
@@ -201,6 +197,7 @@ vi.mock('@/ui/ink/OpencodeDisplay', () => ({
 
 const compactHarness = vi.hoisted(() => ({
     calls: [] as Array<{ baseUrl: string; sessionId: string; providerId: string; modelId: string; signal?: AbortSignal }>,
+    v2Calls: [] as Array<{ baseUrl: string; sessionId: string; providerId: string; modelId: string; password: string }>,
     operationEvents: [] as string[],
     result: { ok: true } as { ok: true } | { ok: false; error: string },
     markerSnapshotCalls: [] as Array<{ baseUrl: string; sessionId: string; signal?: AbortSignal }>,
@@ -245,6 +242,14 @@ vi.mock('./utils/opencodeEventStream', async (importOriginal) => ({
 }));
 
 vi.mock('./utils/opencodeCompactBridge', () => ({
+    readOpencodeV2ServerPassword: vi.fn(async (pid: number) => {
+        harness.v2PasswordCalls.push({ pid });
+        return harness.discoveredPassword;
+    }),
+    triggerOpencodeCompactV2: vi.fn(async (opts: { baseUrl: string; sessionId: string; providerId: string; modelId: string; password: string }) => {
+        compactHarness.operationEvents.push('triggerV2');
+        compactHarness.v2Calls.push(opts);
+    }),
     splitProviderModel: (combined: string | null | undefined) => {
         if (!combined) return null;
         const idx = combined.indexOf('/');
@@ -436,6 +441,7 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         harness.resolvePrompt = null;
         harness.cancelPrompt.mockClear();
         compactHarness.calls = [];
+        compactHarness.v2Calls = [];
         compactHarness.operationEvents = [];
         compactHarness.result = { ok: true };
         compactHarness.markerSnapshotCalls = [];
@@ -2442,5 +2448,101 @@ describe('selectAbortStatusMessage', () => {
         });
 
         expect(decision).toEqual({ message: 'Turn aborted', shouldClearThinking: true });
+    });
+});
+
+function backendHarnessCreateArgs(): Record<string, unknown> {
+    return harness.createBackendArgs[0] ?? {};
+}
+
+function backendCreateArgsIncludePortFlags(): boolean {
+    const args = harness.createBackendArgs[0] as { port?: number; hostname?: string } | undefined;
+    return args?.port !== undefined || args?.hostname !== undefined;
+}
+
+describe('opencodeRemoteLauncher v2 flavor wiring', () => {
+    afterEach(async () => {
+        harness.detectedVersion = null;
+        harness.loopbackListeners = [];
+        harness.discoveredPort = null;
+        harness.discoveredPassword = null;
+        harness.backendPid = 4242;
+        harness.createBackendArgs = [];
+        harness.v2DiscoveryCalls = [];
+        harness.v2PasswordCalls = [];
+        harness.events = [];
+        harness.sessionModelsMetadata = undefined;
+        harness.promptCount = 0;
+        harness.promptImpl = null;
+        harness.newSessionImpl = null;
+        compactHarness.calls = [];
+        compactHarness.v2Calls = [];
+        compactHarness.operationEvents = [];
+        compactHarness.result = { ok: true };
+        compactHarness.markerSnapshot = { markerIds: ['before-this-request'] };
+        const backendModule = await import('./utils/opencodeBackend');
+        const backendModuleFns = backendModule as unknown as Record<string, ReturnType<typeof vi.fn>>;
+        for (const name of ['createOpencodeBackend', 'detectOpencodeFlavorVersion', 'discoverOpencodeV2RestPort', 'listLoopbackListeners']) {
+            backendModuleFns[name]?.mockClear();
+        }
+    });
+
+    it('v2: spawns with only [acp] args + majorVersion and discovers the REST port after the session is established', async () => {
+        harness.detectedVersion = 'v2';
+        harness.loopbackListeners = [1000];
+        harness.discoveredPort = 41234;
+        harness.discoveredPassword = 'pw-secret';
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        const { session } = createSessionStub([{ message: '', mode: createCompactMode('ollama/x') }]);
+
+        const availability: boolean[] = [];
+        const launcherPromise = opencodeRemoteLauncher(session as never, {
+            onCompactAvailabilityChange: (available: boolean) => availability.push(available)
+        });
+        while (compactHarness.v2Calls.length === 0) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        await launcherPromise;
+
+        expect(backendHarnessCreateArgs()).toMatchObject({ majorVersion: 'v2', cwd: '/tmp/hapi-opencode-test' });
+        expect(backendCreateArgsIncludePortFlags()).toBe(false);
+        expect(harness.v2DiscoveryCalls.length).toBe(1);
+        expect(harness.v2DiscoveryCalls[0]?.beforeSnapshot.has(1000)).toBe(true);
+        expect(harness.v2PasswordCalls).toEqual([{ pid: 4242 }]);
+        expect(compactHarness.v2Calls[0]?.baseUrl).toBe('http://127.0.0.1:41234');
+        expect(compactHarness.v2Calls[0]?.password).toBe('pw-secret');
+        expect(availability[0]).toBe(true);
+        expect(harness.v2PasswordCalls).toEqual([{ pid: 4242 }]);
+    });
+
+    it('v2: falls back to compact-unavailable when port discovery or password lookup fails', async () => {
+        harness.detectedVersion = 'v2';
+        harness.discoveredPort = null;
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        const { session, sessionEvents } = createSessionStub([{ message: '', mode: createCompactMode('ollama/x') }]);
+
+        const availability: boolean[] = [];
+        await opencodeRemoteLauncher(session as never, {
+            onCompactAvailabilityChange: (available: boolean) => availability.push(available)
+        });
+
+        expect(compactHarness.calls).toHaveLength(0);
+        expect(availability).not.toContain(true);
+        expect(sessionEvents.some((event) => String((event as { message?: string }).message ?? '').includes('base URL is not available'))).toBe(true);
+        const loggerModule = await import('@/ui/logger');
+        expect((loggerModule.logger.warn as unknown as ReturnType<typeof vi.fn>).mock.calls.some((call) => String(call[0]).includes('v2 internal HTTP API discovery failed'))).toBe(true);
+    });
+
+    it('v1: keeps the legacy allocateFreePort + --port/--hostname spawn path untouched', async () => {
+        harness.detectedVersion = 'v1';
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        const { session } = createSessionStub([{ message: '', mode: createCompactMode('ollama/x') }]);
+
+        await opencodeRemoteLauncher(session as never, {});
+
+        expect(backendHarnessCreateArgs()).toMatchObject({ port: 48273, hostname: '127.0.0.1' });
+        expect(harness.v2DiscoveryCalls).toHaveLength(0);
+        expect(harness.v2PasswordCalls).toHaveLength(0);
+        expect(compactHarness.calls[0]?.baseUrl).toBe('http://127.0.0.1:48273');
     });
 });

@@ -249,6 +249,11 @@ export class AcpStdioTransport {
         this.notificationHandler = handler;
     }
 
+    /** PID of the spawned ACP agent process, when known. */
+    getProcessPid(): number | null {
+        return typeof this.process.pid === 'number' ? this.process.pid : this.childPid;
+    }
+
     onStderrError(handler: ((error: AcpStderrError) => void) | null): void {
         this.stderrErrorHandler = handler;
     }
