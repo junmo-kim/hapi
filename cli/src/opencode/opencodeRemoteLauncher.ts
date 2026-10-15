@@ -23,6 +23,7 @@ import {
 import {
     captureCompactionMarkerSnapshot,
     fetchCompactionResult,
+    fetchCompactionResultV2,
     readOpencodeV2ServerPassword,
     splitProviderModel,
     triggerOpencodeCompact,
@@ -151,8 +152,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     private stallErrorReportedForPrompt = false;
     /** opencode major version detected once per session; v2 changes spawn args and baseUrl discovery. */
     private majorVersion: OpencodeFlavorVersion | null = null;
-    /** OPENCODE_PASSWORD discovered from the v2 serve --stdio child env; null unless v2 discovery succeeded. */
-    private v2CompactPassword: string | null = null;
+    /** v2-only REST access discovered after spawn; null unless both port and OPENCODE_PASSWORD were found. */
+    private v2RestInfo: { baseUrl: string; password: string } | null = null;
 
     constructor(
         session: OpencodeSession,
@@ -264,14 +265,20 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         // the acp parent) must be found; otherwise /compact stays disabled
         // exactly like the pre-v2 "not yet supported" fallback.
         if (isV2) {
-            const discoveredPort = await discoverOpencodeV2RestPort({ beforeSnapshot: beforeSnapshot ?? new Set() });
             const acpPid = backend.getProcessPid?.() ?? null;
+            const discoveredPort = await discoverOpencodeV2RestPort({
+                beforeSnapshot: beforeSnapshot ?? new Set(),
+                ownerPid: acpPid ?? undefined
+            });
             const password = acpPid !== null ? await readOpencodeV2ServerPassword(acpPid) : null;
             if (discoveredPort !== null && password) {
-                this.baseUrl = `http://127.0.0.1:${discoveredPort}`;
-                this.v2CompactPassword = password;
+                this.v2RestInfo = { baseUrl: `http://127.0.0.1:${discoveredPort}`, password };
             } else {
                 logger.warn('[opencode-remote] opencode v2 internal HTTP API discovery failed; /compact disabled for this session');
+                session.sendSessionEvent({
+                    type: 'message',
+                    message: 'OpenCode v2 internal API discovery failed; upstream retry status and /compact are unavailable this session.'
+                });
             }
         }
 
@@ -290,9 +297,10 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         // level and keeps the session running.
         // v2 keeps baseUrl null until discovery succeeds above; skipping the
         // subscription then only degrades upstream-retry visibility.
-        if (this.baseUrl) {
+        const restBaseUrl = this.v2RestInfo?.baseUrl ?? this.baseUrl;
+        if (restBaseUrl) {
         this.eventStream = subscribeToOpencodeEvents({
-            baseUrl: this.baseUrl,
+            baseUrl: restBaseUrl,
             // Required. Omitting it yields heartbeats and no session events
             // at all, with no error to notice — see the subscription's doc.
             directory: session.path,
@@ -363,7 +371,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         // here — the same flag requestExit() already set — keeps
         // availability from ever un-flipping once a switch/exit is
         // underway.
-        if (!this.shouldExit && this.baseUrl) {
+        if (!this.shouldExit && (this.v2RestInfo !== null || this.baseUrl !== null)) {
             this.options.onCompactAvailabilityChange?.(true);
         }
 
@@ -976,7 +984,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 || this.compactResultSuppressed;
 
             const backend = this.backend;
-            const baseUrl = this.baseUrl;
+            const v2Rest = this.majorVersion === 'v2' ? this.v2RestInfo : null;
+            const baseUrl = v2Rest?.baseUrl ?? this.baseUrl;
             if (!baseUrl || !backend) {
                 if (!isCancelled()) {
                     session.sendSessionEvent({
@@ -1002,6 +1011,71 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             if (isCancelled()) {
                 logger.debug('[opencode-remote] /compact skipped before marker snapshot: cancelled or aborted');
                 return;
+            }
+
+            // v2: no marker snapshot boundary exists (the v1 capture is
+            // v1-only); the POST is abortable and verification runs through
+            // the v2 message GET afterwards, feeding the same result switch.
+            if (v2Rest) {
+                this.compactOperationPhase = 'summarize';
+                const requestResult = await backend.suppressUpdatesDuring(async () => {
+                    try {
+                        await triggerOpencodeCompactV2({
+                            baseUrl,
+                            sessionId: acpSessionId,
+                            providerId: split.providerId,
+                            modelId: split.modelId,
+                            password: v2Rest.password,
+                            signal: compactAbortController.signal
+                        });
+                        return { ok: true } as const;
+                    } catch (error) {
+                        return {
+                            ok: false,
+                            error: error instanceof Error ? error.message : String(error)
+                        } as const;
+                    } finally {
+                        this.compactOperationPhase = 'post-summarize';
+                    }
+                });
+                if (!requestResult.ok) {
+                    if (!isCancelled()) {
+                        session.sendSessionEvent({ type: 'message', message: `📦 Compaction failed: ${requestResult.error}` });
+                    } else {
+                        logger.debug('[opencode-remote] /compact failure suppressed: cancelled or aborted before it resolved');
+                    }
+                    return;
+                }
+                if (isCancelled()) {
+                    logger.debug('[opencode-remote] /compact verification skipped: cancelled or aborted after summarize');
+                    return;
+                }
+                this.compactOperationPhase = 'verification';
+                const v2Result = await fetchCompactionResultV2({
+                    baseUrl,
+                    sessionId: acpSessionId,
+                    password: v2Rest.password
+                });
+                if (isCancelled()) {
+                    logger.debug('[opencode-remote] /compact result suppressed: cancelled or aborted before it resolved');
+                    return;
+                }
+                switch (v2Result.status) {
+                    case 'success': {
+                        session.sendSessionEvent({ type: 'message', message: '📦 Compaction completed' });
+                        const converted = convertAgentMessage({ type: 'reasoning', text: v2Result.text, id: randomUUID() });
+                        if (converted) {
+                            session.sendAgentMessage(converted);
+                        }
+                        return;
+                    }
+                    case 'failed':
+                        session.sendSessionEvent({ type: 'message', message: `📦 Compaction failed: ${v2Result.reason}` });
+                        return;
+                    case 'unverified':
+                        session.sendSessionEvent({ type: 'message', message: '📦 Compaction result could not be verified.' });
+                        return;
+                }
             }
 
             // The pre-POST marker snapshot is a read-only GET. A plain Stop
@@ -1031,16 +1105,6 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             this.compactOperationPhase = 'summarize';
             const requestResult = await backend.suppressUpdatesDuring(async () => {
                 try {
-                    if (this.majorVersion === 'v2') {
-                        await triggerOpencodeCompactV2({
-                            baseUrl,
-                            sessionId: acpSessionId,
-                            providerId: split.providerId,
-                            modelId: split.modelId,
-                            password: this.v2CompactPassword!
-                        });
-                        return { ok: true } as const;
-                    }
                     return await triggerOpencodeCompact({
                         baseUrl,
                         sessionId: acpSessionId,
@@ -1048,14 +1112,6 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                         modelId: split.modelId,
                         signal: compactAbortController.signal
                     });
-                } catch (error) {
-                    if (this.majorVersion === 'v2') {
-                        return {
-                            ok: false,
-                            error: error instanceof Error ? error.message : String(error)
-                        } as const;
-                    }
-                    throw error;
                 } finally {
                     // suppressUpdatesDuring may still quiet-drain after the
                     // POST settles. It is no longer server-side compaction.

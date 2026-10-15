@@ -65,7 +65,7 @@ vi.mock('@/agent/backends/acp', () => ({
     })
 }));
 
-import { allocateFreePort, createOpencodeBackend, detectOpencodeFlavorVersion, discoverOpencodeV2RestPort, listLoopbackListeners, parseLsofListeners, parseSsListeners } from './opencodeBackend';
+import { allocateFreePort, createOpencodeBackend, detectOpencodeFlavorVersion, discoverOpencodeV2RestPort, listLoopbackListeners, listLoopbackListenersForPid, parseLsofListeners, parseSsListeners, parseSsPidListeners } from './opencodeBackend';
 
 describe('detectOpencodeFlavorVersion', () => {
     beforeEach(() => {
@@ -279,5 +279,105 @@ describe('discoverOpencodeV2RestPort', () => {
             }
         });
         expect(port).toBeNull();
+    });
+});
+describe('parseSsPidListeners', () => {
+    it('extracts 127.0.0.1 ports owned by the given pid from ss -tlnp output', () => {
+        const output = [
+            'State  Recv-Q Send-Q Local Address:Port Peer Address:Port Process',
+            'LISTEN 0      128    127.0.0.1:41234    0.0.0.0:*         users:(("opencode",pid=4242,fd=18))',
+            'LISTEN 0      128    127.0.0.1:41999    0.0.0.0:*         users:(("other",pid=999,fd=11))',
+            'LISTEN 0      4096   0.0.0.0:22         0.0.0.0:*         users:(("sshd",pid=4242,fd=3))'
+        ].join('\n');
+        expect(parseSsPidListeners(output, 4242)).toEqual(new Set([41234]));
+    });
+
+    it('returns empty set when the pid owns no loopback listener', () => {
+        const output = 'LISTEN 0 128 127.0.0.1:41999 0.0.0.0:* users:(("other",pid=999,fd=11))';
+        expect(parseSsPidListeners(output, 4242)).toEqual(new Set());
+    });
+});
+
+describe('listLoopbackListenersForPid', () => {
+    it('parses ss -tlnp output filtered by pid on linux', async () => {
+        const listeners = await listLoopbackListenersForPid(4242, {
+            platform: 'linux',
+            execImpl: async (command, args) => {
+                expect(command).toBe('ss');
+                expect(args).toEqual(['-tlnp']);
+                return 'LISTEN 0 128 127.0.0.1:41234 0.0.0.0:* users:(("opencode",pid=4242,fd=18))';
+            }
+        });
+        expect(listeners).toEqual(new Set([41234]));
+    });
+
+    it('falls back to lsof -a -p when ss fails', async () => {
+        const listeners = await listLoopbackListenersForPid(4242, {
+            execImpl: async (command, args) => {
+                if (command === 'ss') {
+                    throw new Error('ss missing');
+                }
+                expect(command).toBe('lsof');
+                expect(args).toEqual(['-a', '-p', '4242', '-iTCP', '-sTCP:LISTEN', '-n', '-P']);
+                return 'node 4242 u 20u IPv4 TCP 127.0.0.1:41235 (LISTEN)';
+            }
+        });
+        expect(listeners).toEqual(new Set([41235]));
+    });
+
+    it('throws when both ss and lsof fail (caller falls back to the diff heuristic)', async () => {
+        await expect(listLoopbackListenersForPid(4242, {
+            execImpl: async () => {
+                throw new Error('no tools');
+            }
+        })).rejects.toThrow();
+    });
+});
+
+describe('discoverOpencodeV2RestPort ownerPid preference', () => {
+    it('returns the pid-owned port even when it was already in the before snapshot', async () => {
+        const port = await discoverOpencodeV2RestPort({
+            beforeSnapshot: new Set([41234]),
+            pollIntervalMs: 1,
+            ownerPid: 4242,
+            scanImpl: async () => new Set(),
+            scanOwnedImpl: async () => new Set([41234])
+        });
+        expect(port).toBe(41234);
+    });
+
+    it('falls back to the diff heuristic when the owned scan fails', async () => {
+        const port = await discoverOpencodeV2RestPort({
+            beforeSnapshot: new Set([1000]),
+            pollIntervalMs: 1,
+            ownerPid: 4242,
+            scanImpl: async () => new Set([1000, 41999]),
+            scanOwnedImpl: async () => {
+                throw new Error('tools missing');
+            }
+        });
+        expect(port).toBe(41999);
+    });
+
+    it('keeps polling the owned scan and does not fall back while it succeeds but is empty', async () => {
+        let ownedCalls = 0;
+        let diffCalls = 0;
+        const port = await discoverOpencodeV2RestPort({
+            beforeSnapshot: new Set([1000]),
+            timeoutMs: 60,
+            pollIntervalMs: 10,
+            ownerPid: 4242,
+            scanImpl: async () => {
+                diffCalls++;
+                return new Set([1000, 55555]);
+            },
+            scanOwnedImpl: async () => {
+                ownedCalls++;
+                return ownedCalls >= 2 ? new Set([47777]) : new Set();
+            }
+        });
+        expect(port).toBe(47777);
+        expect(ownedCalls).toBeGreaterThanOrEqual(2);
+        expect(diffCalls).toBe(0);
     });
 });

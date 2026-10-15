@@ -163,6 +163,52 @@ export function parseLsofListeners(output: string): Set<number> {
 }
 
 /**
+ * Parses `ss -tlnp` output and returns the set of 127.0.0.1 ports whose
+ * process line contains `pid=<pid>` (a line may list several pids).
+ */
+export function parseSsPidListeners(output: string, pid: number): Set<number> {
+    const ports = new Set<number>();
+    for (const line of output.split('\n')) {
+        if (!/\bLISTEN\b/.test(line)) continue;
+        const pids = [...line.matchAll(/pid=(\d+)/g)].map((match) => Number.parseInt(match[1]!, 10));
+        if (!pids.includes(pid)) continue;
+        const match = /127\.0\.0\.1:(\d+)/.exec(line);
+        if (match) {
+            ports.add(Number.parseInt(match[1]!, 10));
+        }
+    }
+    return ports;
+}
+
+/**
+ * Lists loopback TCP listeners owned by the given pid: `ss -tlnp` with
+ * `pid=<N>` matching first, `lsof -a -p <pid> -iTCP -sTCP:LISTEN -n -P`
+ * (whose -p filter already scopes the output) as fallback. Throws when both
+ * tools are unavailable/unparsable so callers can fall back to the
+ * snapshot-diff heuristic; an empty set means the tools worked and the pid
+ * owns no loopback listener (yet).
+ */
+export async function listLoopbackListenersForPid(pid: number, opts?: {
+    platform?: NodeJS.Platform;
+    execImpl?: (command: string, args: string[]) => Promise<string>;
+}): Promise<Set<number>> {
+    const run = async (command: string, args: string[]): Promise<string> => {
+        if (opts?.execImpl) {
+            return await opts.execImpl(command, args);
+        }
+        const { stdout } = await execFileAsync(command, args, { timeout: 5000 });
+        return stdout;
+    };
+    try {
+        return parseSsPidListeners(await run('ss', ['-tlnp']), pid);
+    } catch {
+        // -a -p <pid> -iTCP -sTCP:LISTEN -n -P is portable across darwin/linux lsof builds.
+        const lsofArgs = ['-a', '-p', String(pid), '-iTCP', '-sTCP:LISTEN', '-n', '-P'];
+        return parseLsofListeners(await run('lsof', lsofArgs));
+    }
+}
+
+/**
  * Lists loopback TCP listeners via `ss -tln` (Linux), falling back to
  * `lsof -iTCP -sTCP:LISTEN -n -P` (darwin). Both failing yields an empty
  * set — callers treat that as "no new ports will ever be discovered" and
@@ -209,13 +255,38 @@ export async function discoverOpencodeV2RestPort(opts: {
     beforeSnapshot: Set<number>;
     timeoutMs?: number;
     pollIntervalMs?: number;
+    ownerPid?: number;
     scanImpl?: () => Promise<Set<number>>;
+    scanOwnedImpl?: () => Promise<Set<number>>;
 }): Promise<number | null> {
     const timeoutMs = opts.timeoutMs ?? 10_000;
     const pollIntervalMs = opts.pollIntervalMs ?? 500;
     const scan = opts.scanImpl ?? (() => listLoopbackListeners());
+    const scanOwned = opts.scanOwnedImpl ?? (opts.ownerPid != null
+        ? () => listLoopbackListenersForPid(opts.ownerPid!)
+        : null);
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
+        // Prefer ownership-verified ports: a hit here cannot belong to any
+        // other process, even one that bound after the before-snapshot. Only
+        // an ownership check that is impossible (missing tools / unparsable
+        // output) falls back to the diff heuristic below; a successful but
+        // empty owned scan just means the server has not bound yet.
+        if (scanOwned) {
+            try {
+                const owned = [...await scanOwned()].sort((a, b) => a - b);
+                if (owned.length > 0) {
+                    return owned[0]!;
+                }
+                // Ownership check works but the pid owns nothing yet — keep
+                // polling it; the diff heuristic could only misattribute a
+                // port another process bound after the snapshot.
+                await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+                continue;
+            } catch {
+                // Ownership check unavailable — fall through to the diff.
+            }
+        }
         try {
             const current = await scan();
             const newPorts = [...current]

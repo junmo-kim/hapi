@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import type { OpencodeMode, PermissionMode } from './types';
 
@@ -197,7 +197,12 @@ vi.mock('@/ui/ink/OpencodeDisplay', () => ({
 
 const compactHarness = vi.hoisted(() => ({
     calls: [] as Array<{ baseUrl: string; sessionId: string; providerId: string; modelId: string; signal?: AbortSignal }>,
-    v2Calls: [] as Array<{ baseUrl: string; sessionId: string; providerId: string; modelId: string; password: string }>,
+    v2Calls: [] as Array<{ baseUrl: string; sessionId: string; providerId: string; modelId: string; password: string; signal?: AbortSignal }>,
+    v2VerifyCalls: [] as Array<{ baseUrl: string; sessionId: string; password: string }>,
+    v2VerifyResult: { status: 'success', text: 'v2 summary text' } as
+        | { status: 'success'; text: string }
+        | { status: 'failed'; reason: string }
+        | { status: 'unverified'; reason: string },
     operationEvents: [] as string[],
     result: { ok: true } as { ok: true } | { ok: false; error: string },
     markerSnapshotCalls: [] as Array<{ baseUrl: string; sessionId: string; signal?: AbortSignal }>,
@@ -246,9 +251,14 @@ vi.mock('./utils/opencodeCompactBridge', () => ({
         harness.v2PasswordCalls.push({ pid });
         return harness.discoveredPassword;
     }),
-    triggerOpencodeCompactV2: vi.fn(async (opts: { baseUrl: string; sessionId: string; providerId: string; modelId: string; password: string }) => {
+    triggerOpencodeCompactV2: vi.fn(async (opts: { baseUrl: string; sessionId: string; providerId: string; modelId: string; password: string; signal?: AbortSignal }) => {
         compactHarness.operationEvents.push('triggerV2');
         compactHarness.v2Calls.push(opts);
+    }),
+    fetchCompactionResultV2: vi.fn(async (opts: { baseUrl: string; sessionId: string; password: string }) => {
+        compactHarness.operationEvents.push('verifyV2');
+        compactHarness.v2VerifyCalls.push(opts);
+        return compactHarness.v2VerifyResult;
     }),
     splitProviderModel: (combined: string | null | undefined) => {
         if (!combined) return null;
@@ -442,6 +452,8 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         harness.cancelPrompt.mockClear();
         compactHarness.calls = [];
         compactHarness.v2Calls = [];
+        compactHarness.v2VerifyCalls = [];
+        compactHarness.v2VerifyResult = { status: 'success', text: 'v2 summary text' };
         compactHarness.operationEvents = [];
         compactHarness.result = { ok: true };
         compactHarness.markerSnapshotCalls = [];
@@ -2477,6 +2489,8 @@ describe('opencodeRemoteLauncher v2 flavor wiring', () => {
         harness.newSessionImpl = null;
         compactHarness.calls = [];
         compactHarness.v2Calls = [];
+        compactHarness.v2VerifyCalls = [];
+        compactHarness.v2VerifyResult = { status: 'success', text: 'v2 summary text' };
         compactHarness.operationEvents = [];
         compactHarness.result = { ok: true };
         compactHarness.markerSnapshot = { markerIds: ['before-this-request'] };
@@ -2544,5 +2558,93 @@ describe('opencodeRemoteLauncher v2 flavor wiring', () => {
         expect(harness.v2DiscoveryCalls).toHaveLength(0);
         expect(harness.v2PasswordCalls).toHaveLength(0);
         expect(compactHarness.calls[0]?.baseUrl).toBe('http://127.0.0.1:48273');
+    });
+});
+
+describe('opencodeRemoteLauncher v2 compact verification and discovery notice', () => {
+    beforeEach(() => {
+        compactHarness.calls = [];
+        compactHarness.v2Calls = [];
+        compactHarness.v2VerifyCalls = [];
+        compactHarness.v2VerifyResult = { status: 'success', text: 'v2 summary text' };
+        compactHarness.operationEvents = [];
+        compactHarness.markerSnapshotCalls = [];
+        compactHarness.resultCalls = [];
+    });
+
+    afterEach(async () => {
+        harness.detectedVersion = null;
+        harness.loopbackListeners = [];
+        harness.discoveredPort = null;
+        harness.discoveredPassword = null;
+        harness.backendPid = 4242;
+        harness.createBackendArgs = [];
+        harness.v2DiscoveryCalls = [];
+        harness.v2PasswordCalls = [];
+        harness.events = [];
+        harness.sessionModelsMetadata = undefined;
+        harness.promptCount = 0;
+        harness.promptImpl = null;
+        compactHarness.calls = [];
+        compactHarness.v2Calls = [];
+        compactHarness.v2VerifyCalls = [];
+        compactHarness.v2VerifyResult = { status: 'success', text: 'v2 summary text' };
+        compactHarness.operationEvents = [];
+        compactHarness.markerSnapshotCalls = [];
+        compactHarness.resultCalls = [];
+        const backendModule = await import('./utils/opencodeBackend');
+        const backendModuleFns = backendModule as unknown as Record<string, ReturnType<typeof vi.fn>>;
+        for (const name of ['createOpencodeBackend', 'detectOpencodeFlavorVersion', 'discoverOpencodeV2RestPort', 'listLoopbackListeners']) {
+            backendModuleFns[name]?.mockClear();
+        }
+    });
+
+    it('v2: verifies the compact via the v2 message GET and never calls the v1 snapshot/result bridge', async () => {
+        harness.detectedVersion = 'v2';
+        harness.loopbackListeners = [1000];
+        harness.discoveredPort = 41234;
+        harness.discoveredPassword = 'pw-secret';
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        const { session, sessionEvents, sentAgentMessages } = createSessionStub([{ message: '', mode: createCompactMode('ollama/x') }]);
+
+        await opencodeRemoteLauncher(session as never, {});
+
+        expect(compactHarness.v2Calls).toHaveLength(1);
+        expect(compactHarness.v2Calls[0]?.signal).toBeDefined();
+        expect(compactHarness.v2VerifyCalls).toEqual([
+            { baseUrl: 'http://127.0.0.1:41234', sessionId: 'acp-session-1', password: 'pw-secret' }
+        ]);
+        expect(compactHarness.markerSnapshotCalls).toHaveLength(0);
+        expect(compactHarness.resultCalls).toHaveLength(0);
+        expect(compactHarness.operationEvents).toEqual(['triggerV2', 'verifyV2']);
+        expect(sessionEvents.some((event) => (event as { message?: string }).message === '📦 Compaction completed')).toBe(true);
+        expect(JSON.stringify(sentAgentMessages)).toContain('v2 summary text');
+    });
+
+    it('v2: reports the verified failure reason through the same state machine', async () => {
+        harness.detectedVersion = 'v2';
+        harness.discoveredPort = 41234;
+        harness.discoveredPassword = 'pw-secret';
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        compactHarness.v2VerifyResult = { status: 'failed', reason: 'provider exploded' };
+        const { session, sessionEvents } = createSessionStub([{ message: '', mode: createCompactMode('ollama/x') }]);
+
+        await opencodeRemoteLauncher(session as never, {});
+
+        expect(sessionEvents.some((event) => (event as { message?: string }).message === '📦 Compaction failed: provider exploded')).toBe(true);
+        expect(sessionEvents.some((event) => (event as { message?: string }).message === '📦 Compaction completed')).toBe(false);
+    });
+
+    it('v2: notifies the session once when discovery fails, without compact availability', async () => {
+        harness.detectedVersion = 'v2';
+        harness.discoveredPort = null;
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        const { session, sessionEvents } = createSessionStub([{ message: '', mode: createCompactMode('ollama/x') }]);
+
+        await opencodeRemoteLauncher(session as never, {});
+
+        const notice = sessionEvents.find((event) => String((event as { message?: string }).message ?? '').includes('OpenCode v2 internal API discovery failed'));
+        expect(notice).toBeDefined();
+        expect(String((notice as { message?: string }).message)).toContain('upstream retry status and /compact are unavailable');
     });
 });

@@ -155,9 +155,7 @@ export async function triggerOpencodeCompact(opts: OpencodeCompactCallOpts & {
  * Like the v1 path, `timeout: false` (Bun-only fetch option) disables Bun's
  * hardcoded ~5min idle timeout — compaction can legitimately take minutes.
  */
-export async function triggerOpencodeCompactV2(opts: {
-    baseUrl: string;
-    sessionId: string;
+export async function triggerOpencodeCompactV2(opts: OpencodeCompactCallOpts & {
     providerId: string;
     modelId: string;
     password: string;
@@ -173,7 +171,8 @@ export async function triggerOpencodeCompactV2(opts: {
         },
         body: JSON.stringify({ providerID: opts.providerId, modelID: opts.modelId }),
         // Bun-specific: disables Bun's hardcoded ~5min fetch timeout.
-        timeout: false
+        timeout: false,
+        signal: opts.signal
     };
     const response = await fetchFn(url, init as RequestInit);
     if (!response.ok) {
@@ -416,4 +415,70 @@ export async function fetchCompactionResult(opts: OpencodeCompactCallOpts & {
     }
 
     return { status: 'unverified', reason: 'Compaction result could not be verified.' };
+}
+
+/**
+ * v2 counterpart of `fetchCompactionResult`. opencode v2 redesigned the
+ * messages endpoint (verified 2026-10-15): `GET /api/session/:id/message`
+ * with Basic auth, wrapping the message entries in a `{ data: [...] }`
+ * envelope. There is no pre-POST marker snapshot on the v2 path (the v1
+ * `captureCompactionMarkerSnapshot` boundary does not exist there), so the
+ * newest manual compaction marker in the list is treated as this request's
+ * marker and the same v1 parsing rules apply: exactly one assistant result
+ * linked to it, terminal only, summary flag required; anything else stays
+ * `unverified` rather than becoming a false completion.
+ */
+export async function fetchCompactionResultV2(opts: {
+    baseUrl: string;
+    sessionId: string;
+    password: string;
+    fetchImpl?: FetchLike;
+}): Promise<CompactionResult> {
+    const unverified: CompactionResult = { status: 'unverified', reason: 'Compaction result could not be verified.' };
+    const fetchFn: FetchLike = opts.fetchImpl ?? fetch;
+    const url = `${opts.baseUrl}/api/session/${encodeURIComponent(opts.sessionId)}/message`;
+    try {
+        const response = await fetchFn(url, {
+            method: 'GET',
+            headers: {
+                authorization: 'Basic ' + Buffer.from(`opencode:${opts.password}`).toString('base64')
+            }
+        });
+        if (!response.ok) return unverified;
+        const payload: unknown = await response.json().catch(() => null);
+        const entries = Array.isArray(payload)
+            ? payload as OpencodeMessageEntry[]
+            : isObjectRecord(payload) && Array.isArray(payload.data)
+                ? payload.data as OpencodeMessageEntry[]
+                : null;
+        if (!entries) return unverified;
+
+        const markerIds = getManualCompactionMarkerIds(entries);
+        if (!markerIds) return unverified;
+        const latestMarkerId = markerIds[markerIds.length - 1]!;
+
+        const linkedResults = entries.filter((entry) =>
+            isAssistant(entry) && entry.info?.parentID === latestMarkerId
+        );
+        if (linkedResults.length !== 1) return unverified;
+
+        const result = linkedResults[0]!;
+        const error = safeErrorReason(result.info?.error);
+        if (error) {
+            return { status: 'failed', reason: error };
+        }
+
+        const text = extractTextPart(result);
+        if (isTerminal(result) && (!text || text.trim().length === 0)) {
+            return { status: 'failed', reason: 'OpenCode returned an empty compaction summary.' };
+        }
+
+        if (result.info?.summary === true && isTerminal(result) && text && text.trim().length > 0) {
+            return { status: 'success', text };
+        }
+
+        return unverified;
+    } catch {
+        return unverified;
+    }
 }

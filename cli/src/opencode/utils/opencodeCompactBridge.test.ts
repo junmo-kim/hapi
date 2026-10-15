@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { captureCompactionMarkerSnapshot, fetchCompactionResult, readOpencodeV2ServerPassword, splitProviderModel, triggerOpencodeCompact, triggerOpencodeCompactV2 } from './opencodeCompactBridge';
+import { captureCompactionMarkerSnapshot, fetchCompactionResult, fetchCompactionResultV2, readOpencodeV2ServerPassword, splitProviderModel, triggerOpencodeCompact, triggerOpencodeCompactV2 } from './opencodeCompactBridge';
 
 // `signal` is a required field (see OpencodeCompactCallOpts's doc comment) —
 // most tests below don't exercise abort behavior at all, so this is a
@@ -357,12 +357,14 @@ describe('fetchCompactionResult', () => {
 describe('triggerOpencodeCompactV2', () => {
     it('posts to /api/session/:id/compact with Basic auth and providerID/modelID body', async () => {
         const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+        const signal = new AbortController().signal;
         await triggerOpencodeCompactV2({
             baseUrl: 'http://127.0.0.1:48273',
             sessionId: 'ses_abc/1',
             providerId: 'anthropic',
             modelId: 'claude-sonnet-4-5',
             password: 'secret-pw',
+            signal,
             fetchImpl
         });
         expect(fetchImpl).toHaveBeenCalledTimes(1);
@@ -383,6 +385,7 @@ describe('triggerOpencodeCompactV2', () => {
             providerId: 'p',
             modelId: 'm',
             password: 'user:pass@with/special',
+            signal: new AbortController().signal,
             fetchImpl
         });
         const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
@@ -398,6 +401,7 @@ describe('triggerOpencodeCompactV2', () => {
             providerId: 'p',
             modelId: 'm',
             password: 'pw',
+            signal: new AbortController().signal,
             fetchImpl
         })).rejects.toThrow(/401/);
         await expect(triggerOpencodeCompactV2({
@@ -406,6 +410,7 @@ describe('triggerOpencodeCompactV2', () => {
             providerId: 'p',
             modelId: 'm',
             password: 'pw',
+            signal: new AbortController().signal,
             fetchImpl
         })).rejects.toThrow(/denied/);
     });
@@ -420,6 +425,7 @@ describe('triggerOpencodeCompactV2', () => {
             providerId: 'p',
             modelId: 'm',
             password: 'pw',
+            signal: new AbortController().signal,
             fetchImpl
         })).rejects.toThrow('connection refused');
     });
@@ -480,5 +486,111 @@ describe('readOpencodeV2ServerPassword', () => {
             }
         });
         expect(password).toBeNull();
+    });
+});
+
+describe('triggerOpencodeCompactV2 signal contract', () => {
+    it('forwards the caller abort signal to the fetch init', async () => {
+        const controller = new AbortController();
+        const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+        await triggerOpencodeCompactV2({
+            baseUrl: 'http://127.0.0.1:1',
+            sessionId: 's',
+            providerId: 'p',
+            modelId: 'm',
+            password: 'pw',
+            signal: controller.signal,
+            fetchImpl
+        });
+        const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+        expect(init.signal).toBe(controller.signal);
+    });
+});
+
+describe('fetchCompactionResultV2', () => {
+    const authHeader = () => 'Basic ' + Buffer.from('opencode:pw').toString('base64');
+
+    function fixtureEntry(...entries: unknown[]): Response {
+        return new Response(JSON.stringify({ data: entries }), { status: 200 });
+    }
+
+    const markerEntry = {
+        info: { id: 'marker-1', role: 'user' },
+        parts: [{ type: 'compaction', auto: false }]
+    };
+    const summaryEntry = {
+        info: { id: 'result-1', role: 'assistant', parentID: 'marker-1', summary: true, finish: 'stop' },
+        parts: [{ type: 'text', text: 'v2 summary text' }]
+    };
+
+    it('GETs /api/session/:id/message with Basic auth and unwraps the {data: [...]} response', async () => {
+        const fetchImpl = vi.fn(async () => fixtureEntry(markerEntry, summaryEntry));
+        const result = await fetchCompactionResultV2({
+            baseUrl: 'http://127.0.0.1:48273',
+            sessionId: 'ses_x/2',
+            password: 'pw',
+            fetchImpl
+        });
+        expect(result).toEqual({ status: 'success', text: 'v2 summary text' });
+        const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+        expect(url).toBe('http://127.0.0.1:48273/api/session/ses_x%2F2/message');
+        expect(init.method).toBe('GET');
+        expect((init.headers as Record<string, string>).authorization).toBe(authHeader());
+    });
+
+    it('reports failed with the provider error message', async () => {
+        const errorEntry = {
+            info: { id: 'result-2', role: 'assistant', parentID: 'marker-1', summary: true, finish: 'error', error: { data: { message: 'provider exploded' } } },
+            parts: []
+        };
+        const result = await fetchCompactionResultV2({
+            baseUrl: 'http://127.0.0.1:1',
+            sessionId: 's',
+            password: 'pw',
+            fetchImpl: async () => fixtureEntry(markerEntry, errorEntry)
+        });
+        expect(result).toEqual({ status: 'failed', reason: 'provider exploded' });
+    });
+
+    it('reports unverified on non-2xx responses', async () => {
+        const result = await fetchCompactionResultV2({
+            baseUrl: 'http://127.0.0.1:1',
+            sessionId: 's',
+            password: 'pw',
+            fetchImpl: async () => new Response('nope', { status: 401 })
+        });
+        expect(result).toEqual({ status: 'unverified', reason: 'Compaction result could not be verified.' });
+    });
+
+    it('reports unverified when the response wrapper has no data array', async () => {
+        const result = await fetchCompactionResultV2({
+            baseUrl: 'http://127.0.0.1:1',
+            sessionId: 's',
+            password: 'pw',
+            fetchImpl: async () => new Response(JSON.stringify({ data: null }), { status: 200 })
+        });
+        expect(result).toEqual({ status: 'unverified', reason: 'Compaction result could not be verified.' });
+    });
+
+    it('reports unverified when no assistant result is linked to the latest manual compaction marker', async () => {
+        const result = await fetchCompactionResultV2({
+            baseUrl: 'http://127.0.0.1:1',
+            sessionId: 's',
+            password: 'pw',
+            fetchImpl: async () => fixtureEntry(markerEntry)
+        });
+        expect(result).toEqual({ status: 'unverified', reason: 'Compaction result could not be verified.' });
+    });
+
+    it('reports unverified when the fetch itself throws', async () => {
+        const result = await fetchCompactionResultV2({
+            baseUrl: 'http://127.0.0.1:1',
+            sessionId: 's',
+            password: 'pw',
+            fetchImpl: async () => {
+                throw new Error('connection refused');
+            }
+        });
+        expect(result).toEqual({ status: 'unverified', reason: 'Compaction result could not be verified.' });
     });
 });
