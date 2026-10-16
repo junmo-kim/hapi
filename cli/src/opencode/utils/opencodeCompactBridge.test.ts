@@ -514,17 +514,17 @@ describe('fetchCompactionResultV2', () => {
         return new Response(JSON.stringify({ data: entries }), { status: 200 });
     }
 
-    const markerEntry = {
-        info: { id: 'marker-1', role: 'user' },
-        parts: [{ type: 'compaction', auto: false }]
-    };
-    const summaryEntry = {
-        info: { id: 'result-1', role: 'assistant', parentID: 'marker-1', summary: true, finish: 'stop' },
-        parts: [{ type: 'text', text: 'v2 summary text' }]
-    };
+    // v2 compaction shape (verified 2026-10-16 against opencode 2.0.29): the
+    // compaction entry itself carries `status` and the full `summary` text.
+    const completedEntry = (text: string) => ({
+        type: 'compaction',
+        status: 'completed',
+        reason: 'manual',
+        summary: text
+    });
 
     it('GETs /api/session/:id/message with Basic auth and unwraps the {data: [...]} response', async () => {
-        const fetchImpl = vi.fn(async () => fixtureEntry(markerEntry, summaryEntry));
+        const fetchImpl = vi.fn(async () => fixtureEntry(completedEntry('v2 summary text')));
         const result = await fetchCompactionResultV2({
             baseUrl: 'http://127.0.0.1:48273',
             sessionId: 'ses_x/2',
@@ -538,18 +538,24 @@ describe('fetchCompactionResultV2', () => {
         expect((init.headers as Record<string, string>).authorization).toBe(authHeader());
     });
 
-    it('reports failed with the provider error message', async () => {
-        const errorEntry = {
-            info: { id: 'result-2', role: 'assistant', parentID: 'marker-1', summary: true, finish: 'error', error: { data: { message: 'provider exploded' } } },
-            parts: []
-        };
+    it('reports failed when the latest compaction entry carries an error status', async () => {
         const result = await fetchCompactionResultV2({
             baseUrl: 'http://127.0.0.1:1',
             sessionId: 's',
             password: 'pw',
-            fetchImpl: async () => fixtureEntry(markerEntry, errorEntry)
+            fetchImpl: async () => fixtureEntry({ type: 'compaction', status: 'error', reason: 'manual', error: { data: { message: 'provider exploded' } } })
         });
         expect(result).toEqual({ status: 'failed', reason: 'provider exploded' });
+    });
+
+    it('reports failed when the completed entry has an empty summary', async () => {
+        const result = await fetchCompactionResultV2({
+            baseUrl: 'http://127.0.0.1:1',
+            sessionId: 's',
+            password: 'pw',
+            fetchImpl: async () => fixtureEntry(completedEntry('   '))
+        });
+        expect(result).toEqual({ status: 'failed', reason: 'OpenCode returned an empty compaction summary.' });
     });
 
     it('reports unverified on non-2xx responses', async () => {
@@ -572,12 +578,12 @@ describe('fetchCompactionResultV2', () => {
         expect(result).toEqual({ status: 'unverified', reason: 'Compaction result could not be verified.' });
     });
 
-    it('reports unverified when no assistant result is linked to the latest manual compaction marker', async () => {
+    it('reports unverified when no compaction entry exists yet (pending state)', async () => {
         const result = await fetchCompactionResultV2({
             baseUrl: 'http://127.0.0.1:1',
             sessionId: 's',
             password: 'pw',
-            fetchImpl: async () => fixtureEntry(markerEntry)
+            fetchImpl: async () => fixtureEntry({ type: 'compaction', status: 'pending', reason: 'manual' })
         });
         expect(result).toEqual({ status: 'unverified', reason: 'Compaction result could not be verified.' });
     });
@@ -600,10 +606,7 @@ describe('pollCompactionResultV2', () => {
 
     function summaryResponse(text: string): Response {
         return new Response(JSON.stringify({
-            data: [
-                { info: { id: 'marker-1', role: 'user' }, parts: [{ type: 'compaction', auto: false }] },
-                { info: { id: 'result-1', role: 'assistant', parentID: 'marker-1', summary: true, finish: 'stop' }, parts: [{ type: 'text', text }] }
-            ]
+            data: [{ type: 'compaction', status: 'completed', reason: 'manual', summary: text }]
         }), { status: 200 });
     }
 

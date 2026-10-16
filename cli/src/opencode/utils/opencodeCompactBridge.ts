@@ -307,6 +307,11 @@ export async function readOpencodeV2ServerPassword(acpPid: number, opts?: {
 
 type OpencodeMessagePart = { type?: unknown; text?: unknown; auto?: unknown };
 type OpencodeMessageEntry = {
+    type?: unknown;
+    status?: unknown;
+    reason?: unknown;
+    summary?: unknown;
+    error?: unknown;
     info?: {
         id?: unknown;
         role?: unknown;
@@ -490,28 +495,27 @@ export async function fetchCompactionResultV2(opts: {
                 : null;
         if (!entries) return unverified;
 
-        const markerIds = getManualCompactionMarkerIds(entries);
-        if (!markerIds) return unverified;
-        const latestMarkerId = markerIds[markerIds.length - 1]!;
+        // v2 compaction shape (verified 2026-10-16 against opencode 2.0.29):
+        // the compaction entry itself carries the outcome inline —
+        // `{ type: 'compaction', status: 'completed', reason: 'manual', summary: '...' }`.
+        // There is no assistant message linked via parentID like v1, so the
+        // v1 parsing rules do not apply here.
+        const latestCompaction = entries.filter((entry) => entry.type === 'compaction').pop();
+        if (!latestCompaction) return unverified;
 
-        const linkedResults = entries.filter((entry) =>
-            isAssistant(entry) && entry.info?.parentID === latestMarkerId
-        );
-        if (linkedResults.length !== 1) return unverified;
+        const entryRecord = isObjectRecord(latestCompaction) ? latestCompaction : null;
+        const status = entryRecord && typeof entryRecord.status === 'string' ? entryRecord.status : undefined;
+        const summary = entryRecord && typeof entryRecord.summary === 'string' ? entryRecord.summary : undefined;
 
-        const result = linkedResults[0]!;
-        const error = safeErrorReason(result.info?.error);
-        if (error) {
-            return { status: 'failed', reason: error };
+        if (status === 'error' || status === 'failed') {
+            const reason = safeErrorReason(latestCompaction.error) ?? 'OpenCode compaction failed.';
+            return { status: 'failed', reason };
         }
-
-        const text = extractTextPart(result);
-        if (isTerminal(result) && (!text || text.trim().length === 0)) {
+        if (status === 'completed') {
+            if (summary && summary.trim().length > 0) {
+                return { status: 'success', text: summary };
+            }
             return { status: 'failed', reason: 'OpenCode returned an empty compaction summary.' };
-        }
-
-        if (result.info?.summary === true && isTerminal(result) && text && text.trim().length > 0) {
-            return { status: 'success', text };
         }
 
         return unverified;
