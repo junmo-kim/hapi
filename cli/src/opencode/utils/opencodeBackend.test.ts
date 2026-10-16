@@ -65,7 +65,12 @@ vi.mock('@/agent/backends/acp', () => ({
     })
 }));
 
-import { allocateFreePort, createOpencodeBackend, detectOpencodeFlavorVersion, discoverOpencodeV2RestPort, listLoopbackListeners, listLoopbackListenersForPid, parseLsofListeners, parseSsListeners, parseSsPidListeners } from './opencodeBackend';
+vi.mock('node:fs/promises', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('node:fs/promises')>()),
+    readdir: vi.fn(async () => ['self'])
+}));
+
+import { allocateFreePort, createOpencodeBackend, detectOpencodeFlavorVersion, discoverOpencodeV2RestPort, listChildPids, listLoopbackListeners, listLoopbackListenersForPids, parseLsofListeners, parseSsListeners, parseSsPidListeners } from './opencodeBackend';
 
 describe('detectOpencodeFlavorVersion', () => {
     beforeEach(() => {
@@ -298,9 +303,9 @@ describe('parseSsPidListeners', () => {
     });
 });
 
-describe('listLoopbackListenersForPid', () => {
+describe('listLoopbackListenersForPids', () => {
     it('parses ss -tlnp output filtered by pid on linux', async () => {
-        const listeners = await listLoopbackListenersForPid(4242, {
+        const listeners = await listLoopbackListenersForPids([4242], {
             platform: 'linux',
             execImpl: async (command, args) => {
                 expect(command).toBe('ss');
@@ -312,7 +317,7 @@ describe('listLoopbackListenersForPid', () => {
     });
 
     it('falls back to lsof -a -p when ss fails', async () => {
-        const listeners = await listLoopbackListenersForPid(4242, {
+        const listeners = await listLoopbackListenersForPids([4242], {
             execImpl: async (command, args) => {
                 if (command === 'ss') {
                     throw new Error('ss missing');
@@ -326,7 +331,7 @@ describe('listLoopbackListenersForPid', () => {
     });
 
     it('throws when both ss and lsof fail (caller falls back to the diff heuristic)', async () => {
-        await expect(listLoopbackListenersForPid(4242, {
+        await expect(listLoopbackListenersForPids([4242], {
             execImpl: async () => {
                 throw new Error('no tools');
             }
@@ -367,6 +372,103 @@ describe('discoverOpencodeV2RestPort ownerPid preference', () => {
             timeoutMs: 60,
             pollIntervalMs: 10,
             ownerPid: 4242,
+            scanImpl: async () => {
+                diffCalls++;
+                return new Set([1000, 55555]);
+            },
+            scanOwnedImpl: async () => {
+                ownedCalls++;
+                return ownedCalls >= 2 ? new Set([47777]) : new Set();
+            }
+        });
+        expect(port).toBe(47777);
+        expect(ownedCalls).toBeGreaterThanOrEqual(2);
+        expect(diffCalls).toBe(0);
+    });
+});
+
+describe('listChildPids', () => {
+    it('parses NUL/space-separated children from a /proc children fixture', async () => {
+        const pids = await listChildPids(4242, {
+            platform: 'linux',
+            readChildrenFile: async (pid: number, task: string) => {
+                expect(pid).toBe(4242);
+                expect(typeof task).toBe('string');
+                return '2017934\u00002017935 2017936';
+            }
+        });
+        expect(pids).toEqual([2017934, 2017935, 2017936]);
+    });
+
+    it('runs pgrep -P on non-linux platforms', async () => {
+        const pids = await listChildPids(4242, {
+            platform: 'darwin',
+            execImpl: async (command, args) => {
+                expect(command).toBe('pgrep');
+                expect(args).toEqual(['-P', '4242']);
+                return '2017934\n2017936\n';
+            }
+        });
+        expect(pids).toEqual([2017934, 2017936]);
+    });
+
+    it('returns an empty array when reading fails (linux)', async () => {
+        const pids = await listChildPids(4242, {
+            platform: 'linux',
+            readChildrenFile: async () => {
+                throw new Error('ENOENT');
+            }
+        });
+        expect(pids).toEqual([]);
+    });
+
+    it('returns an empty array when pgrep fails (darwin)', async () => {
+        const pids = await listChildPids(4242, {
+            platform: 'darwin',
+            execImpl: async () => {
+                throw new Error('no such process');
+            }
+        });
+        expect(pids).toEqual([]);
+    });
+});
+
+describe('discoverOpencodeV2RestPort ownerPids union', () => {
+    it('returns the lowest port owned by any of the given pids', async () => {
+        const port = await discoverOpencodeV2RestPort({
+            beforeSnapshot: new Set(),
+            pollIntervalMs: 1,
+            ownerPids: [1000, 4242],
+            scanImpl: async () => new Set(),
+            scanOwnedImpl: async (pids) => {
+                expect(pids).toEqual([1000, 4242]);
+                return new Set([47777, 34019]);
+            }
+        });
+        expect(port).toBe(34019);
+    });
+
+    it('falls back to the diff heuristic when the owned scan fails', async () => {
+        const port = await discoverOpencodeV2RestPort({
+            beforeSnapshot: new Set([1000]),
+            pollIntervalMs: 1,
+            ownerPids: [4242],
+            scanImpl: async () => new Set([1000, 41999]),
+            scanOwnedImpl: async () => {
+                throw new Error('tools missing');
+            }
+        });
+        expect(port).toBe(41999);
+    });
+
+    it('keeps polling when the owned scan succeeds but is empty', async () => {
+        let ownedCalls = 0;
+        let diffCalls = 0;
+        const port = await discoverOpencodeV2RestPort({
+            beforeSnapshot: new Set([1000]),
+            timeoutMs: 60,
+            pollIntervalMs: 10,
+            ownerPids: [4242],
             scanImpl: async () => {
                 diffCalls++;
                 return new Set([1000, 55555]);

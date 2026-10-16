@@ -1,5 +1,6 @@
+import { listChildPids } from './opencodeBackend';
 import { execFile } from 'node:child_process';
-import { readFile, readdir } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
@@ -226,21 +227,11 @@ export async function readOpencodeV2ServerPassword(acpPid: number, opts?: {
         if (platform === 'linux') {
             const readEnviron = opts?.readChildEnviron ?? (async (childPid: number) =>
                 await readFile(`/proc/${childPid}/environ`, 'utf8'));
-            const childPids = opts?.listChildPids ?? (async (pid: number) => {
-                const tasks = await readdir(`/proc/${pid}/task`);
-                for (const task of tasks) {
-                    try {
-                        const children = await readFileUtf8(`/proc/${pid}/task/${task}/children`);
-                        const firstChild = children.trim().split(/\s+/)[0];
-                        if (firstChild) {
-                            return [Number.parseInt(firstChild, 10)];
-                        }
-                    } catch {
-                        // Try the next task; fall through to [] if none yields.
-                    }
-                }
-                return [];
-            });
+            // Child discovery is shared with the port-discovery util
+            // (opencodeBackend.listChildPids) — same /proc/pgrep mechanics,
+            // same "unknown children = none" semantics.
+            const childPids = opts?.listChildPids ?? (async (pid: number) =>
+                await listChildPids(pid, { platform }));
             for (const childPid of await childPids(acpPid)) {
                 try {
                     const password = parseOpencodeEnvironPassword(await readEnviron(childPid));

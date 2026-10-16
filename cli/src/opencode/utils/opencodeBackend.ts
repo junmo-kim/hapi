@@ -1,8 +1,14 @@
 import { execFile, spawn } from 'node:child_process';
+import { readdir, readFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
+
+function readFileUtf8(path: string): Promise<string> {
+    return readFile(path, 'utf8');
+}
+
 import { AcpSdkBackend } from '@/agent/backends/acp';
 import { buildOpencodeEnv } from './config';
 import { getInvokedCwd } from '@/utils/invokedCwd';
@@ -163,6 +169,55 @@ export function parseLsofListeners(output: string): Set<number> {
 }
 
 /**
+ * Lists the child pids of the given process. Linux reads the per-task
+ * `children` files under `/proc/<pid>/task/` (NUL/space-separated); darwin
+ * shells out to `pgrep -P`. Any failure (process gone, tool missing,
+ * unparsable output) yields an empty array — callers treat that as "no
+ * children known", never as an error.
+ */
+export async function listChildPids(pid: number, opts?: {
+    platform?: NodeJS.Platform;
+    readChildrenFile?: (pid: number, task: string) => Promise<string>;
+    execImpl?: (command: string, args: string[]) => Promise<string>;
+}): Promise<number[]> {
+    const platform = opts?.platform ?? process.platform;
+    try {
+        if (platform === 'linux') {
+            const readChildren = opts?.readChildrenFile ?? (async (p: number, task: string) =>
+                await readFileUtf8(`/proc/${p}/task/${task}/children`));
+            const tasks = await readdir(`/proc/${pid}/task`);
+            for (const task of tasks) {
+                try {
+                    const children = await readChildren(pid, task);
+                    const pids = children.trim().split(/[\s\u0000]+/).filter(Boolean);
+                    if (pids.length > 0) {
+                        return pids.map((value) => Number.parseInt(value, 10)).filter((value) => Number.isFinite(value));
+                    }
+                } catch {
+                    // Try the next task; fall through to [] if none yields.
+                }
+            }
+            return [];
+        }
+        const run = async (command: string, args: string[]): Promise<string> => {
+            if (opts?.execImpl) {
+                return await opts.execImpl(command, args);
+            }
+            const { stdout } = await execFileAsync(command, args, { timeout: 5000 });
+            return stdout;
+        };
+        const output = await run('pgrep', ['-P', String(pid)]);
+        return output.trim().split('\n')
+            .map((line) => line.trim())
+            .filter(Boolean)
+            .map((value) => Number.parseInt(value, 10))
+            .filter((value) => Number.isFinite(value));
+    } catch {
+        return [];
+    }
+}
+
+/**
  * Parses `ss -tlnp` output and returns the set of 127.0.0.1 ports whose
  * process line contains `pid=<pid>` (a line may list several pids).
  */
@@ -188,10 +243,11 @@ export function parseSsPidListeners(output: string, pid: number): Set<number> {
  * snapshot-diff heuristic; an empty set means the tools worked and the pid
  * owns no loopback listener (yet).
  */
-export async function listLoopbackListenersForPid(pid: number, opts?: {
+export async function listLoopbackListenersForPids(pids: number[], opts?: {
     platform?: NodeJS.Platform;
     execImpl?: (command: string, args: string[]) => Promise<string>;
 }): Promise<Set<number>> {
+    if (pids.length === 0) return new Set();
     const run = async (command: string, args: string[]): Promise<string> => {
         if (opts?.execImpl) {
             return await opts.execImpl(command, args);
@@ -199,12 +255,27 @@ export async function listLoopbackListenersForPid(pid: number, opts?: {
         const { stdout } = await execFileAsync(command, args, { timeout: 5000 });
         return stdout;
     };
+    const ports = new Set<number>();
     try {
-        return parseSsPidListeners(await run('ss', ['-tlnp']), pid);
+        const output = await run('ss', ['-tlnp']);
+        for (const pid of pids) {
+            for (const port of parseSsPidListeners(output, pid)) {
+                ports.add(port);
+            }
+        }
+        return ports;
     } catch {
         // -a -p <pid> -iTCP -sTCP:LISTEN -n -P is portable across darwin/linux lsof builds.
-        const lsofArgs = ['-a', '-p', String(pid), '-iTCP', '-sTCP:LISTEN', '-n', '-P'];
-        return parseLsofListeners(await run('lsof', lsofArgs));
+        const owned = await Promise.all(pids.map(async (pid) => {
+            const lsofArgs = ['-a', '-p', String(pid), '-iTCP', '-sTCP:LISTEN', '-n', '-P'];
+            return parseLsofListeners(await run('lsof', lsofArgs));
+        }));
+        for (const set of owned) {
+            for (const port of set) {
+                ports.add(port);
+            }
+        }
+        return ports;
     }
 }
 
@@ -256,14 +327,16 @@ export async function discoverOpencodeV2RestPort(opts: {
     timeoutMs?: number;
     pollIntervalMs?: number;
     ownerPid?: number;
+    ownerPids?: number[];
     scanImpl?: () => Promise<Set<number>>;
-    scanOwnedImpl?: () => Promise<Set<number>>;
+    scanOwnedImpl?: (pids: number[]) => Promise<Set<number>>;
 }): Promise<number | null> {
     const timeoutMs = opts.timeoutMs ?? 10_000;
     const pollIntervalMs = opts.pollIntervalMs ?? 500;
     const scan = opts.scanImpl ?? (() => listLoopbackListeners());
-    const scanOwned = opts.scanOwnedImpl ?? (opts.ownerPid != null
-        ? () => listLoopbackListenersForPid(opts.ownerPid!)
+    const ownerPids = opts.ownerPids ?? (opts.ownerPid != null ? [opts.ownerPid] : null);
+    const scanOwned = opts.scanOwnedImpl ?? (ownerPids != null
+        ? () => listLoopbackListenersForPids(ownerPids)
         : null);
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
@@ -274,7 +347,7 @@ export async function discoverOpencodeV2RestPort(opts: {
         // empty owned scan just means the server has not bound yet.
         if (scanOwned) {
             try {
-                const owned = [...await scanOwned()].sort((a, b) => a - b);
+                const owned = [...await scanOwned(ownerPids!)].sort((a, b) => a - b);
                 if (owned.length > 0) {
                     return owned[0]!;
                 }

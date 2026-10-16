@@ -17,6 +17,7 @@ import {
     createOpencodeBackend,
     detectOpencodeFlavorVersion,
     discoverOpencodeV2RestPort,
+    listChildPids,
     listLoopbackListeners,
     type OpencodeFlavorVersion
 } from './utils/opencodeBackend';
@@ -266,9 +267,14 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         // exactly like the pre-v2 "not yet supported" fallback.
         if (isV2) {
             const acpPid = backend.getProcessPid?.() ?? null;
+            // v2's random port is owned by the `serve --stdio` child, not the
+            // acp parent — scan the union of parent + every child pid.
+            const ownerPids = acpPid !== null
+                ? [acpPid, ...await listChildPids(acpPid)]
+                : undefined;
             const discoveredPort = await discoverOpencodeV2RestPort({
                 beforeSnapshot: beforeSnapshot ?? new Set(),
-                ownerPid: acpPid ?? undefined
+                ownerPids
             });
             const password = acpPid !== null ? await readOpencodeV2ServerPassword(acpPid) : null;
             if (discoveredPort !== null && password) {

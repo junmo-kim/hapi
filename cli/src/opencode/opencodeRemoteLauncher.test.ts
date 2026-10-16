@@ -167,6 +167,7 @@ vi.mock('./utils/opencodeBackend', () => ({
         getProcessPid: vi.fn(() => harness.backendPid)
         };
     }),
+    listChildPids: vi.fn(async () => []),
     detectOpencodeFlavorVersion: vi.fn(async () => harness.detectedVersion ?? 'v1'),
     listLoopbackListeners: vi.fn(async () => new Set(harness.loopbackListeners)),
     discoverOpencodeV2RestPort: vi.fn(async (opts: { beforeSnapshot: Set<number> }) => {
