@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { captureCompactionMarkerSnapshot, fetchCompactionResult, fetchCompactionResultV2, readOpencodeV2ServerPassword, splitProviderModel, triggerOpencodeCompact, triggerOpencodeCompactV2 } from './opencodeCompactBridge';
+import { captureCompactionMarkerSnapshot, fetchCompactionResult, fetchCompactionResultV2, pollCompactionResultV2, readOpencodeV2ServerPassword, splitProviderModel, triggerOpencodeCompact, triggerOpencodeCompactV2 } from './opencodeCompactBridge';
 
 // `signal` is a required field (see OpencodeCompactCallOpts's doc comment) —
 // most tests below don't exercise abort behavior at all, so this is a
@@ -592,5 +592,93 @@ describe('fetchCompactionResultV2', () => {
             }
         });
         expect(result).toEqual({ status: 'unverified', reason: 'Compaction result could not be verified.' });
+    });
+});
+
+describe('pollCompactionResultV2', () => {
+    const authHeader = () => 'Basic ' + Buffer.from('opencode:pw').toString('base64');
+
+    function summaryResponse(text: string): Response {
+        return new Response(JSON.stringify({
+            data: [
+                { info: { id: 'marker-1', role: 'user' }, parts: [{ type: 'compaction', auto: false }] },
+                { info: { id: 'result-1', role: 'assistant', parentID: 'marker-1', summary: true, finish: 'stop' }, parts: [{ type: 'text', text }] }
+            ]
+        }), { status: 200 });
+    }
+
+    const emptyResponse = () => new Response(JSON.stringify({ data: [] }), { status: 200 });
+
+    it('polls until the status is not unverified (unverified → unverified → success)', async () => {
+        const fetchImpl = vi.fn(async () => emptyResponse())
+            .mockImplementationOnce(async () => emptyResponse())
+            .mockImplementationOnce(async () => emptyResponse())
+            .mockImplementationOnce(async () => summaryResponse('done!'));
+        const delays: number[] = [];
+        const result = await pollCompactionResultV2({
+            baseUrl: 'http://127.0.0.1:48273',
+            sessionId: 'ses_x',
+            password: 'pw',
+            pollIntervalMs: 5,
+            delayImpl: async (ms) => {
+                delays.push(ms);
+            },
+            fetchImpl: fetchImpl as unknown as typeof fetch
+        });
+        expect(result).toEqual({ status: 'success', text: 'done!' });
+        expect(delays).toEqual([5, 5]);
+    });
+
+    it('returns immediately when the signal aborts while waiting', async () => {
+        const controller = new AbortController();
+        const fetchImpl = vi.fn(async () => emptyResponse());
+        const resultPromise = pollCompactionResultV2({
+            baseUrl: 'http://127.0.0.1:1',
+            sessionId: 's',
+            password: 'pw',
+            pollIntervalMs: 5,
+            signal: controller.signal,
+            delayImpl: async () => {
+                controller.abort();
+            },
+            fetchImpl: fetchImpl as unknown as typeof fetch
+        });
+        const result = await resultPromise;
+        expect(result.status).toBe('unverified');
+        expect(fetchImpl).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns immediately when the signal is already aborted', async () => {
+        const controller = new AbortController();
+        controller.abort();
+        const fetchImpl = vi.fn(async () => emptyResponse());
+        const result = await pollCompactionResultV2({
+            baseUrl: 'http://127.0.0.1:1',
+            sessionId: 's',
+            password: 'pw',
+            pollIntervalMs: 5,
+            signal: controller.signal,
+            fetchImpl: fetchImpl as unknown as typeof fetch
+        });
+        expect(result.status).toBe('unverified');
+        expect(fetchImpl).toHaveBeenCalledTimes(1);
+    });
+
+    it('polls indefinitely without a signal until a terminal status arrives', async () => {
+        let calls = 0;
+        const fetchImpl = vi.fn(async () => {
+            calls++;
+            return calls >= 4 ? summaryResponse('late summary') : emptyResponse();
+        });
+        const result = await pollCompactionResultV2({
+            baseUrl: 'http://127.0.0.1:1',
+            sessionId: 's',
+            password: 'pw',
+            pollIntervalMs: 1,
+            delayImpl: async () => {},
+            fetchImpl: fetchImpl as unknown as typeof fetch
+        });
+        expect(result).toEqual({ status: 'success', text: 'late summary' });
+        expect(calls).toBe(4);
     });
 });

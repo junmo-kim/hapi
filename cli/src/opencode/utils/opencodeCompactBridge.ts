@@ -183,6 +183,52 @@ export async function triggerOpencodeCompactV2(opts: OpencodeCompactCallOpts & {
 }
 
 /**
+ * v2 compact POST returns as soon as the compaction marker is created; the
+ * summary itself is produced asynchronously by the server (verified
+ * 2026-10-16 against 2.0.29: the immediate follow-up GET carries no
+ * assistant result). So, unlike the v1 path — whose POST blocks until
+ * completion and needs a single verification GET — the v2 result must be
+ * polled until it stops being `unverified`. There is no hard timeout,
+ * mirroring the v1 philosophy of waiting indefinitely for real compaction
+ * (compaction can legitimately take minutes). `signal` aborts the wait
+ * immediately with the current status (the launcher's isCancelled check
+ * suppresses the result on abort anyway); without a signal this just polls.
+ */
+export async function pollCompactionResultV2(opts: {
+    baseUrl: string;
+    sessionId: string;
+    password: string;
+    signal?: AbortSignal;
+    pollIntervalMs?: number;
+    delayImpl?: (ms: number) => Promise<void>;
+    fetchImpl?: FetchLike;
+}): Promise<CompactionResult> {
+    const pollIntervalMs = opts.pollIntervalMs ?? 5000;
+    const wait = opts.delayImpl ?? (async (ms: number) => {
+        await new Promise((resolve) => setTimeout(resolve, ms));
+    });
+    for (;;) {
+        const result = await fetchCompactionResultV2({
+            baseUrl: opts.baseUrl,
+            sessionId: opts.sessionId,
+            password: opts.password,
+            fetchImpl: opts.fetchImpl
+        });
+        if (result.status !== 'unverified') {
+            return result;
+        }
+        if (opts.signal?.aborted) {
+            return result;
+        }
+        await wait(pollIntervalMs);
+        // Abort during the wait must not trigger another fetch round.
+        if (opts.signal?.aborted) {
+            return result;
+        }
+    }
+}
+
+/**
  * Extracts the OPENCODE_PASSWORD value from a NUL-separated `/proc/<pid>/
  * environ` payload. Exported for fixture tests.
  */

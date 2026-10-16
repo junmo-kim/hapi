@@ -24,7 +24,7 @@ import {
 import {
     captureCompactionMarkerSnapshot,
     fetchCompactionResult,
-    fetchCompactionResultV2,
+    pollCompactionResultV2,
     readOpencodeV2ServerPassword,
     splitProviderModel,
     triggerOpencodeCompact,
@@ -1057,10 +1057,14 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     return;
                 }
                 this.compactOperationPhase = 'verification';
-                const v2Result = await fetchCompactionResultV2({
+                // v2's POST returns as soon as the marker exists; the summary
+                // is produced asynchronously, so verification must poll until
+                // a terminal status (no hard timeout, like v1's blocking POST).
+                const v2Result = await pollCompactionResultV2({
                     baseUrl,
                     sessionId: acpSessionId,
-                    password: v2Rest.password
+                    password: v2Rest.password,
+                    signal: compactAbortController.signal
                 });
                 if (isCancelled()) {
                     logger.debug('[opencode-remote] /compact result suppressed: cancelled or aborted before it resolved');

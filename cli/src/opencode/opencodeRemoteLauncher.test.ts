@@ -199,7 +199,7 @@ vi.mock('@/ui/ink/OpencodeDisplay', () => ({
 const compactHarness = vi.hoisted(() => ({
     calls: [] as Array<{ baseUrl: string; sessionId: string; providerId: string; modelId: string; signal?: AbortSignal }>,
     v2Calls: [] as Array<{ baseUrl: string; sessionId: string; providerId: string; modelId: string; password: string; signal?: AbortSignal }>,
-    v2VerifyCalls: [] as Array<{ baseUrl: string; sessionId: string; password: string }>,
+    v2VerifyCalls: [] as Array<{ baseUrl: string; sessionId: string; password: string; signal?: AbortSignal }>,
     v2VerifyResult: { status: 'success', text: 'v2 summary text' } as
         | { status: 'success'; text: string }
         | { status: 'failed'; reason: string }
@@ -257,6 +257,11 @@ vi.mock('./utils/opencodeCompactBridge', () => ({
         compactHarness.v2Calls.push(opts);
     }),
     fetchCompactionResultV2: vi.fn(async (opts: { baseUrl: string; sessionId: string; password: string }) => {
+        compactHarness.operationEvents.push('verifyV2');
+        compactHarness.v2VerifyCalls.push(opts);
+        return compactHarness.v2VerifyResult;
+    }),
+    pollCompactionResultV2: vi.fn(async (opts: { baseUrl: string; sessionId: string; password: string; signal?: AbortSignal }) => {
         compactHarness.operationEvents.push('verifyV2');
         compactHarness.v2VerifyCalls.push(opts);
         return compactHarness.v2VerifyResult;
@@ -2613,7 +2618,7 @@ describe('opencodeRemoteLauncher v2 compact verification and discovery notice', 
         expect(compactHarness.v2Calls).toHaveLength(1);
         expect(compactHarness.v2Calls[0]?.signal).toBeDefined();
         expect(compactHarness.v2VerifyCalls).toEqual([
-            { baseUrl: 'http://127.0.0.1:41234', sessionId: 'acp-session-1', password: 'pw-secret' }
+            { baseUrl: 'http://127.0.0.1:41234', sessionId: 'acp-session-1', password: 'pw-secret', signal: compactHarness.v2VerifyCalls[0]?.signal }
         ]);
         expect(compactHarness.markerSnapshotCalls).toHaveLength(0);
         expect(compactHarness.resultCalls).toHaveLength(0);
