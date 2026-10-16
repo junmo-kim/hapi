@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const constructorCalls: Array<{ command: string; args?: string[]; env?: Record<string, string> }> = [];
-const spawnCalls: Array<{ command: string; args?: string[] }> = [];
+const spawnCalls: Array<{ command: string; args?: string[]; options?: Record<string, unknown> }> = [];
 
 type FakeChild = {
     stdout: { on: (event: string, cb: (chunk: string) => void) => void };
@@ -13,8 +13,8 @@ let fakeSpawnImpl: ((command: string, args: string[]) => FakeChild) | null = nul
 
 vi.mock('node:child_process', async (importOriginal) => ({
     ...(await importOriginal<typeof import('node:child_process')>()),
-    spawn: (command: string, args: string[]) => {
-        spawnCalls.push({ command, args });
+    spawn: (command: string, args: string[], options?: Record<string, unknown>) => {
+        spawnCalls.push({ command, args, options });
         if (!fakeSpawnImpl) {
             throw new Error('spawn not configured');
         }
@@ -81,7 +81,7 @@ describe('detectOpencodeFlavorVersion', () => {
     it('detects v2 from "opencode v2.0.29" stdout', async () => {
         configureSpawn('opencode v2.0.29\n');
         await expect(detectOpencodeFlavorVersion('myopencode')).resolves.toBe('v2');
-        expect(spawnCalls).toEqual([{ command: 'myopencode', args: ['--version'] }]);
+        expect(spawnCalls).toEqual([{ command: 'myopencode', args: ['--version'], options: expect.objectContaining({ stdio: ['ignore', 'pipe', 'ignore'] }) }]);
     });
 
     it('detects v1 from "1.19.0" stdout', async () => {
@@ -102,6 +102,18 @@ describe('detectOpencodeFlavorVersion', () => {
     it('falls back to v1 when spawn errors', async () => {
         configureSpawn('', { error: new Error('spawn failed') });
         await expect(detectOpencodeFlavorVersion('opencode')).resolves.toBe('v1');
+    });
+
+    it('spawns through a shell on Windows so .cmd shims resolve', async () => {
+        const originalPlatform = process.platform;
+        Object.defineProperty(process, 'platform', { value: 'win32' });
+        try {
+            configureSpawn('opencode v2.0.29\n');
+            await expect(detectOpencodeFlavorVersion('opencode')).resolves.toBe('v2');
+        } finally {
+            Object.defineProperty(process, 'platform', { value: originalPlatform });
+        }
+        expect(spawnCalls[spawnCalls.length - 1]?.options).toMatchObject({ shell: true, windowsHide: true });
     });
 });
 

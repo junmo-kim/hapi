@@ -87,6 +87,7 @@ function subscribe(options: {
      * stop the loop itself.
      */
     stopAfterDelays?: number;
+    headers?: Record<string, string>;
 }) {
     let subscription: { close: () => void } | null = null;
     subscription = subscribeToOpencodeEvents({
@@ -94,6 +95,7 @@ function subscribe(options: {
         directory: SESSION_CWD,
         sessionId: 'ses_ours',
         onRetry: options.onRetry ?? (() => {}),
+        headers: options.headers,
         fetchImpl: options.fetchImpl,
         sleep: async (ms: number) => {
             options.delays?.push(ms);
@@ -157,6 +159,18 @@ describe('subscribeToOpencodeEvents', () => {
         expect(fetchImpl.mock.calls[0][0]).toBe(EXPECTED_URL);
 
         subscription.close();
+        sse.close();
+    });
+
+    it('merges caller headers into every connect attempt (v2 Basic auth)', async () => {
+        const sse = createSseStream();
+        const fetchImpl = vi.fn(async (_url: string, _init?: RequestInit) => new Response(sse.stream, { status: 200 }));
+        const auth = 'Basic ' + Buffer.from('opencode:pw').toString('base64');
+        const subscription = subscribe({ fetchImpl, headers: { authorization: auth } });
+
+        await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(1));
+        expect(fetchImpl.mock.calls[0][1]?.headers).toMatchObject({ authorization: auth, accept: 'text/event-stream' });
+        await subscription.close();
         sse.close();
     });
 

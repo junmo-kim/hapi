@@ -1,5 +1,6 @@
 import React from 'react';
 import { randomUUID } from 'node:crypto';
+import { Buffer } from 'node:buffer';
 import { registerAcpSessionTitleSync } from '@/agent/acpSessionTitle';
 import { logger } from '@/ui/logger';
 import { buildHapiMcpBridge } from '@/codex/utils/buildHapiMcpBridge';
@@ -311,6 +312,11 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             // at all, with no error to notice — see the subscription's doc.
             directory: session.path,
             sessionId: acpSessionId,
+            // opencode v2's internal server is Basic-auth protected; without
+            // the header the subscription is rejected before any event.
+            headers: this.v2RestInfo ? {
+                authorization: 'Basic ' + Buffer.from(`opencode:${this.v2RestInfo.password}`).toString('base64')
+            } : undefined,
             onRetry: (retry) => this.surfaceUpstreamRetry(retry)
         });
         }
@@ -1022,9 +1028,14 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             // v2: no marker snapshot boundary exists (the v1 capture is
             // v1-only); the POST is abortable and verification runs through
             // the v2 message GET afterwards, feeding the same result switch.
+            // Suppression spans the POST *and* the polling loop: v2 returns
+            // from the POST before the summary exists, and session/update
+            // notifications arriving during the minutes-long poll would
+            // otherwise reach the stale pre-compact handler and duplicate the
+            // explicit summary (the v1 path suppresses for the same reason).
             if (v2Rest) {
                 this.compactOperationPhase = 'summarize';
-                const requestResult = await backend.suppressUpdatesDuring(async () => {
+                const v2Outcome = await backend.suppressUpdatesDuring(async () => {
                     try {
                         await triggerOpencodeCompactV2({
                             baseUrl,
@@ -1034,53 +1045,52 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                             password: v2Rest.password,
                             signal: compactAbortController.signal
                         });
-                        return { ok: true } as const;
                     } catch (error) {
                         return {
-                            ok: false,
+                            ok: false as const,
                             error: error instanceof Error ? error.message : String(error)
-                        } as const;
+                        };
                     } finally {
                         this.compactOperationPhase = 'post-summarize';
                     }
+                    if (isCancelled()) {
+                        return { ok: true as const, cancelled: true as const };
+                    }
+                    this.compactOperationPhase = 'verification';
+                    // v2's POST returns as soon as the marker exists; the summary
+                    // is produced asynchronously, so verification must poll until
+                    // a terminal status (no hard timeout, like v1's blocking POST).
+                    const v2Result = await pollCompactionResultV2({
+                        baseUrl,
+                        sessionId: acpSessionId,
+                        password: v2Rest.password,
+                        signal: compactAbortController.signal
+                    });
+                    return { ok: true as const, cancelled: false as const, result: v2Result };
                 });
-                if (!requestResult.ok) {
+                if (!v2Outcome.ok) {
                     if (!isCancelled()) {
-                        session.sendSessionEvent({ type: 'message', message: `📦 Compaction failed: ${requestResult.error}` });
+                        session.sendSessionEvent({ type: 'message', message: `📦 Compaction failed: ${v2Outcome.error}` });
                     } else {
                         logger.debug('[opencode-remote] /compact failure suppressed: cancelled or aborted before it resolved');
                     }
                     return;
                 }
-                if (isCancelled()) {
-                    logger.debug('[opencode-remote] /compact verification skipped: cancelled or aborted after summarize');
-                    return;
-                }
-                this.compactOperationPhase = 'verification';
-                // v2's POST returns as soon as the marker exists; the summary
-                // is produced asynchronously, so verification must poll until
-                // a terminal status (no hard timeout, like v1's blocking POST).
-                const v2Result = await pollCompactionResultV2({
-                    baseUrl,
-                    sessionId: acpSessionId,
-                    password: v2Rest.password,
-                    signal: compactAbortController.signal
-                });
-                if (isCancelled()) {
+                if (v2Outcome.cancelled || isCancelled()) {
                     logger.debug('[opencode-remote] /compact result suppressed: cancelled or aborted before it resolved');
                     return;
                 }
-                switch (v2Result.status) {
+                switch (v2Outcome.result.status) {
                     case 'success': {
                         session.sendSessionEvent({ type: 'message', message: '📦 Compaction completed' });
-                        const converted = convertAgentMessage({ type: 'reasoning', text: v2Result.text, id: randomUUID() });
+                        const converted = convertAgentMessage({ type: 'reasoning', text: v2Outcome.result.text, id: randomUUID() });
                         if (converted) {
                             session.sendAgentMessage(converted);
                         }
                         return;
                     }
                     case 'failed':
-                        session.sendSessionEvent({ type: 'message', message: `📦 Compaction failed: ${v2Result.reason}` });
+                        session.sendSessionEvent({ type: 'message', message: `📦 Compaction failed: ${v2Outcome.result.reason}` });
                         return;
                     case 'unverified':
                         session.sendSessionEvent({ type: 'message', message: '📦 Compaction result could not be verified.' });

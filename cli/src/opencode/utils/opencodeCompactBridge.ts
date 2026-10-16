@@ -212,6 +212,7 @@ export async function pollCompactionResultV2(opts: {
             baseUrl: opts.baseUrl,
             sessionId: opts.sessionId,
             password: opts.password,
+            signal: opts.signal,
             fetchImpl: opts.fetchImpl
         });
         if (result.status !== 'unverified') {
@@ -474,6 +475,8 @@ export async function fetchCompactionResultV2(opts: {
     baseUrl: string;
     sessionId: string;
     password: string;
+    /** Aborts an in-flight messages GET. Required for the poll loop (see pollCompactionResultV2). */
+    signal?: AbortSignal;
     fetchImpl?: FetchLike;
 }): Promise<CompactionResult> {
     const unverified: CompactionResult = { status: 'unverified', reason: 'Compaction result could not be verified.' };
@@ -482,6 +485,7 @@ export async function fetchCompactionResultV2(opts: {
     try {
         const response = await fetchFn(url, {
             method: 'GET',
+            signal: opts.signal,
             headers: {
                 authorization: 'Basic ' + Buffer.from(`opencode:${opts.password}`).toString('base64')
             }

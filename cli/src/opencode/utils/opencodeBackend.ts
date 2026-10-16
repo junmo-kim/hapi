@@ -28,7 +28,14 @@ export type OpencodeFlavorVersion = 'v1' | 'v2';
 export async function detectOpencodeFlavorVersion(command = 'opencode'): Promise<'v1' | 'v2'> {
     try {
         const stdout = await new Promise<string>((resolve, reject) => {
-            const child = spawn(command, ['--version'], { stdio: ['ignore', 'pipe', 'ignore'] });
+            // shell/windowsHide mirror buildAcpStdioSpawnOptions: on Windows,
+            // npm-style opencode.cmd shims require a shell to resolve, and a
+            // bare spawn would fail the probe and misclassify v2 as v1.
+            const child = spawn(command, ['--version'], {
+                stdio: ['ignore', 'pipe', 'ignore'],
+                shell: process.platform === 'win32',
+                windowsHide: process.platform === 'win32'
+            });
             let out = '';
             const timer = setTimeout(() => {
                 child.kill();

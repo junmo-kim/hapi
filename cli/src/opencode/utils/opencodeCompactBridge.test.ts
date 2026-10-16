@@ -612,6 +612,22 @@ describe('pollCompactionResultV2', () => {
 
     const emptyResponse = () => new Response(JSON.stringify({ data: [] }), { status: 200 });
 
+    it('threads the abort signal into every messages GET', async () => {
+        const controller = new AbortController();
+        const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+            expect((init as { signal?: AbortSignal }).signal).toBe(controller.signal);
+            return summaryResponse('done!');
+        });
+        await pollCompactionResultV2({
+            baseUrl: 'http://127.0.0.1:1',
+            sessionId: 's',
+            password: 'pw',
+            signal: controller.signal,
+            fetchImpl: fetchImpl as unknown as typeof fetch
+        });
+        expect(fetchImpl).toHaveBeenCalledTimes(1);
+    });
+
     it('polls until the status is not unverified (unverified → unverified → success)', async () => {
         const fetchImpl = vi.fn(async () => emptyResponse())
             .mockImplementationOnce(async () => emptyResponse())

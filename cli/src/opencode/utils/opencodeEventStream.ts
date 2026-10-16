@@ -37,6 +37,12 @@ export type OpencodeEventStreamOptions = {
      * web timeline folds), not as a failure — see its call site.
      */
     onRetry: (retry: OpencodeRetryStatus) => void;
+    /**
+     * Extra request headers merged into every (re)connect attempt. Required
+     * for opencode v2: the internal server is Basic-auth protected, and a
+     * headerless subscription is rejected with 401 before any event arrives.
+     */
+    headers?: Record<string, string>;
     fetchImpl?: FetchLike;
     sleep?: (ms: number) => Promise<void>;
 };
@@ -226,6 +232,7 @@ export function subscribeToOpencodeEvents(options: OpencodeEventStreamOptions): 
         directory,
         sessionId,
         onRetry,
+        headers = {},
         fetchImpl = fetch as FetchLike,
         sleep = (ms: number) => new Promise<void>((resolve) => {
             const timer = setTimeout(resolve, ms);
@@ -425,6 +432,7 @@ export function subscribeToOpencodeEvents(options: OpencodeEventStreamOptions): 
                     signal: controller.signal,
                     headers: {
                         accept: 'text/event-stream',
+                        ...headers,
                         ...(lastEventId ? { 'last-event-id': lastEventId } : {})
                     }
                 });
