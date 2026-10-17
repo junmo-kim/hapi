@@ -179,10 +179,12 @@ describe('subscribeToOpencodeEvents', () => {
         await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(1));
         expect(seen[0]).toBe(EXPECTED_URL.replace('/event?', '/api/event?'));
 
+        // Real v2 shape (measured): the body inside `data` has NO type
+        // field — the discriminator lives on the envelope only.
         sse.push({
             id: 'evt_a',
             type: 'session.status',
-            data: retryEvent(1)
+            data: { sessionID: 'ses_ours', status: { type: 'retry', attempt: 1, message: 'Rate limit exceeded: free-models-per-day.', next: NOW + 30_000 } }
         });
 
         await vi.waitFor(() => expect(retries).toEqual([1]));

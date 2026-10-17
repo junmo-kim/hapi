@@ -186,8 +186,10 @@ export async function listChildPids(pid: number, opts?: {
     platform?: NodeJS.Platform;
     readChildrenFile?: (pid: number, task: string) => Promise<string>;
     execImpl?: (command: string, args: string[]) => Promise<string>;
+    maxDepth?: number;
 }): Promise<number[]> {
     const platform = opts?.platform ?? process.platform;
+    const maxDepth = opts?.maxDepth ?? 4;
     try {
         if (platform === 'linux') {
             const readChildren = opts?.readChildrenFile ?? (async (p: number, task: string) =>
@@ -198,6 +200,7 @@ export async function listChildPids(pid: number, opts?: {
             // serve child from another) — stopping at the first nonempty
             // task would drop the rest.
             const union = new Set<number>();
+            const direct: number[] = [];
             for (const task of tasks) {
                 try {
                     const children = await readChildren(pid, task);
@@ -205,9 +208,18 @@ export async function listChildPids(pid: number, opts?: {
                     for (const value of pids) {
                         const parsed = Number.parseInt(value, 10);
                         if (Number.isFinite(parsed)) union.add(parsed);
+                        direct.push(parsed);
                     }
                 } catch {
                     // Try the next task; fall through to [] if none yields.
+                }
+            }
+            // Descendants too: the npm wrapper spawns the native binary which
+            // spawns `serve` — the listener owner can be a grandchild.
+            if (maxDepth > 1) {
+                for (const child of direct) {
+                    const grandChildren = await listChildPids(child, { ...opts, maxDepth: maxDepth - 1 });
+                    for (const grandChild of grandChildren) union.add(grandChild);
                 }
             }
             return [...union];
@@ -220,11 +232,21 @@ export async function listChildPids(pid: number, opts?: {
             return stdout;
         };
         const output = await run('pgrep', ['-P', String(pid)]);
-        return output.trim().split('\n')
+        const direct = output.trim().split('\n')
             .map((line) => line.trim())
             .filter(Boolean)
             .map((value) => Number.parseInt(value, 10))
             .filter((value) => Number.isFinite(value));
+        // Descendants too: the npm wrapper spawns the native binary which
+        // spawns `serve` — the listener owner can be a grandchild.
+        const union = new Set<number>(direct);
+        if (maxDepth > 1) {
+            for (const child of direct) {
+                const grandChildren = await listChildPids(child, { ...opts, maxDepth: maxDepth - 1 });
+                for (const grandChild of grandChildren) union.add(grandChild);
+            }
+        }
+        return [...union];
     } catch {
         return [];
     }

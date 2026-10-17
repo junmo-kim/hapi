@@ -635,6 +635,38 @@ describe('fetchCompactionResultV2', () => {
         expect(result).toEqual({ status: 'success', text: 'fresh summary' });
     });
 
+    it('ambiguous recovery ends the poll once ALL candidates are terminal (sawPending must not hold forever)', async () => {
+        // Bot round-4 Minor: with a prior pending observation, sawPending
+        // disables the stall cap — an all-terminal ambiguous state would
+        // poll forever. onAmbiguousTerminal ends it.
+        let calls = 0;
+        const fetchImpl = vi.fn(async () => {
+            calls++;
+            return calls <= 2
+                ? new Response(JSON.stringify({ data: [
+                    { id: 'msg_a', type: 'compaction', status: 'pending', reason: 'manual' },
+                    { id: 'msg_b', type: 'compaction', status: 'pending', reason: 'manual' }
+                ] }), { status: 200 })
+                : new Response(JSON.stringify({ data: [
+                    { id: 'msg_a', type: 'compaction', status: 'completed', reason: 'manual', summary: 'a done' },
+                    { id: 'msg_b', type: 'compaction', status: 'completed', reason: 'manual', summary: 'b done' }
+                ] }), { status: 200 });
+        });
+        const result = await pollCompactionResultV2({
+            baseUrl: 'http://127.0.0.1:1',
+            sessionId: 's',
+            password: 'pw',
+            expectedCompactionId: null,
+            excludeCompactionIds: [],
+            pollIntervalMs: 1,
+            maxAttempts: 3,
+            delayImpl: async () => {},
+            fetchImpl: fetchImpl as unknown as typeof fetch
+        });
+        expect(result).toEqual({ status: 'unverified', reason: 'Compaction result could not be verified.' });
+        expect(calls).toBe(3);
+    });
+
     it('with an exclude list and multiple new entries, stays unverified with pending progress', async () => {
         const first = { id: 'msg_a', type: 'compaction', status: 'pending', reason: 'manual' };
         const second = { id: 'msg_b', type: 'compaction', status: 'pending', reason: 'manual' };

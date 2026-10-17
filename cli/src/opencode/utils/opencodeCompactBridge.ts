@@ -250,6 +250,7 @@ export async function pollCompactionResultV2(opts: {
         await new Promise((resolve) => setTimeout(resolve, ms));
     });
     let stalledRounds = 0;
+    let ambiguousTerminal = false;
     // Once the admitted compaction has been OBSERVED in a non-terminal
     // state, server work is confirmed running: the stall cap must not
     // license releasing the barrier onto it — only a terminal outcome or
@@ -264,9 +265,13 @@ export async function pollCompactionResultV2(opts: {
             expectedCompactionId: opts.expectedCompactionId,
             excludeCompactionIds: opts.excludeCompactionIds,
             onMatchedPending: () => { stalledRounds = 0; sawPending = true; },
+            onAmbiguousTerminal: () => { ambiguousTerminal = true; },
             fetchImpl: opts.fetchImpl
         });
         if (result.status !== 'unverified') {
+            return result;
+        }
+        if (ambiguousTerminal) {
             return result;
         }
         stalledRounds += 1;
@@ -610,6 +615,8 @@ export async function fetchCompactionResultV2(opts: {
      * signal rather than total rounds.
      */
     onMatchedPending?: () => void;
+    /** Invoked when snapshot-recovery candidates ALL reached terminal states — ends the poll (see pollCompactionResultV2). */
+    onAmbiguousTerminal?: () => void;
     fetchImpl?: FetchLike;
 }): Promise<CompactionResult> {
     const unverified: CompactionResult = { status: 'unverified', reason: 'Compaction result could not be verified.' };
@@ -655,9 +662,10 @@ export async function fetchCompactionResultV2(opts: {
         if (candidates.length > 1) {
             // Ambiguous: ours is among the new entries. Pending progress (and
             // thus a stall-counter reset) is only honest while at least one
-            // candidate is still non-terminal — once ALL of them reached a
-            // terminal state, plain unverified lets the stall cap bound the
-            // hold instead of waiting on entries that will never change.
+            // candidate is still non-terminal. Once ALL of them reached a
+            // terminal state the outcome can no longer change — signal the
+            // poll to END (otherwise sawPending would hold the barrier
+            // forever on entries that will never change).
             const anyNonTerminal = candidates.some((entry) => {
                 const record = isObjectRecord(entry) ? entry : null;
                 const candidateStatus = record && typeof record.status === 'string' ? record.status : undefined;
@@ -665,7 +673,11 @@ export async function fetchCompactionResultV2(opts: {
                 // status must not claim pending progress.
                 return candidateStatus === 'pending' || candidateStatus === 'running';
             });
-            if (anyNonTerminal) opts.onMatchedPending?.();
+            if (anyNonTerminal) {
+                opts.onMatchedPending?.();
+            } else {
+                opts.onAmbiguousTerminal?.();
+            }
             return unverified;
         }
 

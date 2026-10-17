@@ -363,11 +363,17 @@ export function subscribeToOpencodeEvents(options: OpencodeEventStreamOptions): 
             logger.debug('[opencode-events] ignoring unparsable event payload', error);
             return;
         }
-        // v2 wraps the v1-shaped body in an envelope: { id, type, data }.
-        // Unwrap so the downstream v1 handling (session.status + properties)
-        // works unchanged on both dialects.
+        // v2 wraps the v1-shaped body in an envelope: { id, type, data },
+        // where `type` lives on the ENVELOPE and `data` carries only the
+        // body (measured: { id, type: 'session.status', data: { sessionID,
+        // status } }). Re-attach the envelope type so the downstream v1
+        // handling (event.type + properties) works unchanged on both
+        // dialects; unwrapping `data` alone would strip the discriminator
+        // and every retry event would be silently rejected. The v2 body also
+        // carries its fields directly (no v1 `properties` wrapper), so the
+        // body becomes `properties`.
         if (mode === 'v2' && isObject(payload) && isObject(payload.data)) {
-            payload = payload.data;
+            payload = { type: payload.type, properties: payload.data };
         }
         // Dispatched outside the parse guard on purpose: everything
         // downstream of handleEvent is HAPI's own code (the launcher's
