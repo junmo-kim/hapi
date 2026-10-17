@@ -221,7 +221,8 @@ const compactHarness = vi.hoisted(() => ({
     // /compact instead of the default immediate-resolve behavior below.
     triggerImpl: null as null | ((opts: { baseUrl: string; sessionId: string; providerId: string; modelId: string; signal?: AbortSignal }) => Promise<{ ok: true } | { ok: false; error: string }>),
     triggerV2Impl: null as null | ((opts: { baseUrl: string; sessionId: string; providerId: string; modelId: string; password: string; signal?: AbortSignal }) => Promise<{ compactionId: string | null }>),
-    pollImpl: null as null | ((opts: { baseUrl: string; sessionId: string; password: string; signal?: AbortSignal; expectedCompactionId?: string | null }) => Promise<
+    preExistingCompactionIds: null as string[] | null,
+    pollImpl: null as null | ((opts: { baseUrl: string; sessionId: string; password: string; signal?: AbortSignal; expectedCompactionId?: string | null; excludeCompactionIds?: string[] | null }) => Promise<
         | { status: 'success'; text: string }
         | { status: 'failed'; reason: string }
         | { status: 'unverified'; reason: string }
@@ -258,6 +259,7 @@ vi.mock('./utils/opencodeCompactBridge', () => ({
         harness.v2PasswordCalls.push({ pid });
         return harness.discoveredPassword;
     }),
+    captureCompactionIdsV2: vi.fn(async () => compactHarness.preExistingCompactionIds ?? null),
     triggerOpencodeCompactV2: vi.fn(async (opts: { baseUrl: string; sessionId: string; providerId: string; modelId: string; password: string; signal?: AbortSignal }) => {
         compactHarness.operationEvents.push('triggerV2');
         compactHarness.v2Calls.push(opts);
@@ -271,7 +273,7 @@ vi.mock('./utils/opencodeCompactBridge', () => ({
         compactHarness.v2VerifyCalls.push(opts);
         return compactHarness.v2VerifyResult;
     }),
-    pollCompactionResultV2: vi.fn(async (opts: { baseUrl: string; sessionId: string; password: string; signal?: AbortSignal; expectedCompactionId?: string | null }) => {
+    pollCompactionResultV2: vi.fn(async (opts: { baseUrl: string; sessionId: string; password: string; signal?: AbortSignal; expectedCompactionId?: string | null; excludeCompactionIds?: string[] | null }) => {
         compactHarness.operationEvents.push('verifyV2');
         compactHarness.v2VerifyCalls.push(opts);
         if (compactHarness.pollImpl) {
@@ -2591,6 +2593,7 @@ describe('opencodeRemoteLauncher v2 compact verification and discovery notice', 
         compactHarness.triggerImpl = null;
         compactHarness.triggerV2Impl = null;
         compactHarness.pollImpl = null;
+        compactHarness.preExistingCompactionIds = null;
         compactHarness.operationEvents = [];
         compactHarness.markerSnapshotCalls = [];
         compactHarness.resultCalls = [];
@@ -2636,7 +2639,7 @@ describe('opencodeRemoteLauncher v2 compact verification and discovery notice', 
         expect(compactHarness.v2Calls).toHaveLength(1);
         expect(compactHarness.v2Calls[0]?.signal).toBeDefined();
         expect(compactHarness.v2VerifyCalls).toEqual([
-            { baseUrl: 'http://127.0.0.1:41234', sessionId: 'acp-session-1', password: 'pw-secret', signal: compactHarness.v2VerifyCalls[0]?.signal, expectedCompactionId: 'msg_admitted_1' }
+            { baseUrl: 'http://127.0.0.1:41234', sessionId: 'acp-session-1', password: 'pw-secret', signal: compactHarness.v2VerifyCalls[0]?.signal, expectedCompactionId: 'msg_admitted_1', excludeCompactionIds: null }
         ]);
         expect(compactHarness.markerSnapshotCalls).toHaveLength(0);
         expect(compactHarness.resultCalls).toHaveLength(0);
@@ -2772,6 +2775,53 @@ describe('opencodeRemoteLauncher v2 compact verification and discovery notice', 
 
         // The terminal outcome is suppressed (Stop asked for that), but the
         // barrier was held through the poll — no early 'idle' release.
+        expect(sessionEvents.some((event) => (event as { message?: string }).message === '📦 Compaction completed')).toBe(false);
+    });
+
+    it('v2: recovers the admitted compaction via the pre-POST snapshot when the POST body is unreadable — barrier held, no guessing', async () => {
+        // Bot round-3 finding: exiting unverified on an unreadable POST body
+        // released the barrier while the admitted compaction was still
+        // running. The pre-POST id snapshot recovers identity: the next new
+        // compaction entry must be ours, and the poll waits for it.
+        harness.detectedVersion = 'v2';
+        harness.discoveredPort = 41234;
+        harness.discoveredPassword = 'pw-secret';
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        compactHarness.preExistingCompactionIds = ['msg_before_1'];
+        compactHarness.triggerV2Impl = async () => ({ compactionId: null });
+        compactHarness.pollImpl = (opts) => {
+            // The bridge would exclude msg_before_1; simulate recovery: poll
+            // resolves with the summary once "our" entry lands.
+            expect(opts.expectedCompactionId).toBeNull();
+            expect(opts.excludeCompactionIds).toEqual(['msg_before_1']);
+            return Promise.resolve({ status: 'success', text: 'recovered summary' });
+        };
+        const { session, sessionEvents, sentAgentMessages } = createSessionStub([{ message: '', mode: createCompactMode('ollama/x') }]);
+
+        await opencodeRemoteLauncher(session as never, {});
+
+        expect(sessionEvents.some((event) => (event as { message?: string }).message === '📦 Compaction completed')).toBe(true);
+        expect(JSON.stringify(sentAgentMessages)).toContain('recovered summary');
+    });
+
+    it('v2: null admission id with a failed pre-POST snapshot reports unverified without polling (no guessing)', async () => {
+        harness.detectedVersion = 'v2';
+        harness.discoveredPort = 41234;
+        harness.discoveredPassword = 'pw-secret';
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        compactHarness.triggerV2Impl = async () => ({ compactionId: null });
+        compactHarness.preExistingCompactionIds = null;
+        let pollCalled = false;
+        compactHarness.pollImpl = () => {
+            pollCalled = true;
+            return Promise.resolve({ status: 'success', text: 'should never be used' });
+        };
+        const { session, sessionEvents } = createSessionStub([{ message: '', mode: createCompactMode('ollama/x') }]);
+
+        await opencodeRemoteLauncher(session as never, {});
+
+        expect(pollCalled).toBe(false);
+        expect(sessionEvents.some((event) => (event as { message?: string }).message === '📦 Compaction result could not be verified.')).toBe(true);
         expect(sessionEvents.some((event) => (event as { message?: string }).message === '📦 Compaction completed')).toBe(false);
     });
 

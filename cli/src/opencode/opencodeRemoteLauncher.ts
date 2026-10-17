@@ -23,6 +23,7 @@ import {
     type OpencodeFlavorVersion
 } from './utils/opencodeBackend';
 import {
+    captureCompactionIdsV2,
     captureCompactionMarkerSnapshot,
     fetchCompactionResult,
     pollCompactionResultV2,
@@ -1045,6 +1046,16 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             if (v2Rest) {
                 this.compactOperationPhase = 'summarize';
                 const v2Outcome = await backend.suppressUpdatesDuring(async () => {
+                    // Pre-POST identity boundary (the v2 analogue of v1's
+                    // marker snapshot): compaction ids visible before the POST.
+                    // If the POST response cannot be read, any compaction entry
+                    // appearing afterwards must be ours.
+                    const preExistingIds = await captureCompactionIdsV2({
+                        baseUrl,
+                        sessionId: acpSessionId,
+                        password: v2Rest.password,
+                        signal: compactAbortController.signal
+                    });
                     let admittedId: string | null = null;
                     try {
                         const admitted = await triggerOpencodeCompactV2({
@@ -1073,13 +1084,16 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     // pending, so verification MUST continue (barrier held)
                     // rather than releasing the queue mid-compaction. The
                     // suppression applies to the terminal outcome below.
-                    // No correlation id (POST body unparsable): zero
-                    // visibility into which entry is ours, so guessing
-                    // "newest compaction" could settle this request with an
-                    // older auto-compaction's summary — report unverified
-                    // immediately (the same outcome v1 reaches when it cannot
-                    // verify) instead of polling on a guess.
-                    if (admittedId === null) {
+                    // No correlation id (POST body unreadable): recover
+                    // identity through the pre-POST snapshot — only entries
+                    // absent from it can be ours. If even the snapshot failed
+                    // there is no recovery basis: polling would guess
+                    // "newest compaction" and could settle this request with
+                    // an older auto-compaction's summary, so report
+                    // unverified immediately (the same outcome v1 reaches
+                    // when it cannot verify) — but only AFTER admission, so
+                    // the barrier covers the running server work.
+                    if (admittedId === null && preExistingIds === null) {
                         return {
                             ok: true as const,
                             cancelled: false as const,
@@ -1096,7 +1110,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                         sessionId: acpSessionId,
                         password: v2Rest.password,
                         signal: compactAbortController.signal,
-                        expectedCompactionId: admittedId
+                        expectedCompactionId: admittedId,
+                        excludeCompactionIds: admittedId === null ? preExistingIds : null
                     });
                     return { ok: true as const, cancelled: false as const, result: v2Result };
                 });

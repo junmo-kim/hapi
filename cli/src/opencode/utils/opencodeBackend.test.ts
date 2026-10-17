@@ -363,8 +363,13 @@ describe('listLoopbackListenersForPids', () => {
             execImpl: async (command, args) => {
                 if (command === 'ss') throw new Error('ss missing');
                 expect(args).toEqual(['-a', '-p', expect.any(String), '-iTCP', '-sTCP:LISTEN', '-n', '-P']);
-                if (args[1] === '111') throw new Error('lsof exited 1: no match');
-                return 'node 222 u 20u IPv4 TCP 127.0.0.1:41236 (LISTEN)';
+                // Decisive: pid 111's scan must never contribute a port, so
+                // the pre-fix Promise.all rejection path (discarding pid 222's
+                // result and falling back to the diff heuristic) and any
+                // misattribution both fail this assertion.
+                if (args[2] === '111') throw new Error('lsof exited 1: no match');
+                if (args[2] === '222') return 'node 222 u 20u IPv4 TCP 127.0.0.1:41236 (LISTEN)';
+                throw new Error('unexpected lsof invocation');
             }
         });
         expect(listeners).toEqual(new Set([41236]));

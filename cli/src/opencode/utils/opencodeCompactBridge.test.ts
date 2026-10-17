@@ -604,17 +604,36 @@ describe('fetchCompactionResultV2', () => {
         expect(result).toEqual({ status: 'unverified', reason: 'Compaction result could not be verified.' });
     });
 
-    it('without a correlation id, selects the newest compaction entry, not the oldest', async () => {
+    it('without a correlation id but with an exclude list, evaluates the single new compaction entry', async () => {
         const olderCompleted = { id: 'msg_old', type: 'compaction', status: 'completed', reason: 'manual', summary: 'stale summary' };
         const newerCompleted = { id: 'msg_new', type: 'compaction', status: 'completed', reason: 'manual', summary: 'fresh summary' };
         const result = await fetchCompactionResultV2({
             baseUrl: 'http://127.0.0.1:1',
             sessionId: 's',
             password: 'pw',
+            expectedCompactionId: null,
+            excludeCompactionIds: ['msg_old'],
             // Descending (newest first), as measured.
             fetchImpl: async () => fixtureEntry(newerCompleted, olderCompleted)
         });
         expect(result).toEqual({ status: 'success', text: 'fresh summary' });
+    });
+
+    it('with an exclude list and multiple new entries, stays unverified with pending progress', async () => {
+        const first = { id: 'msg_a', type: 'compaction', status: 'pending', reason: 'manual' };
+        const second = { id: 'msg_b', type: 'compaction', status: 'pending', reason: 'manual' };
+        let pendingCalled = false;
+        const result = await fetchCompactionResultV2({
+            baseUrl: 'http://127.0.0.1:1',
+            sessionId: 's',
+            password: 'pw',
+            expectedCompactionId: null,
+            excludeCompactionIds: ['msg_old'],
+            onMatchedPending: () => { pendingCalled = true; },
+            fetchImpl: async () => fixtureEntry(second, first, { id: 'msg_old', type: 'compaction', status: 'completed', reason: 'manual', summary: 'stale' })
+        });
+        expect(result).toEqual({ status: 'unverified', reason: 'Compaction result could not be verified.' });
+        expect(pendingCalled).toBe(true);
     });
 
     it('reports unverified when the fetch itself throws', async () => {

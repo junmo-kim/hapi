@@ -212,6 +212,8 @@ export async function pollCompactionResultV2(opts: {
     signal?: AbortSignal;
     /** Correlation id of the admitted compaction (see fetchCompactionResultV2). */
     expectedCompactionId?: string | null;
+    /** Pre-POST compaction ids excluded from identity recovery (see fetchCompactionResultV2). */
+    excludeCompactionIds?: string[] | null;
     pollIntervalMs?: number;
     /**
      * Stall cap, not a total cap. The poll runs inside the FIFO barrier
@@ -240,6 +242,7 @@ export async function pollCompactionResultV2(opts: {
             password: opts.password,
             signal: opts.signal,
             expectedCompactionId: opts.expectedCompactionId,
+            excludeCompactionIds: opts.excludeCompactionIds,
             onMatchedPending: () => { stalledRounds = 0; },
             fetchImpl: opts.fetchImpl
         });
@@ -491,6 +494,47 @@ export async function fetchCompactionResult(opts: OpencodeCompactCallOpts & {
 }
 
 /**
+ * Captures the ids of compaction entries that already exist BEFORE a compact
+ * POST — the v2 analogue of v1's `captureCompactionMarkerSnapshot` boundary.
+ * Used to recover identity when the POST response cannot be read: any
+ * compaction entry appearing afterwards must be ours. Null = the snapshot
+ * itself failed (caller then has no recovery basis).
+ */
+export async function captureCompactionIdsV2(opts: {
+    baseUrl: string;
+    sessionId: string;
+    password: string;
+    signal?: AbortSignal;
+    fetchImpl?: FetchLike;
+}): Promise<string[] | null> {
+    const fetchFn: FetchLike = opts.fetchImpl ?? fetch;
+    const url = `${opts.baseUrl}/api/session/${encodeURIComponent(opts.sessionId)}/message`;
+    try {
+        const response = await fetchFn(url, {
+            method: 'GET',
+            signal: opts.signal,
+            headers: {
+                authorization: 'Basic ' + Buffer.from(`opencode:${opts.password}`).toString('base64')
+            }
+        });
+        if (!response.ok) return null;
+        const payload: unknown = await response.json().catch(() => null);
+        const entries = Array.isArray(payload)
+            ? payload as OpencodeMessageEntry[]
+            : isObjectRecord(payload) && Array.isArray(payload.data)
+                ? payload.data as OpencodeMessageEntry[]
+                : null;
+        if (!entries) return null;
+        return entries
+            .filter((entry) => entry.type === 'compaction')
+            .map((entry) => (isObjectRecord(entry) && typeof entry.id === 'string' ? entry.id : null))
+            .filter((id): id is string => id !== null);
+    } catch {
+        return null;
+    }
+}
+
+/**
  * v2 counterpart of `fetchCompactionResult`. opencode v2 redesigned the
  * messages endpoint (verified 2026-10-15): `GET /api/session/:id/message`
  * with Basic auth, wrapping the message entries in a `{ data: [...] }`
@@ -511,10 +555,19 @@ export async function fetchCompactionResultV2(opts: {
      * Correlation id of the compaction this request admitted (echoed by the
      * compact POST response). The messages endpoint returns entries newest
      * first (measured 2026-10-16), so an older completed compaction must not
-     * be mistaken for this request's outcome. Null = unknown; the newest
-     * compaction entry is then the best available guess.
+     * be mistaken for this request's outcome. Null = the POST response could
+     * not be read; recovery then runs through `excludeCompactionIds`.
      */
     expectedCompactionId?: string | null;
+    /**
+     * Compaction entry ids that already existed BEFORE the POST (the v2
+     * analogue of v1's marker snapshot). Used only when
+     * `expectedCompactionId` is null: candidates are the entries absent from
+     * this list — compactions the POST could have admitted. One candidate is
+     * evaluated; several mean ours is among them (pending-progress, keep
+     * waiting); none means no visibility yet (stall counting applies).
+     */
+    excludeCompactionIds?: string[] | null;
     /**
      * Invoked when the matched compaction entry exists but has not reached a
      * terminal outcome (pending/running). The poll loop treats this as
@@ -549,14 +602,34 @@ export async function fetchCompactionResultV2(opts: {
         // the compaction entry itself carries the outcome inline —
         // `{ type: 'compaction', status: 'completed', reason: 'manual', summary: '...' }`.
         // There is no assistant message linked via parentID like v1, so the
-        // v1 parsing rules do not apply here. Entries arrive newest first
-        // (measured), so without a correlation id the NEWEST compaction entry
-        // — the head of the filtered list, not pop() — is the best guess.
+        // v1 parsing rules do not apply here.
         const compactionEntries = entries.filter((entry) => entry.type === 'compaction');
-        const latestCompaction = (opts.expectedCompactionId
-            ? compactionEntries.find((entry) => isObjectRecord(entry) && entry.id === opts.expectedCompactionId)
-            : compactionEntries[0]) ?? null;
+        let candidates = compactionEntries;
+        if (opts.expectedCompactionId) {
+            candidates = compactionEntries.filter((entry) => isObjectRecord(entry) && entry.id === opts.expectedCompactionId);
+        } else if (opts.excludeCompactionIds && opts.excludeCompactionIds.length > 0) {
+            // Identity recovery: only compactions that did not exist before
+            // the POST can be ours. One candidate is evaluated directly;
+            // several mean ours is among them (wait for consolidation).
+            const exclude = new Set(opts.excludeCompactionIds);
+            candidates = compactionEntries.filter((entry) => !(isObjectRecord(entry) && typeof entry.id === 'string' && exclude.has(entry.id)));
+        }
+        const latestCompaction = candidates[0] ?? null;
         if (!latestCompaction) return unverified;
+        if (candidates.length > 1) {
+            // Ambiguous: ours is among the new entries. Pending progress (and
+            // thus a stall-counter reset) is only honest while at least one
+            // candidate is still non-terminal — once ALL of them reached a
+            // terminal state, plain unverified lets the stall cap bound the
+            // hold instead of waiting on entries that will never change.
+            const anyNonTerminal = candidates.some((entry) => {
+                const record = isObjectRecord(entry) ? entry : null;
+                const candidateStatus = record && typeof record.status === 'string' ? record.status : undefined;
+                return candidateStatus !== 'completed' && candidateStatus !== 'error' && candidateStatus !== 'failed';
+            });
+            if (anyNonTerminal) opts.onMatchedPending?.();
+            return unverified;
+        }
 
         const entryRecord = isObjectRecord(latestCompaction) ? latestCompaction : null;
         const status = entryRecord && typeof entryRecord.status === 'string' ? entryRecord.status : undefined;
