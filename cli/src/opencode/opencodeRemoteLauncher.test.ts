@@ -220,6 +220,12 @@ const compactHarness = vi.hoisted(() => ({
     // needed to test that handleAbort() actually unblocks an in-flight
     // /compact instead of the default immediate-resolve behavior below.
     triggerImpl: null as null | ((opts: { baseUrl: string; sessionId: string; providerId: string; modelId: string; signal?: AbortSignal }) => Promise<{ ok: true } | { ok: false; error: string }>),
+    triggerV2Impl: null as null | ((opts: { baseUrl: string; sessionId: string; providerId: string; modelId: string; password: string; signal?: AbortSignal }) => Promise<{ compactionId: string | null }>),
+    pollImpl: null as null | ((opts: { baseUrl: string; sessionId: string; password: string; signal?: AbortSignal; expectedCompactionId?: string | null }) => Promise<
+        | { status: 'success'; text: string }
+        | { status: 'failed'; reason: string }
+        | { status: 'unverified'; reason: string }
+    >),
     // Same idea, for semantic-result GET that runs after a successful POST.
     resultImpl: null as null | ((opts: { baseUrl: string; sessionId: string; markerIdsBefore: string[] | null; signal?: AbortSignal }) => Promise<
         | { status: 'success'; text: string }
@@ -255,15 +261,22 @@ vi.mock('./utils/opencodeCompactBridge', () => ({
     triggerOpencodeCompactV2: vi.fn(async (opts: { baseUrl: string; sessionId: string; providerId: string; modelId: string; password: string; signal?: AbortSignal }) => {
         compactHarness.operationEvents.push('triggerV2');
         compactHarness.v2Calls.push(opts);
+        if (compactHarness.triggerV2Impl) {
+            return compactHarness.triggerV2Impl(opts);
+        }
+        return { compactionId: 'msg_admitted_1' };
     }),
     fetchCompactionResultV2: vi.fn(async (opts: { baseUrl: string; sessionId: string; password: string }) => {
         compactHarness.operationEvents.push('verifyV2');
         compactHarness.v2VerifyCalls.push(opts);
         return compactHarness.v2VerifyResult;
     }),
-    pollCompactionResultV2: vi.fn(async (opts: { baseUrl: string; sessionId: string; password: string; signal?: AbortSignal }) => {
+    pollCompactionResultV2: vi.fn(async (opts: { baseUrl: string; sessionId: string; password: string; signal?: AbortSignal; expectedCompactionId?: string | null }) => {
         compactHarness.operationEvents.push('verifyV2');
         compactHarness.v2VerifyCalls.push(opts);
+        if (compactHarness.pollImpl) {
+            return compactHarness.pollImpl(opts);
+        }
         return compactHarness.v2VerifyResult;
     }),
     splitProviderModel: (combined: string | null | undefined) => {
@@ -460,6 +473,8 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         compactHarness.v2Calls = [];
         compactHarness.v2VerifyCalls = [];
         compactHarness.v2VerifyResult = { status: 'success', text: 'v2 summary text' };
+        compactHarness.triggerImpl = null;
+        compactHarness.pollImpl = null;
         compactHarness.operationEvents = [];
         compactHarness.result = { ok: true };
         compactHarness.markerSnapshotCalls = [];
@@ -2573,6 +2588,9 @@ describe('opencodeRemoteLauncher v2 compact verification and discovery notice', 
         compactHarness.v2Calls = [];
         compactHarness.v2VerifyCalls = [];
         compactHarness.v2VerifyResult = { status: 'success', text: 'v2 summary text' };
+        compactHarness.triggerImpl = null;
+        compactHarness.triggerV2Impl = null;
+        compactHarness.pollImpl = null;
         compactHarness.operationEvents = [];
         compactHarness.markerSnapshotCalls = [];
         compactHarness.resultCalls = [];
@@ -2618,13 +2636,95 @@ describe('opencodeRemoteLauncher v2 compact verification and discovery notice', 
         expect(compactHarness.v2Calls).toHaveLength(1);
         expect(compactHarness.v2Calls[0]?.signal).toBeDefined();
         expect(compactHarness.v2VerifyCalls).toEqual([
-            { baseUrl: 'http://127.0.0.1:41234', sessionId: 'acp-session-1', password: 'pw-secret', signal: compactHarness.v2VerifyCalls[0]?.signal }
+            { baseUrl: 'http://127.0.0.1:41234', sessionId: 'acp-session-1', password: 'pw-secret', signal: compactHarness.v2VerifyCalls[0]?.signal, expectedCompactionId: 'msg_admitted_1' }
         ]);
         expect(compactHarness.markerSnapshotCalls).toHaveLength(0);
         expect(compactHarness.resultCalls).toHaveLength(0);
         expect(compactHarness.operationEvents).toEqual(['triggerV2', 'verifyV2']);
         expect(sessionEvents.some((event) => (event as { message?: string }).message === '📦 Compaction completed')).toBe(true);
         expect(JSON.stringify(sentAgentMessages)).toContain('v2 summary text');
+    });
+
+    it('v2: the poll signal stays live between POST admission and verification start (no spurious abort)', async () => {
+        // Narrow scope (honest, per sandbox review): this only pins that no
+        // abort fires between POST admission and the poll starting. The
+        // plain-Stop barrier contract itself is pinned by the dedicated
+        // Stop-during-poll test below.
+        harness.detectedVersion = 'v2';
+        harness.discoveredPort = 41234;
+        harness.discoveredPassword = 'pw-secret';
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        const signalsByPhase: Array<{ phase: string; aborted: boolean }> = [];
+        compactHarness.triggerV2Impl = (opts) => {
+            signalsByPhase.push({ phase: 'trigger', aborted: opts.signal!.aborted });
+            return Promise.resolve({ compactionId: 'msg_admitted_1' });
+        };
+        compactHarness.pollImpl = (opts) => {
+            signalsByPhase.push({ phase: 'poll', aborted: opts.signal!.aborted });
+            return Promise.resolve({ status: 'success', text: 'v2 summary text' });
+        };
+        const { session, sessionEvents } = createSessionStub([{ message: '', mode: createCompactMode('ollama/x') }]);
+
+        await opencodeRemoteLauncher(session as never, {});
+
+        expect(signalsByPhase).toEqual([
+            { phase: 'trigger', aborted: false },
+            { phase: 'poll', aborted: false }
+        ]);
+        expect(sessionEvents.some((event) => (event as { message?: string }).message === '📦 Compaction completed')).toBe(true);
+    });
+
+    it('v2: a plain Stop during the poll holds the barrier — waiting message, thinking kept, no abort; the suppressed outcome never renders', async () => {
+        // Decisive barrier test (sandbox review round): with the buggy code
+        // (phase advancing to 'verification'), a plain Stop WOULD abort the
+        // poll signal and this test fails at the abort assertion. The poll
+        // hangs until the test explicitly resolves it, so no timing
+        // dependence — the suppression assertion is reached through the
+        // actual isCancelled() path, not test cleanup.
+        harness.detectedVersion = 'v2';
+        harness.discoveredPort = 41234;
+        harness.discoveredPassword = 'pw-secret';
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        let pollSignal: AbortSignal | undefined;
+        let resolvePoll: ((result: { status: string; text?: string; reason?: string }) => void) | null = null;
+        compactHarness.pollImpl = (opts) => new Promise((resolve) => {
+            pollSignal = opts.signal;
+            resolvePoll = resolve as typeof resolvePoll;
+        });
+        const { session, sessionEvents, rpcHandlers } = createSessionStub([{ message: '', mode: createCompactMode('ollama/x') }]);
+        const launcherPromise = opencodeRemoteLauncher(session as never, { onCompactAvailabilityChange: () => {} });
+
+        while (!pollSignal) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        expect(pollSignal.aborted).toBe(false);
+
+        const abortHandler = rpcHandlers.get('abort') as (() => Promise<void>) | undefined;
+        expect(abortHandler).toBeDefined();
+        await Promise.race([
+            abortHandler!(),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('plain Stop did not settle during v2 poll')), 2000))
+        ]);
+
+        // Barrier held: a plain Stop must NOT abort the poll signal. On the
+        // buggy pre-fix code the phase would be 'verification' and this
+        // signal would be aborted — making this the regression guard.
+        expect(pollSignal.aborted).toBe(false);
+        // The waiting decision keeps thinking on (server work continues).
+        expect(session.thinking).toBe(true);
+        expect(sessionEvents.filter((event) => event.type === 'message').map((event) => event.message))
+            .toEqual(['📦 Compaction started']);
+
+        // Settle the poll with a terminal success: the outcome must be
+        // suppressed by the Stop (isCancelled), never rendered.
+        resolvePoll!({ status: 'success', text: 'late v2 summary' });
+        session.queue.close();
+        await Promise.race([
+            launcherPromise,
+            new Promise((_, reject) => setTimeout(() => reject(new Error('launcher did not finish after suppressed poll')), 5000))
+        ]);
+        expect(sessionEvents.some((event) => (event as { message?: string }).message === '📦 Compaction completed')).toBe(false);
+        expect(sessionEvents.some((event) => (event as { message?: string }).message?.includes('late v2 summary'))).toBe(false);
     });
 
     it('v2: reports the verified failure reason through the same state machine', async () => {

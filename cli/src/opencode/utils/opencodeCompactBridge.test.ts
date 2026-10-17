@@ -588,6 +588,35 @@ describe('fetchCompactionResultV2', () => {
         expect(result).toEqual({ status: 'unverified', reason: 'Compaction result could not be verified.' });
     });
 
+    it('correlates by expectedCompactionId when an older completed compaction precedes it (descending order)', async () => {
+        // Measured 2026-10-16: the messages endpoint returns entries newest
+        // first, and the compact POST echoes the admitted compaction id.
+        const olderCompleted = { id: 'msg_old', type: 'compaction', status: 'completed', reason: 'manual', summary: 'stale summary' };
+        const newerPending = { id: 'msg_new', type: 'compaction', status: 'pending', reason: 'manual' };
+        const result = await fetchCompactionResultV2({
+            baseUrl: 'http://127.0.0.1:1',
+            sessionId: 's',
+            password: 'pw',
+            expectedCompactionId: 'msg_new',
+            // Descending (newest first), as measured.
+            fetchImpl: async () => fixtureEntry(newerPending, olderCompleted)
+        });
+        expect(result).toEqual({ status: 'unverified', reason: 'Compaction result could not be verified.' });
+    });
+
+    it('without a correlation id, selects the newest compaction entry, not the oldest', async () => {
+        const olderCompleted = { id: 'msg_old', type: 'compaction', status: 'completed', reason: 'manual', summary: 'stale summary' };
+        const newerCompleted = { id: 'msg_new', type: 'compaction', status: 'completed', reason: 'manual', summary: 'fresh summary' };
+        const result = await fetchCompactionResultV2({
+            baseUrl: 'http://127.0.0.1:1',
+            sessionId: 's',
+            password: 'pw',
+            // Descending (newest first), as measured.
+            fetchImpl: async () => fixtureEntry(newerCompleted, olderCompleted)
+        });
+        expect(result).toEqual({ status: 'success', text: 'fresh summary' });
+    });
+
     it('reports unverified when the fetch itself throws', async () => {
         const result = await fetchCompactionResultV2({
             baseUrl: 'http://127.0.0.1:1',
@@ -681,6 +710,23 @@ describe('pollCompactionResultV2', () => {
         });
         expect(result.status).toBe('unverified');
         expect(fetchImpl).toHaveBeenCalledTimes(1);
+    });
+
+    it('gives up with the last unverified result after maxAttempts (barrier escape)', async () => {
+        const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ data: [] }), { status: 200 }));
+        const delays: number[] = [];
+        const result = await pollCompactionResultV2({
+            baseUrl: 'http://127.0.0.1:1',
+            sessionId: 's',
+            password: 'pw',
+            pollIntervalMs: 1,
+            maxAttempts: 3,
+            delayImpl: async (ms) => { delays.push(ms); },
+            fetchImpl: fetchImpl as unknown as typeof fetch
+        });
+        expect(result).toEqual({ status: 'unverified', reason: 'Compaction result could not be verified.' });
+        expect(fetchImpl).toHaveBeenCalledTimes(3);
+        expect(delays).toEqual([1, 1]);
     });
 
     it('polls indefinitely without a signal until a terminal status arrives', async () => {

@@ -43,6 +43,13 @@ export type OpencodeEventStreamOptions = {
      * headerless subscription is rejected with 401 before any event arrives.
      */
     headers?: Record<string, string>;
+    /**
+     * Wire dialect. v2 (measured 2026-10-16 against opencode 2.0.29): the
+     * stream lives at `/api/event` (the v1 `/event` path answers with the
+     * SPA HTML fallback) and every JSON payload wraps its v1-shaped body in
+     * a `data` envelope (`{ id, type, data: { … } }`). Default v1.
+     */
+    mode?: 'v1' | 'v2';
     fetchImpl?: FetchLike;
     sleep?: (ms: number) => Promise<void>;
 };
@@ -233,6 +240,7 @@ export function subscribeToOpencodeEvents(options: OpencodeEventStreamOptions): 
         sessionId,
         onRetry,
         headers = {},
+        mode = 'v1',
         fetchImpl = fetch as FetchLike,
         sleep = (ms: number) => new Promise<void>((resolve) => {
             const timer = setTimeout(resolve, ms);
@@ -240,7 +248,7 @@ export function subscribeToOpencodeEvents(options: OpencodeEventStreamOptions): 
         })
     } = options;
 
-    const url = `${baseUrl}/event?directory=${encodeURIComponent(directory)}`;
+    const url = `${baseUrl}${mode === 'v2' ? '/api/event' : '/event'}?directory=${encodeURIComponent(directory)}`;
     const controller = new AbortController();
     let closed = false;
     // Structurally typed to just what close() needs: the global and
@@ -354,6 +362,12 @@ export function subscribeToOpencodeEvents(options: OpencodeEventStreamOptions): 
         } catch (error) {
             logger.debug('[opencode-events] ignoring unparsable event payload', error);
             return;
+        }
+        // v2 wraps the v1-shaped body in an envelope: { id, type, data }.
+        // Unwrap so the downstream v1 handling (session.status + properties)
+        // works unchanged on both dialects.
+        if (mode === 'v2' && isObject(payload) && isObject(payload.data)) {
+            payload = payload.data;
         }
         // Dispatched outside the parse guard on purpose: everything
         // downstream of handleEvent is HAPI's own code (the launcher's

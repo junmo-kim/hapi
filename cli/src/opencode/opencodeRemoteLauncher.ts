@@ -317,6 +317,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             headers: this.v2RestInfo ? {
                 authorization: 'Basic ' + Buffer.from(`opencode:${this.v2RestInfo.password}`).toString('base64')
             } : undefined,
+            mode: this.majorVersion ?? 'v1',
             onRetry: (retry) => this.surfaceUpstreamRetry(retry)
         });
         }
@@ -1026,18 +1027,27 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             }
 
             // v2: no marker snapshot boundary exists (the v1 capture is
-            // v1-only); the POST is abortable and verification runs through
-            // the v2 message GET afterwards, feeding the same result switch.
-            // Suppression spans the POST *and* the polling loop: v2 returns
-            // from the POST before the summary exists, and session/update
-            // notifications arriving during the minutes-long poll would
-            // otherwise reach the stale pre-compact handler and duplicate the
-            // explicit summary (the v1 path suppresses for the same reason).
+            // v1-only); the POST is abortable and verification polls the v2
+            // message GET, feeding the same result switch. Suppression spans
+            // the POST *and* the polling loop: v2 returns from the POST
+            // before the summary exists, and session/update notifications
+            // arriving during the minutes-long poll would otherwise reach
+            // the stale pre-compact handler and duplicate the explicit
+            // summary (the v1 path suppresses for the same reason).
+            //
+            // The phase stays 'summarize' for the whole operation: v2's POST
+            // returns before the server finished compacting, so the remaining
+            // poll is still server-side work that mutates the shared session.
+            // A plain Stop must therefore keep waiting (FIFO barrier intact)
+            // rather than abort an "interruptible verification read" — the
+            // v1 distinction between blocking POST and read-only GET does
+            // not map onto v2's async compaction.
             if (v2Rest) {
                 this.compactOperationPhase = 'summarize';
                 const v2Outcome = await backend.suppressUpdatesDuring(async () => {
+                    let admittedId: string | null = null;
                     try {
-                        await triggerOpencodeCompactV2({
+                        const admitted = await triggerOpencodeCompactV2({
                             baseUrl,
                             sessionId: acpSessionId,
                             providerId: split.providerId,
@@ -1045,29 +1055,43 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                             password: v2Rest.password,
                             signal: compactAbortController.signal
                         });
+                        admittedId = admitted.compactionId;
                     } catch (error) {
                         return {
                             ok: false as const,
                             error: error instanceof Error ? error.message : String(error)
                         };
-                    } finally {
-                        this.compactOperationPhase = 'post-summarize';
                     }
                     if (isCancelled()) {
                         return { ok: true as const, cancelled: true as const };
                     }
-                    this.compactOperationPhase = 'verification';
+                    // No correlation id (POST body unparsable): guessing
+                    // "newest compaction" could settle this request with an
+                    // older auto-compaction's summary, so report unverified
+                    // immediately — the same outcome v1 reaches when it
+                    // cannot verify — instead of polling on a guess.
+                    if (admittedId === null) {
+                        return {
+                            ok: true as const,
+                            cancelled: false as const,
+                            result: { status: 'unverified', reason: 'Compaction result could not be verified.' } as const
+                        };
+                    }
                     // v2's POST returns as soon as the marker exists; the summary
                     // is produced asynchronously, so verification must poll until
-                    // a terminal status (no hard timeout, like v1's blocking POST).
+                    // a terminal status. The poll is bounded (maxAttempts) — it
+                    // runs inside the FIFO barrier, so an entry that never
+                    // appears must not hold the session forever.
                     const v2Result = await pollCompactionResultV2({
                         baseUrl,
                         sessionId: acpSessionId,
                         password: v2Rest.password,
-                        signal: compactAbortController.signal
+                        signal: compactAbortController.signal,
+                        expectedCompactionId: admittedId
                     });
                     return { ok: true as const, cancelled: false as const, result: v2Result };
                 });
+                this.compactOperationPhase = 'idle';
                 if (!v2Outcome.ok) {
                     if (!isCancelled()) {
                         session.sendSessionEvent({ type: 'message', message: `📦 Compaction failed: ${v2Outcome.error}` });

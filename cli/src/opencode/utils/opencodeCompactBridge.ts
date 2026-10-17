@@ -161,7 +161,7 @@ export async function triggerOpencodeCompactV2(opts: OpencodeCompactCallOpts & {
     modelId: string;
     password: string;
     fetchImpl?: FetchLike;
-}): Promise<void> {
+}): Promise<{ compactionId: string | null }> {
     const fetchFn: FetchLike = opts.fetchImpl ?? fetch;
     const url = `${opts.baseUrl}/api/session/${encodeURIComponent(opts.sessionId)}/compact`;
     const init: BunFetchInit = {
@@ -179,6 +179,17 @@ export async function triggerOpencodeCompactV2(opts: OpencodeCompactCallOpts & {
     if (!response.ok) {
         const text = await response.text().catch(() => '');
         throw new Error(`OpenCode v2 compact request failed (${response.status}): ${text.slice(0, 300)}`);
+    }
+    // The admitted compaction message echoes back in the response body
+    // (measured 2026-10-16: { data: { id: 'msg_…', type: 'compaction', … } }).
+    // Its id is the correlation key for verification polling.
+    try {
+        const payload: unknown = await response.json();
+        const record = isObjectRecord(payload) && isObjectRecord(payload.data) ? payload.data : null;
+        const id = record && typeof record.id === 'string' ? record.id : null;
+        return { compactionId: id };
+    } catch {
+        return { compactionId: null };
     }
 }
 
@@ -199,26 +210,38 @@ export async function pollCompactionResultV2(opts: {
     sessionId: string;
     password: string;
     signal?: AbortSignal;
+    /** Correlation id of the admitted compaction (see fetchCompactionResultV2). */
+    expectedCompactionId?: string | null;
     pollIntervalMs?: number;
+    /**
+     * Hard attempt cap. The poll runs inside the FIFO barrier (phase
+     * 'summarize'), so an entry that never appears must not hold the session
+     * forever: past this many unverified rounds the loop gives up with the
+     * last unverified result (~10 minutes at the default interval), matching
+     * v1 where a stalled blocking POST eventually errors out.
+     */
+    maxAttempts?: number;
     delayImpl?: (ms: number) => Promise<void>;
     fetchImpl?: FetchLike;
 }): Promise<CompactionResult> {
     const pollIntervalMs = opts.pollIntervalMs ?? 5000;
+    const maxAttempts = opts.maxAttempts ?? 120;
     const wait = opts.delayImpl ?? (async (ms: number) => {
         await new Promise((resolve) => setTimeout(resolve, ms));
     });
-    for (;;) {
+    for (let attempt = 1; ; attempt++) {
         const result = await fetchCompactionResultV2({
             baseUrl: opts.baseUrl,
             sessionId: opts.sessionId,
             password: opts.password,
             signal: opts.signal,
+            expectedCompactionId: opts.expectedCompactionId,
             fetchImpl: opts.fetchImpl
         });
         if (result.status !== 'unverified') {
             return result;
         }
-        if (opts.signal?.aborted) {
+        if (opts.signal?.aborted || attempt >= maxAttempts) {
             return result;
         }
         await wait(pollIntervalMs);
@@ -308,6 +331,7 @@ export async function readOpencodeV2ServerPassword(acpPid: number, opts?: {
 
 type OpencodeMessagePart = { type?: unknown; text?: unknown; auto?: unknown };
 type OpencodeMessageEntry = {
+    id?: unknown;
     type?: unknown;
     status?: unknown;
     reason?: unknown;
@@ -477,6 +501,14 @@ export async function fetchCompactionResultV2(opts: {
     password: string;
     /** Aborts an in-flight messages GET. Required for the poll loop (see pollCompactionResultV2). */
     signal?: AbortSignal;
+    /**
+     * Correlation id of the compaction this request admitted (echoed by the
+     * compact POST response). The messages endpoint returns entries newest
+     * first (measured 2026-10-16), so an older completed compaction must not
+     * be mistaken for this request's outcome. Null = unknown; the newest
+     * compaction entry is then the best available guess.
+     */
+    expectedCompactionId?: string | null;
     fetchImpl?: FetchLike;
 }): Promise<CompactionResult> {
     const unverified: CompactionResult = { status: 'unverified', reason: 'Compaction result could not be verified.' };
@@ -503,8 +535,13 @@ export async function fetchCompactionResultV2(opts: {
         // the compaction entry itself carries the outcome inline —
         // `{ type: 'compaction', status: 'completed', reason: 'manual', summary: '...' }`.
         // There is no assistant message linked via parentID like v1, so the
-        // v1 parsing rules do not apply here.
-        const latestCompaction = entries.filter((entry) => entry.type === 'compaction').pop();
+        // v1 parsing rules do not apply here. Entries arrive newest first
+        // (measured), so without a correlation id the NEWEST compaction entry
+        // — the head of the filtered list, not pop() — is the best guess.
+        const compactionEntries = entries.filter((entry) => entry.type === 'compaction');
+        const latestCompaction = (opts.expectedCompactionId
+            ? compactionEntries.find((entry) => isObjectRecord(entry) && entry.id === opts.expectedCompactionId)
+            : compactionEntries[0]) ?? null;
         if (!latestCompaction) return unverified;
 
         const entryRecord = isObjectRecord(latestCompaction) ? latestCompaction : null;
