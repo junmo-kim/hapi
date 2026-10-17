@@ -25,7 +25,7 @@ export type OpencodeFlavorVersion = 'v1' | 'v2';
  * `v?N.` from stdout; any spawn failure, timeout or unparseable output
  * falls back to 'v1' — the pre-v2-aware behavior.
  */
-export async function detectOpencodeFlavorVersion(command = 'opencode'): Promise<'v1' | 'v2'> {
+export async function detectOpencodeFlavorVersion(command = getAgentLaunchCommand('opencode')): Promise<'v1' | 'v2'> {
     try {
         const stdout = await new Promise<string>((resolve, reject) => {
             // shell/windowsHide mirror buildAcpStdioSpawnOptions: on Windows,
@@ -193,18 +193,24 @@ export async function listChildPids(pid: number, opts?: {
             const readChildren = opts?.readChildrenFile ?? (async (p: number, task: string) =>
                 await readFileUtf8(`/proc/${p}/task/${task}/children`));
             const tasks = await readdir(`/proc/${pid}/task`);
+            // Union children across ALL tasks: threads can each hold a
+            // different child (e.g. a helper forked from one task and the
+            // serve child from another) — stopping at the first nonempty
+            // task would drop the rest.
+            const union = new Set<number>();
             for (const task of tasks) {
                 try {
                     const children = await readChildren(pid, task);
                     const pids = children.trim().split(/[\s\u0000]+/).filter(Boolean);
-                    if (pids.length > 0) {
-                        return pids.map((value) => Number.parseInt(value, 10)).filter((value) => Number.isFinite(value));
+                    for (const value of pids) {
+                        const parsed = Number.parseInt(value, 10);
+                        if (Number.isFinite(parsed)) union.add(parsed);
                     }
                 } catch {
                     // Try the next task; fall through to [] if none yields.
                 }
             }
-            return [];
+            return [...union];
         }
         const run = async (command: string, args: string[]): Promise<string> => {
             if (opts?.execImpl) {

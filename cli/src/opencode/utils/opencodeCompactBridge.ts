@@ -156,12 +156,17 @@ export async function triggerOpencodeCompact(opts: OpencodeCompactCallOpts & {
  * Like the v1 path, `timeout: false` (Bun-only fetch option) disables Bun's
  * hardcoded ~5min idle timeout — compaction can legitimately take minutes.
  */
+export type OpencodeCompactV2Admission =
+    | { kind: 'admitted'; compactionId: string | null }
+    | { kind: 'rejected'; error: string }
+    | { kind: 'transport-error'; message: string };
+
 export async function triggerOpencodeCompactV2(opts: OpencodeCompactCallOpts & {
     providerId: string;
     modelId: string;
     password: string;
     fetchImpl?: FetchLike;
-}): Promise<{ compactionId: string | null }> {
+}): Promise<OpencodeCompactV2Admission> {
     const fetchFn: FetchLike = opts.fetchImpl ?? fetch;
     const url = `${opts.baseUrl}/api/session/${encodeURIComponent(opts.sessionId)}/compact`;
     const init: BunFetchInit = {
@@ -175,10 +180,20 @@ export async function triggerOpencodeCompactV2(opts: OpencodeCompactCallOpts & {
         timeout: false,
         signal: opts.signal
     };
-    const response = await fetchFn(url, init as RequestInit);
+    let response: Response;
+    try {
+        response = await fetchFn(url, init as RequestInit);
+    } catch (error) {
+        // Transport-level failure: admission is UNCERTAIN — the server may
+        // have accepted the request before the connection died. The caller
+        // must run identity recovery instead of treating this as a
+        // definitive rejection.
+        return { kind: 'transport-error', message: error instanceof Error ? error.message : String(error) };
+    }
     if (!response.ok) {
+        // The server answered and refused: definitive, nothing was admitted.
         const text = await response.text().catch(() => '');
-        throw new Error(`OpenCode v2 compact request failed (${response.status}): ${text.slice(0, 300)}`);
+        return { kind: 'rejected', error: `OpenCode v2 compact request failed (${response.status}): ${text.slice(0, 300)}` };
     }
     // The admitted compaction message echoes back in the response body
     // (measured 2026-10-16: { data: { id: 'msg_…', type: 'compaction', … } }).
@@ -187,9 +202,9 @@ export async function triggerOpencodeCompactV2(opts: OpencodeCompactCallOpts & {
         const payload: unknown = await response.json();
         const record = isObjectRecord(payload) && isObjectRecord(payload.data) ? payload.data : null;
         const id = record && typeof record.id === 'string' ? record.id : null;
-        return { compactionId: id };
+        return { kind: 'admitted', compactionId: id };
     } catch {
-        return { compactionId: null };
+        return { kind: 'admitted', compactionId: null };
     }
 }
 
@@ -235,6 +250,11 @@ export async function pollCompactionResultV2(opts: {
         await new Promise((resolve) => setTimeout(resolve, ms));
     });
     let stalledRounds = 0;
+    // Once the admitted compaction has been OBSERVED in a non-terminal
+    // state, server work is confirmed running: the stall cap must not
+    // license releasing the barrier onto it — only a terminal outcome or
+    // an explicit teardown ends the wait (escape hatch: switch/exit).
+    let sawPending = false;
     for (;;) {
         const result = await fetchCompactionResultV2({
             baseUrl: opts.baseUrl,
@@ -243,14 +263,17 @@ export async function pollCompactionResultV2(opts: {
             signal: opts.signal,
             expectedCompactionId: opts.expectedCompactionId,
             excludeCompactionIds: opts.excludeCompactionIds,
-            onMatchedPending: () => { stalledRounds = 0; },
+            onMatchedPending: () => { stalledRounds = 0; sawPending = true; },
             fetchImpl: opts.fetchImpl
         });
         if (result.status !== 'unverified') {
             return result;
         }
         stalledRounds += 1;
-        if (opts.signal?.aborted || stalledRounds >= maxAttempts) {
+        if (opts.signal?.aborted) {
+            return result;
+        }
+        if (!sawPending && stalledRounds >= maxAttempts) {
             return result;
         }
         await wait(pollIntervalMs);
@@ -328,11 +351,22 @@ export async function readOpencodeV2ServerPassword(acpPid: number, opts?: {
             const { stdout } = await execFileAsync(command, args, { timeout: 5000 });
             return stdout;
         };
+        // Iterate EVERY child: pgrep order is unspecified and the acp parent
+        // may own a helper before the serve child — checking only the first
+        // would miss the password on macOS while Linux (same helper, /proc
+        // loop) finds it.
         const childrenOutput = await run('pgrep', ['-P', String(acpPid)]);
-        const firstChild = childrenOutput.trim().split('\n')[0];
-        if (!firstChild) return null;
-        const psOutput = await run('ps', ['Eww', '-p', firstChild.trim()]);
-        return parsePsEnvironPassword(psOutput);
+        const children = childrenOutput.trim().split('\n').map((line) => line.trim()).filter(Boolean);
+        for (const child of children) {
+            try {
+                const psOutput = await run('ps', ['Eww', '-p', child]);
+                const password = parsePsEnvironPassword(psOutput);
+                if (password) return password;
+            } catch {
+                // Try the next child.
+            }
+        }
+        return null;
     } catch {
         return null;
     }
@@ -607,10 +641,12 @@ export async function fetchCompactionResultV2(opts: {
         let candidates = compactionEntries;
         if (opts.expectedCompactionId) {
             candidates = compactionEntries.filter((entry) => isObjectRecord(entry) && entry.id === opts.expectedCompactionId);
-        } else if (opts.excludeCompactionIds && opts.excludeCompactionIds.length > 0) {
+        } else if (opts.excludeCompactionIds) {
             // Identity recovery: only compactions that did not exist before
-            // the POST can be ours. One candidate is evaluated directly;
-            // several mean ours is among them (wait for consolidation).
+            // the POST can be ours. An EMPTY snapshot is a valid basis too
+            // (fresh session — every entry afterwards is ours). One candidate
+            // is evaluated directly; several mean ours is among them (wait
+            // for consolidation).
             const exclude = new Set(opts.excludeCompactionIds);
             candidates = compactionEntries.filter((entry) => !(isObjectRecord(entry) && typeof entry.id === 'string' && exclude.has(entry.id)));
         }
@@ -625,7 +661,9 @@ export async function fetchCompactionResultV2(opts: {
             const anyNonTerminal = candidates.some((entry) => {
                 const record = isObjectRecord(entry) ? entry : null;
                 const candidateStatus = record && typeof record.status === 'string' ? record.status : undefined;
-                return candidateStatus !== 'completed' && candidateStatus !== 'error' && candidateStatus !== 'failed';
+                // Same whitelist as the single-candidate path: an unrecognized
+                // status must not claim pending progress.
+                return candidateStatus === 'pending' || candidateStatus === 'running';
             });
             if (anyNonTerminal) opts.onMatchedPending?.();
             return unverified;
@@ -646,9 +684,13 @@ export async function fetchCompactionResultV2(opts: {
             return { status: 'failed', reason: 'OpenCode returned an empty compaction summary.' };
         }
 
-        // Matched but not terminal: the server is still working on this
-        // exact compaction (pending/running).
-        opts.onMatchedPending?.();
+        // Matched but not terminal. Progress credit (stall-counter reset) is
+        // only honest for KNOWN non-terminal statuses: an unrecognized status
+        // string (or a missing one) must not hold the barrier forever — the
+        // stall cap then bounds the hold instead.
+        if (status === 'pending' || status === 'running') {
+            opts.onMatchedPending?.();
+        }
         return unverified;
     } catch {
         return unverified;

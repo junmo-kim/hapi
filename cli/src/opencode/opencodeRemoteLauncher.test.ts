@@ -220,7 +220,7 @@ const compactHarness = vi.hoisted(() => ({
     // needed to test that handleAbort() actually unblocks an in-flight
     // /compact instead of the default immediate-resolve behavior below.
     triggerImpl: null as null | ((opts: { baseUrl: string; sessionId: string; providerId: string; modelId: string; signal?: AbortSignal }) => Promise<{ ok: true } | { ok: false; error: string }>),
-    triggerV2Impl: null as null | ((opts: { baseUrl: string; sessionId: string; providerId: string; modelId: string; password: string; signal?: AbortSignal }) => Promise<{ compactionId: string | null }>),
+    triggerV2Impl: null as null | ((opts: { baseUrl: string; sessionId: string; providerId: string; modelId: string; password: string; signal?: AbortSignal }) => Promise<{ kind: 'admitted'; compactionId: string | null } | { kind: 'rejected'; error: string } | { kind: 'transport-error'; message: string }>),
     preExistingCompactionIds: [] as string[] | null,
     snapshotV2Impl: null as null | ((signal: AbortSignal | null) => Promise<string[] | null>),
     pollImpl: null as null | ((opts: { baseUrl: string; sessionId: string; password: string; signal?: AbortSignal; expectedCompactionId?: string | null; excludeCompactionIds?: string[] | null }) => Promise<
@@ -272,7 +272,7 @@ vi.mock('./utils/opencodeCompactBridge', () => ({
         if (compactHarness.triggerV2Impl) {
             return compactHarness.triggerV2Impl(opts);
         }
-        return { compactionId: 'msg_admitted_1' };
+        return { kind: 'admitted' as const, compactionId: 'msg_admitted_1' };
     }),
     fetchCompactionResultV2: vi.fn(async (opts: { baseUrl: string; sessionId: string; password: string }) => {
         compactHarness.operationEvents.push('verifyV2');
@@ -2667,7 +2667,7 @@ describe('opencodeRemoteLauncher v2 compact verification and discovery notice', 
         const signalsByPhase: Array<{ phase: string; aborted: boolean }> = [];
         compactHarness.triggerV2Impl = (opts) => {
             signalsByPhase.push({ phase: 'trigger', aborted: opts.signal!.aborted });
-            return Promise.resolve({ compactionId: 'msg_admitted_1' });
+            return Promise.resolve({ kind: 'admitted' as const, compactionId: 'msg_admitted_1' });
         };
         compactHarness.pollImpl = (opts) => {
             signalsByPhase.push({ phase: 'poll', aborted: opts.signal!.aborted });
@@ -2749,7 +2749,7 @@ describe('opencodeRemoteLauncher v2 compact verification and discovery notice', 
         const postGate: { resolve: (() => void) | null } = { resolve: null };
         let pollStarted = false;
         compactHarness.triggerV2Impl = () => new Promise((resolve) => {
-            postGate.resolve = () => resolve({ compactionId: 'msg_admitted_1' });
+            postGate.resolve = () => resolve({ kind: 'admitted' as const, compactionId: 'msg_admitted_1' });
         });
         compactHarness.pollImpl = () => {
             pollStarted = true;
@@ -2795,7 +2795,7 @@ describe('opencodeRemoteLauncher v2 compact verification and discovery notice', 
         harness.discoveredPassword = 'pw-secret';
         harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
         compactHarness.preExistingCompactionIds = ['msg_before_1'];
-        compactHarness.triggerV2Impl = async () => ({ compactionId: null });
+        compactHarness.triggerV2Impl = async () => ({ kind: 'admitted' as const, compactionId: null });
         compactHarness.pollImpl = (opts) => {
             // The bridge would exclude msg_before_1; simulate recovery: poll
             // resolves with the summary once "our" entry lands.
@@ -2824,7 +2824,7 @@ describe('opencodeRemoteLauncher v2 compact verification and discovery notice', 
         let pollCalled = false;
         compactHarness.triggerV2Impl = () => {
             postCalled = true;
-            return Promise.resolve({ compactionId: 'msg_x' });
+            return Promise.resolve({ kind: 'admitted' as const, compactionId: 'msg_x' });
         };
         compactHarness.pollImpl = () => {
             pollCalled = true;

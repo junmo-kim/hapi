@@ -1934,6 +1934,35 @@ describe('AcpSdkBackend acpModelSwitchViaConfigOption', () => {
         ]);
     });
 
+    it('flag off with a non-opencode flavor sends only session/set_model (shared-backend guarantee)', async () => {
+        const backend = new AcpSdkBackend({
+            command: 'opencode',
+            acpModelSwitchViaConfigOption: false
+        });
+        const calls: Array<{ method: string; params: unknown }> = [];
+        const backendInternal = backend as unknown as {
+            transport: { sendRequest: (method: string, params: unknown) => Promise<unknown>; close: () => Promise<void> } | null;
+        };
+        backendInternal.transport = {
+            sendRequest: async (method, params) => {
+                calls.push({ method, params });
+                if (method === 'session/new') {
+                    return { sessionId: 's1', configOptions: [{ id: 'model', category: 'model', currentValue: 'ollama/a', options: [] }] };
+                }
+                return null;
+            },
+            close: async () => {}
+        };
+        await backend.newSession({ cwd: '/tmp/x', mcpServers: [] });
+        calls.length = 0;
+        // No flavor: neither the v2 shortcut nor the opencode legacy
+        // config-option attempt may run.
+        await backend.setModel('s1', 'ollama/b');
+        expect(calls).toEqual([
+            { method: 'session/set_model', params: { sessionId: 's1', modelId: 'ollama/b' } }
+        ]);
+    });
+
     it('keeps the legacy set_model path unchanged when the flag is off', async () => {
         const { backend, calls } = await makeBackendWithModelOption(false);
         await backend.setModel('s1', 'ollama/b', { flavor: 'opencode' });

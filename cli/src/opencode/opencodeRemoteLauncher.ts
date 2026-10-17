@@ -1083,22 +1083,18 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                         | { ok: false; error: string }
                         | { ok: true; cancelled: false; result: CompactionResult }
                     > => {
-                        let admittedId: string | null = null;
-                        try {
-                            const admitted = await triggerOpencodeCompactV2({
-                                baseUrl,
-                                sessionId: acpSessionId,
-                                providerId: split.providerId,
-                                modelId: split.modelId,
-                                password: v2Rest.password,
-                                signal: compactAbortController.signal
-                            });
-                            admittedId = admitted.compactionId;
-                        } catch (error) {
-                            return {
-                                ok: false as const,
-                                error: error instanceof Error ? error.message : String(error)
-                            };
+                        const admitted = await triggerOpencodeCompactV2({
+                            baseUrl,
+                            sessionId: acpSessionId,
+                            providerId: split.providerId,
+                            modelId: split.modelId,
+                            password: v2Rest.password,
+                            signal: compactAbortController.signal
+                        });
+                        if (admitted.kind === 'rejected') {
+                            // The server answered and refused: definitive,
+                            // nothing was admitted.
+                            return { ok: false as const, error: admitted.error };
                         }
                         if (compactAbortController.signal.aborted) {
                             // Teardown (switch/exit) aborted the operation itself:
@@ -1111,6 +1107,17 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                         // pending, so verification MUST continue (barrier held)
                         // rather than releasing the queue mid-compaction. The
                         // suppression applies to the terminal outcome below.
+                        const admittedId = admitted.kind === 'admitted' ? admitted.compactionId : null;
+                        if (admitted.kind === 'transport-error') {
+                            // Admission is UNCERTAIN (the server may have accepted
+                            // before the connection died): run identity recovery
+                            // instead of failing — the exclude-list path below
+                            // waits for a NEW compaction entry. Without a
+                            // snapshot basis the unverified result still leaves
+                            // after the (barrier-covered) wait, which is the
+                            // best a no-basis recovery can do.
+                            logger.debug(`[opencode-remote] v2 compact admission uncertain (${admitted.message}); recovering via pre-POST snapshot`);
+                        }
                         // The poll is bounded — but the bound is a STALL cap (see
                         // pollCompactionResultV2): a visible pending compaction is
                         // genuine server work that legitimately holds the barrier,

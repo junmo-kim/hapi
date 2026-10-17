@@ -393,9 +393,9 @@ describe('triggerOpencodeCompactV2', () => {
             .toBe('Basic ' + Buffer.from('opencode:user:pass@with/special').toString('base64'));
     });
 
-    it('throws an Error including status and body on non-2xx responses', async () => {
+    it('reports kind rejected with status and body on non-2xx responses', async () => {
         const fetchImpl = vi.fn(async () => new Response('denied', { status: 401 }));
-        await expect(triggerOpencodeCompactV2({
+        const rejected = await triggerOpencodeCompactV2({
             baseUrl: 'http://127.0.0.1:1',
             sessionId: 's',
             providerId: 'p',
@@ -403,8 +403,9 @@ describe('triggerOpencodeCompactV2', () => {
             password: 'pw',
             signal: new AbortController().signal,
             fetchImpl
-        })).rejects.toThrow(/401/);
-        await expect(triggerOpencodeCompactV2({
+        });
+        expect(rejected).toEqual({ kind: 'rejected', error: expect.stringMatching(/401/) });
+        const second = await triggerOpencodeCompactV2({
             baseUrl: 'http://127.0.0.1:1',
             sessionId: 's',
             providerId: 'p',
@@ -412,14 +413,15 @@ describe('triggerOpencodeCompactV2', () => {
             password: 'pw',
             signal: new AbortController().signal,
             fetchImpl
-        })).rejects.toThrow(/denied/);
+        });
+        expect(second.kind).toBe('rejected');
     });
 
-    it('propagates fetch failures as errors', async () => {
+    it('reports kind transport-error on fetch failures (admission uncertain)', async () => {
         const fetchImpl = vi.fn(async () => {
             throw new Error('connection refused');
         });
-        await expect(triggerOpencodeCompactV2({
+        const result = await triggerOpencodeCompactV2({
             baseUrl: 'http://127.0.0.1:1',
             sessionId: 's',
             providerId: 'p',
@@ -427,7 +429,8 @@ describe('triggerOpencodeCompactV2', () => {
             password: 'pw',
             signal: new AbortController().signal,
             fetchImpl
-        })).rejects.toThrow('connection refused');
+        });
+        expect(result).toEqual({ kind: 'transport-error', message: 'connection refused' });
     });
 });
 
@@ -619,6 +622,19 @@ describe('fetchCompactionResultV2', () => {
         expect(result).toEqual({ status: 'success', text: 'fresh summary' });
     });
 
+    it('an empty exclude snapshot is a valid basis — a fresh session evaluates the single new entry', async () => {
+        const entry = { id: 'msg_only', type: 'compaction', status: 'completed', reason: 'manual', summary: 'fresh summary' };
+        const result = await fetchCompactionResultV2({
+            baseUrl: 'http://127.0.0.1:1',
+            sessionId: 's',
+            password: 'pw',
+            expectedCompactionId: null,
+            excludeCompactionIds: [],
+            fetchImpl: async () => fixtureEntry(entry)
+        });
+        expect(result).toEqual({ status: 'success', text: 'fresh summary' });
+    });
+
     it('with an exclude list and multiple new entries, stays unverified with pending progress', async () => {
         const first = { id: 'msg_a', type: 'compaction', status: 'pending', reason: 'manual' };
         const second = { id: 'msg_b', type: 'compaction', status: 'pending', reason: 'manual' };
@@ -752,6 +768,35 @@ describe('pollCompactionResultV2', () => {
         });
         expect(result).toEqual({ status: 'success', text: 'done' });
         expect(calls).toBe(5);
+    });
+
+    it('once pending is observed the stall cap never releases the barrier (terminal or teardown ends it)', async () => {
+        // GPT finding 2: observation failures after a confirmed pending must
+        // not accumulate toward the cap — confirmed server work holds the
+        // barrier until terminal or teardown.
+        let calls = 0;
+        const fetchImpl = vi.fn(async () => {
+            calls++;
+            return calls === 1
+                ? new Response(JSON.stringify({ data: [{ id: 'msg_1', type: 'compaction', status: 'pending', reason: 'manual' }] }), { status: 200 })
+                : new Response('server exploded', { status: 503 });
+        });
+        const controller = new AbortController();
+        const resultPromise = pollCompactionResultV2({
+            baseUrl: 'http://127.0.0.1:1',
+            sessionId: 's',
+            password: 'pw',
+            pollIntervalMs: 1,
+            maxAttempts: 3,
+            signal: controller.signal,
+            delayImpl: async () => {
+                if (calls >= 6) controller.abort();
+            },
+            fetchImpl: fetchImpl as unknown as typeof fetch
+        });
+        const result = await resultPromise;
+        expect(result.status).toBe('unverified');
+        expect(calls).toBeGreaterThanOrEqual(6);
     });
 
     it('gives up with the last unverified result after maxAttempts (barrier escape)', async () => {
