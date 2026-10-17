@@ -712,6 +712,29 @@ describe('pollCompactionResultV2', () => {
         expect(fetchImpl).toHaveBeenCalledTimes(1);
     });
 
+    it('pending progress resets the stall cap — visible server work is not force-released', async () => {
+        let calls = 0;
+        const fetchImpl = vi.fn(async () => {
+            calls++;
+            // Pending for the first 4 rounds, terminal on the 5th — beyond a
+            // cap of 3, which must only count rounds WITHOUT pending progress.
+            return calls >= 5
+                ? new Response(JSON.stringify({ data: [{ id: 'msg_1', type: 'compaction', status: 'completed', reason: 'manual', summary: 'done' }] }), { status: 200 })
+                : new Response(JSON.stringify({ data: [{ id: 'msg_1', type: 'compaction', status: 'pending', reason: 'manual' }] }), { status: 200 });
+        });
+        const result = await pollCompactionResultV2({
+            baseUrl: 'http://127.0.0.1:1',
+            sessionId: 's',
+            password: 'pw',
+            pollIntervalMs: 1,
+            maxAttempts: 3,
+            delayImpl: async () => {},
+            fetchImpl: fetchImpl as unknown as typeof fetch
+        });
+        expect(result).toEqual({ status: 'success', text: 'done' });
+        expect(calls).toBe(5);
+    });
+
     it('gives up with the last unverified result after maxAttempts (barrier escape)', async () => {
         const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ data: [] }), { status: 200 }));
         const delays: number[] = [];

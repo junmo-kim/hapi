@@ -1062,14 +1062,23 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                             error: error instanceof Error ? error.message : String(error)
                         };
                     }
-                    if (isCancelled()) {
+                    if (compactAbortController.signal.aborted) {
+                        // Teardown (switch/exit) aborted the operation itself:
+                        // the POST/poll is dead, nothing server-side to await.
                         return { ok: true as const, cancelled: true as const };
                     }
-                    // No correlation id (POST body unparsable): guessing
+                    // A plain Stop that landed while the POST was pending only
+                    // asked for output suppression — the POST merely admitted
+                    // the request and the server-side compaction is still
+                    // pending, so verification MUST continue (barrier held)
+                    // rather than releasing the queue mid-compaction. The
+                    // suppression applies to the terminal outcome below.
+                    // No correlation id (POST body unparsable): zero
+                    // visibility into which entry is ours, so guessing
                     // "newest compaction" could settle this request with an
-                    // older auto-compaction's summary, so report unverified
-                    // immediately — the same outcome v1 reaches when it
-                    // cannot verify — instead of polling on a guess.
+                    // older auto-compaction's summary — report unverified
+                    // immediately (the same outcome v1 reaches when it cannot
+                    // verify) instead of polling on a guess.
                     if (admittedId === null) {
                         return {
                             ok: true as const,
@@ -1077,11 +1086,11 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                             result: { status: 'unverified', reason: 'Compaction result could not be verified.' } as const
                         };
                     }
-                    // v2's POST returns as soon as the marker exists; the summary
-                    // is produced asynchronously, so verification must poll until
-                    // a terminal status. The poll is bounded (maxAttempts) — it
-                    // runs inside the FIFO barrier, so an entry that never
-                    // appears must not hold the session forever.
+                    // The poll is bounded — but the bound is a STALL cap (see
+                    // pollCompactionResultV2): a visible pending compaction is
+                    // genuine server work that legitimately holds the barrier,
+                    // while an entry that never appears must not hold the
+                    // session forever.
                     const v2Result = await pollCompactionResultV2({
                         baseUrl,
                         sessionId: acpSessionId,

@@ -214,11 +214,14 @@ export async function pollCompactionResultV2(opts: {
     expectedCompactionId?: string | null;
     pollIntervalMs?: number;
     /**
-     * Hard attempt cap. The poll runs inside the FIFO barrier (phase
-     * 'summarize'), so an entry that never appears must not hold the session
-     * forever: past this many unverified rounds the loop gives up with the
-     * last unverified result (~10 minutes at the default interval), matching
-     * v1 where a stalled blocking POST eventually errors out.
+     * Stall cap, not a total cap. The poll runs inside the FIFO barrier
+     * (phase 'summarize'), so an entry that never appears must not hold the
+     * session forever: past this many consecutive rounds WITHOUT observing
+     * the matched compaction (no pending progress signal), the loop gives up
+     * with the last unverified result (~10 minutes at the default interval),
+     * matching v1 where a stalled blocking POST eventually errors out. A
+     * visible pending compaction is genuine server work — it resets the
+     * stall counter, and the escape hatch remains switch/exit.
      */
     maxAttempts?: number;
     delayImpl?: (ms: number) => Promise<void>;
@@ -229,19 +232,22 @@ export async function pollCompactionResultV2(opts: {
     const wait = opts.delayImpl ?? (async (ms: number) => {
         await new Promise((resolve) => setTimeout(resolve, ms));
     });
-    for (let attempt = 1; ; attempt++) {
+    let stalledRounds = 0;
+    for (;;) {
         const result = await fetchCompactionResultV2({
             baseUrl: opts.baseUrl,
             sessionId: opts.sessionId,
             password: opts.password,
             signal: opts.signal,
             expectedCompactionId: opts.expectedCompactionId,
+            onMatchedPending: () => { stalledRounds = 0; },
             fetchImpl: opts.fetchImpl
         });
         if (result.status !== 'unverified') {
             return result;
         }
-        if (opts.signal?.aborted || attempt >= maxAttempts) {
+        stalledRounds += 1;
+        if (opts.signal?.aborted || stalledRounds >= maxAttempts) {
             return result;
         }
         await wait(pollIntervalMs);
@@ -509,6 +515,14 @@ export async function fetchCompactionResultV2(opts: {
      * compaction entry is then the best available guess.
      */
     expectedCompactionId?: string | null;
+    /**
+     * Invoked when the matched compaction entry exists but has not reached a
+     * terminal outcome (pending/running). The poll loop treats this as
+     * progress evidence: visible server work keeps the barrier legitimately
+     * held, so the attempt cap counts consecutive rounds WITHOUT such a
+     * signal rather than total rounds.
+     */
+    onMatchedPending?: () => void;
     fetchImpl?: FetchLike;
 }): Promise<CompactionResult> {
     const unverified: CompactionResult = { status: 'unverified', reason: 'Compaction result could not be verified.' };
@@ -559,6 +573,9 @@ export async function fetchCompactionResultV2(opts: {
             return { status: 'failed', reason: 'OpenCode returned an empty compaction summary.' };
         }
 
+        // Matched but not terminal: the server is still working on this
+        // exact compaction (pending/running).
+        opts.onMatchedPending?.();
         return unverified;
     } catch {
         return unverified;

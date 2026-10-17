@@ -342,12 +342,32 @@ describe('listLoopbackListenersForPids', () => {
         expect(listeners).toEqual(new Set([41235]));
     });
 
-    it('throws when both ss and lsof fail (caller falls back to the diff heuristic)', async () => {
+    it('throws when ss fails and lsof is missing (caller falls back to the diff heuristic)', async () => {
         await expect(listLoopbackListenersForPids([4242], {
-            execImpl: async () => {
-                throw new Error('no tools');
+            execImpl: async (command) => {
+                if (command === 'lsof') {
+                    const err: NodeJS.ErrnoException = new Error('lsof not found');
+                    err.code = 'ENOENT';
+                    throw err;
+                }
+                throw new Error('ss failed');
             }
         })).rejects.toThrow();
+    });
+
+    it('treats a lsof no-match (non-ENOENT failure) as an empty set so a listening sibling survives', async () => {
+        // macOS: no ss; lsof exits 1 when the pid owns no socket. The ACP
+        // parent often owns no listener — its failure must not discard the
+        // serve child's result.
+        const listeners = await listLoopbackListenersForPids([111, 222], {
+            execImpl: async (command, args) => {
+                if (command === 'ss') throw new Error('ss missing');
+                expect(args).toEqual(['-a', '-p', expect.any(String), '-iTCP', '-sTCP:LISTEN', '-n', '-P']);
+                if (args[1] === '111') throw new Error('lsof exited 1: no match');
+                return 'node 222 u 20u IPv4 TCP 127.0.0.1:41236 (LISTEN)';
+            }
+        });
+        expect(listeners).toEqual(new Set([41236]));
     });
 });
 

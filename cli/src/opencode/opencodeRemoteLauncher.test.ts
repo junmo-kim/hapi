@@ -2727,6 +2727,54 @@ describe('opencodeRemoteLauncher v2 compact verification and discovery notice', 
         expect(sessionEvents.some((event) => (event as { message?: string }).message?.includes('late v2 summary'))).toBe(false);
     });
 
+    it('v2: a plain Stop landing before POST admission does not skip verification — barrier held until terminal', async () => {
+        // Bot round-2 finding: suppress-only Stop (no abort) used to exit
+        // between admission and polling, releasing the FIFO barrier while
+        // the server-side compaction was still pending. The poll must run
+        // even when compactResultSuppressed is already set.
+        harness.detectedVersion = 'v2';
+        harness.discoveredPort = 41234;
+        harness.discoveredPassword = 'pw-secret';
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        const postGate: { resolve: (() => void) | null } = { resolve: null };
+        let pollStarted = false;
+        compactHarness.triggerV2Impl = () => new Promise((resolve) => {
+            postGate.resolve = () => resolve({ compactionId: 'msg_admitted_1' });
+        });
+        compactHarness.pollImpl = () => {
+            pollStarted = true;
+            return Promise.resolve({ status: 'success', text: 'v2 summary text' });
+        };
+        const { session, sessionEvents, rpcHandlers } = createSessionStub([{ message: '', mode: createCompactMode('ollama/x') }]);
+        const launcherPromise = opencodeRemoteLauncher(session as never, { onCompactAvailabilityChange: () => {} });
+
+        while (!postGate.resolve) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+
+        // Plain Stop lands while the POST is still pending.
+        const abortHandler = rpcHandlers.get('abort') as (() => Promise<void>) | undefined;
+        await Promise.race([
+            abortHandler!(),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('plain Stop did not settle during POST')), 2000))
+        ]);
+        expect(session.thinking).toBe(true);
+
+        // Admission returns after the Stop: verification must still run.
+        postGate.resolve!();
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(pollStarted).toBe(true);
+        session.queue.close();
+        await Promise.race([
+            launcherPromise,
+            new Promise((_, reject) => setTimeout(() => reject(new Error('launcher did not finish after suppressed compact')), 5000))
+        ]);
+
+        // The terminal outcome is suppressed (Stop asked for that), but the
+        // barrier was held through the poll — no early 'idle' release.
+        expect(sessionEvents.some((event) => (event as { message?: string }).message === '📦 Compaction completed')).toBe(false);
+    });
+
     it('v2: reports the verified failure reason through the same state machine', async () => {
         harness.detectedVersion = 'v2';
         harness.discoveredPort = 41234;

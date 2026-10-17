@@ -273,9 +273,23 @@ export async function listLoopbackListenersForPids(pids: number[], opts?: {
         return ports;
     } catch {
         // -a -p <pid> -iTCP -sTCP:LISTEN -n -P is portable across darwin/linux lsof builds.
+        // Per-pid aggregation: lsof exits non-zero when a pid owns no socket
+        // (macOS commonly has no ss; the ACP parent often owns no listener).
+        // A no-match result is an empty set for that pid — discarding it via
+        // Promise.all rejection would lose a sibling's successful scan and
+        // push discovery onto the racy snapshot-diff heuristic.
         const owned = await Promise.all(pids.map(async (pid) => {
             const lsofArgs = ['-a', '-p', String(pid), '-iTCP', '-sTCP:LISTEN', '-n', '-P'];
-            return parseLsofListeners(await run('lsof', lsofArgs));
+            try {
+                return parseLsofListeners(await run('lsof', lsofArgs));
+            } catch (error) {
+                // A missing lsof binary is a genuine tool failure: rethrow so
+                // the caller falls back to the snapshot-diff heuristic.
+                if (error && typeof error === 'object' && (error as NodeJS.ErrnoException).code === 'ENOENT') {
+                    throw error;
+                }
+                return new Set<number>();
+            }
         }));
         for (const set of owned) {
             for (const port of set) {
