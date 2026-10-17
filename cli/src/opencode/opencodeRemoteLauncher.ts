@@ -1037,13 +1037,12 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             // the stale pre-compact handler and duplicate the explicit
             // summary (the v1 path suppresses for the same reason).
             //
-            // The phase stays 'summarize' for the whole operation: v2's POST
-            // returns before the server finished compacting, so the remaining
-            // poll is still server-side work that mutates the shared session.
-            // A plain Stop must therefore keep waiting (FIFO barrier intact)
-            // rather than abort an "interruptible verification read" — the
-            // v1 distinction between blocking POST and read-only GET does
-            // not map onto v2's async compaction.
+            // Phase ordering mirrors v1's distinction, adapted to v2's async
+            // compaction: 'snapshot' (abortable read-only identity capture)
+            // → 'summarize' from just before the POST through the entire
+            // poll, because v2's POST only admits the work — everything
+            // after admission is server-side mutation a plain Stop must
+            // wait out rather than abort as an "interruptible read".
             if (v2Rest) {
                 // Identity boundary FIRST, in the abortable 'snapshot' phase
                 // (the v2 analogue of v1's marker snapshot): compaction ids

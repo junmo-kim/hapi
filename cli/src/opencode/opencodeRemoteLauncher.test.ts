@@ -222,6 +222,7 @@ const compactHarness = vi.hoisted(() => ({
     triggerImpl: null as null | ((opts: { baseUrl: string; sessionId: string; providerId: string; modelId: string; signal?: AbortSignal }) => Promise<{ ok: true } | { ok: false; error: string }>),
     triggerV2Impl: null as null | ((opts: { baseUrl: string; sessionId: string; providerId: string; modelId: string; password: string; signal?: AbortSignal }) => Promise<{ compactionId: string | null }>),
     preExistingCompactionIds: [] as string[] | null,
+    snapshotV2Impl: null as null | ((signal: AbortSignal | null) => Promise<string[] | null>),
     pollImpl: null as null | ((opts: { baseUrl: string; sessionId: string; password: string; signal?: AbortSignal; expectedCompactionId?: string | null; excludeCompactionIds?: string[] | null }) => Promise<
         | { status: 'success'; text: string }
         | { status: 'failed'; reason: string }
@@ -259,7 +260,12 @@ vi.mock('./utils/opencodeCompactBridge', () => ({
         harness.v2PasswordCalls.push({ pid });
         return harness.discoveredPassword;
     }),
-    captureCompactionIdsV2: vi.fn(async () => compactHarness.preExistingCompactionIds ?? null),
+    captureCompactionIdsV2: vi.fn(async (opts?: { signal?: AbortSignal }) => {
+        if (compactHarness.snapshotV2Impl) {
+            return compactHarness.snapshotV2Impl(opts?.signal ?? null);
+        }
+        return compactHarness.preExistingCompactionIds ?? null;
+    }),
     triggerOpencodeCompactV2: vi.fn(async (opts: { baseUrl: string; sessionId: string; providerId: string; modelId: string; password: string; signal?: AbortSignal }) => {
         compactHarness.operationEvents.push('triggerV2');
         compactHarness.v2Calls.push(opts);
@@ -2593,6 +2599,7 @@ describe('opencodeRemoteLauncher v2 compact verification and discovery notice', 
         compactHarness.triggerImpl = null;
         compactHarness.triggerV2Impl = null;
         compactHarness.pollImpl = null;
+        compactHarness.snapshotV2Impl = null;
         compactHarness.preExistingCompactionIds = [];
         compactHarness.operationEvents = [];
         compactHarness.markerSnapshotCalls = [];
@@ -2831,6 +2838,44 @@ describe('opencodeRemoteLauncher v2 compact verification and discovery notice', 
         expect(pollCalled).toBe(false);
         expect(sessionEvents.some((event) => (event as { message?: string }).message?.includes('identity snapshot failed'))).toBe(true);
         expect(sessionEvents.some((event) => (event as { message?: string }).message === '📦 Compaction completed')).toBe(false);
+    });
+
+    it('v2: a plain Stop during the identity snapshot exits cancelled — no POST, no refusal failure rendered', async () => {
+        // Pins the abort ordering: signal.aborted must be checked before the
+        // null-snapshot refusal, or a user abort would render
+        // "identity snapshot failed".
+        harness.detectedVersion = 'v2';
+        harness.discoveredPort = 41234;
+        harness.discoveredPassword = 'pw-secret';
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        const snapshotGate: { signal: AbortSignal | null } = { signal: null };
+        compactHarness.snapshotV2Impl = (signal: AbortSignal | null) => new Promise((resolve) => {
+            snapshotGate.signal = signal;
+            signal?.addEventListener('abort', () => resolve(null));
+        });
+        const { session, sessionEvents, rpcHandlers } = createSessionStub([{ message: '', mode: createCompactMode('ollama/x') }]);
+        const launcherPromise = opencodeRemoteLauncher(session as never, { onCompactAvailabilityChange: () => {} });
+
+        while (!snapshotGate.signal) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+
+        const abortHandler = rpcHandlers.get('abort') as (() => Promise<void>) | undefined;
+        await Promise.race([
+            abortHandler!(),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('plain Stop did not settle during v2 snapshot')), 2000))
+        ]);
+
+        expect(snapshotGate.signal?.aborted).toBe(true);
+        session.queue.close();
+        await Promise.race([
+            launcherPromise,
+            new Promise((_, reject) => setTimeout(() => reject(new Error('launcher did not finish after snapshot abort')), 5000))
+        ]);
+        // Nothing was admitted and no refusal failure rendered for the abort.
+        expect(compactHarness.v2Calls).toHaveLength(0);
+        expect(sessionEvents.some((event) => (event as { message?: string }).message?.includes('identity snapshot failed'))).toBe(false);
+        expect(sessionEvents.some((event) => (event as { message?: string }).message === '📦 Compaction failed')).toBe(false);
     });
 
     it('v2: reports the verified failure reason through the same state machine', async () => {
