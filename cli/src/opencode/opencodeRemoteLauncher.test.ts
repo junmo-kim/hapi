@@ -221,7 +221,7 @@ const compactHarness = vi.hoisted(() => ({
     // /compact instead of the default immediate-resolve behavior below.
     triggerImpl: null as null | ((opts: { baseUrl: string; sessionId: string; providerId: string; modelId: string; signal?: AbortSignal }) => Promise<{ ok: true } | { ok: false; error: string }>),
     triggerV2Impl: null as null | ((opts: { baseUrl: string; sessionId: string; providerId: string; modelId: string; password: string; signal?: AbortSignal }) => Promise<{ compactionId: string | null }>),
-    preExistingCompactionIds: null as string[] | null,
+    preExistingCompactionIds: [] as string[] | null,
     pollImpl: null as null | ((opts: { baseUrl: string; sessionId: string; password: string; signal?: AbortSignal; expectedCompactionId?: string | null; excludeCompactionIds?: string[] | null }) => Promise<
         | { status: 'success'; text: string }
         | { status: 'failed'; reason: string }
@@ -2593,7 +2593,7 @@ describe('opencodeRemoteLauncher v2 compact verification and discovery notice', 
         compactHarness.triggerImpl = null;
         compactHarness.triggerV2Impl = null;
         compactHarness.pollImpl = null;
-        compactHarness.preExistingCompactionIds = null;
+        compactHarness.preExistingCompactionIds = [];
         compactHarness.operationEvents = [];
         compactHarness.markerSnapshotCalls = [];
         compactHarness.resultCalls = [];
@@ -2804,14 +2804,21 @@ describe('opencodeRemoteLauncher v2 compact verification and discovery notice', 
         expect(JSON.stringify(sentAgentMessages)).toContain('recovered summary');
     });
 
-    it('v2: null admission id with a failed pre-POST snapshot reports unverified without polling (no guessing)', async () => {
+    it('v2: a failed pre-POST snapshot refuses admission — no POST, no poll, failure reported', async () => {
+        // Bot round-3 Major: admitting without a recovery boundary released
+        // the barrier while server-side compaction ran. Admission is now
+        // refused up front.
         harness.detectedVersion = 'v2';
         harness.discoveredPort = 41234;
         harness.discoveredPassword = 'pw-secret';
         harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
-        compactHarness.triggerV2Impl = async () => ({ compactionId: null });
         compactHarness.preExistingCompactionIds = null;
+        let postCalled = false;
         let pollCalled = false;
+        compactHarness.triggerV2Impl = () => {
+            postCalled = true;
+            return Promise.resolve({ compactionId: 'msg_x' });
+        };
         compactHarness.pollImpl = () => {
             pollCalled = true;
             return Promise.resolve({ status: 'success', text: 'should never be used' });
@@ -2820,8 +2827,9 @@ describe('opencodeRemoteLauncher v2 compact verification and discovery notice', 
 
         await opencodeRemoteLauncher(session as never, {});
 
+        expect(postCalled).toBe(false);
         expect(pollCalled).toBe(false);
-        expect(sessionEvents.some((event) => (event as { message?: string }).message === '📦 Compaction result could not be verified.')).toBe(true);
+        expect(sessionEvents.some((event) => (event as { message?: string }).message?.includes('identity snapshot failed'))).toBe(true);
         expect(sessionEvents.some((event) => (event as { message?: string }).message === '📦 Compaction completed')).toBe(false);
     });
 

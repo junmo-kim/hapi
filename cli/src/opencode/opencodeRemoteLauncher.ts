@@ -27,6 +27,7 @@ import {
     captureCompactionMarkerSnapshot,
     fetchCompactionResult,
     pollCompactionResultV2,
+    type CompactionResult,
     readOpencodeV2ServerPassword,
     splitProviderModel,
     triggerOpencodeCompact,
@@ -1044,77 +1045,89 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             // v1 distinction between blocking POST and read-only GET does
             // not map onto v2's async compaction.
             if (v2Rest) {
-                this.compactOperationPhase = 'summarize';
-                const v2Outcome = await backend.suppressUpdatesDuring(async () => {
-                    // Pre-POST identity boundary (the v2 analogue of v1's
-                    // marker snapshot): compaction ids visible before the POST.
-                    // If the POST response cannot be read, any compaction entry
-                    // appearing afterwards must be ours.
-                    const preExistingIds = await captureCompactionIdsV2({
-                        baseUrl,
-                        sessionId: acpSessionId,
-                        password: v2Rest.password,
-                        signal: compactAbortController.signal
-                    });
-                    let admittedId: string | null = null;
-                    try {
-                        const admitted = await triggerOpencodeCompactV2({
+                // Identity boundary FIRST, in the abortable 'snapshot' phase
+                // (the v2 analogue of v1's marker snapshot): compaction ids
+                // visible before the POST. If the POST response cannot be
+                // read, any compaction entry appearing afterwards must be
+                // ours. Admission is refused without this boundary — a
+                // successful POST admits server-side work, so verifying it
+                // must never depend on guessing.
+                this.compactOperationPhase = 'snapshot';
+                const preExistingIds = await captureCompactionIdsV2({
+                    baseUrl,
+                    sessionId: acpSessionId,
+                    password: v2Rest.password,
+                    signal: compactAbortController.signal
+                });
+                let v2Outcome:
+                    | { ok: true; cancelled: true }
+                    | { ok: false; error: string }
+                    | { ok: true; cancelled: false; result: CompactionResult }
+                    | null = null;
+                if (compactAbortController.signal.aborted) {
+                    // Plain Stop or teardown landed during the read-only
+                    // snapshot: nothing was admitted, so exiting here releases
+                    // no server-side work.
+                    v2Outcome = { ok: true as const, cancelled: true as const };
+                } else if (preExistingIds === null) {
+                    // No recovery basis → no admission. Report a failure
+                    // rather than running a compaction whose outcome could
+                    // never be attributed.
+                    v2Outcome = {
+                        ok: false as const,
+                        error: 'OpenCode v2 compaction identity snapshot failed; refusing to admit without a recovery boundary.'
+                    };
+                } else {
+                    this.compactOperationPhase = 'summarize';
+                    v2Outcome = await backend.suppressUpdatesDuring(async (): Promise<
+                        | { ok: true; cancelled: true }
+                        | { ok: false; error: string }
+                        | { ok: true; cancelled: false; result: CompactionResult }
+                    > => {
+                        let admittedId: string | null = null;
+                        try {
+                            const admitted = await triggerOpencodeCompactV2({
+                                baseUrl,
+                                sessionId: acpSessionId,
+                                providerId: split.providerId,
+                                modelId: split.modelId,
+                                password: v2Rest.password,
+                                signal: compactAbortController.signal
+                            });
+                            admittedId = admitted.compactionId;
+                        } catch (error) {
+                            return {
+                                ok: false as const,
+                                error: error instanceof Error ? error.message : String(error)
+                            };
+                        }
+                        if (compactAbortController.signal.aborted) {
+                            // Teardown (switch/exit) aborted the operation itself:
+                            // the POST/poll is dead, nothing server-side to await.
+                            return { ok: true as const, cancelled: true as const };
+                        }
+                        // A plain Stop that landed while the POST was pending only
+                        // asked for output suppression — the POST merely admitted
+                        // the request and the server-side compaction is still
+                        // pending, so verification MUST continue (barrier held)
+                        // rather than releasing the queue mid-compaction. The
+                        // suppression applies to the terminal outcome below.
+                        // The poll is bounded — but the bound is a STALL cap (see
+                        // pollCompactionResultV2): a visible pending compaction is
+                        // genuine server work that legitimately holds the barrier,
+                        // while an entry that never appears must not hold the
+                        // session forever.
+                        const v2Result = await pollCompactionResultV2({
                             baseUrl,
                             sessionId: acpSessionId,
-                            providerId: split.providerId,
-                            modelId: split.modelId,
                             password: v2Rest.password,
-                            signal: compactAbortController.signal
+                            signal: compactAbortController.signal,
+                            expectedCompactionId: admittedId,
+                            excludeCompactionIds: admittedId === null ? preExistingIds : null
                         });
-                        admittedId = admitted.compactionId;
-                    } catch (error) {
-                        return {
-                            ok: false as const,
-                            error: error instanceof Error ? error.message : String(error)
-                        };
-                    }
-                    if (compactAbortController.signal.aborted) {
-                        // Teardown (switch/exit) aborted the operation itself:
-                        // the POST/poll is dead, nothing server-side to await.
-                        return { ok: true as const, cancelled: true as const };
-                    }
-                    // A plain Stop that landed while the POST was pending only
-                    // asked for output suppression — the POST merely admitted
-                    // the request and the server-side compaction is still
-                    // pending, so verification MUST continue (barrier held)
-                    // rather than releasing the queue mid-compaction. The
-                    // suppression applies to the terminal outcome below.
-                    // No correlation id (POST body unreadable): recover
-                    // identity through the pre-POST snapshot — only entries
-                    // absent from it can be ours. If even the snapshot failed
-                    // there is no recovery basis: polling would guess
-                    // "newest compaction" and could settle this request with
-                    // an older auto-compaction's summary, so report
-                    // unverified immediately (the same outcome v1 reaches
-                    // when it cannot verify) — but only AFTER admission, so
-                    // the barrier covers the running server work.
-                    if (admittedId === null && preExistingIds === null) {
-                        return {
-                            ok: true as const,
-                            cancelled: false as const,
-                            result: { status: 'unverified', reason: 'Compaction result could not be verified.' } as const
-                        };
-                    }
-                    // The poll is bounded — but the bound is a STALL cap (see
-                    // pollCompactionResultV2): a visible pending compaction is
-                    // genuine server work that legitimately holds the barrier,
-                    // while an entry that never appears must not hold the
-                    // session forever.
-                    const v2Result = await pollCompactionResultV2({
-                        baseUrl,
-                        sessionId: acpSessionId,
-                        password: v2Rest.password,
-                        signal: compactAbortController.signal,
-                        expectedCompactionId: admittedId,
-                        excludeCompactionIds: admittedId === null ? preExistingIds : null
+                        return { ok: true as const, cancelled: false as const, result: v2Result };
                     });
-                    return { ok: true as const, cancelled: false as const, result: v2Result };
-                });
+                }
                 this.compactOperationPhase = 'idle';
                 if (!v2Outcome.ok) {
                     if (!isCancelled()) {
