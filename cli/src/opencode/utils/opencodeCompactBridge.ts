@@ -651,11 +651,19 @@ export async function fetchCompactionResultV2(opts: {
         } else if (opts.excludeCompactionIds) {
             // Identity recovery: only compactions that did not exist before
             // the POST can be ours. An EMPTY snapshot is a valid basis too
-            // (fresh session — every entry afterwards is ours). One candidate
-            // is evaluated directly; several mean ours is among them (wait
-            // for consolidation).
+            // (fresh session — every entry afterwards is ours).
             const exclude = new Set(opts.excludeCompactionIds);
             candidates = compactionEntries.filter((entry) => !(isObjectRecord(entry) && typeof entry.id === 'string' && exclude.has(entry.id)));
+            // Server-initiated auto-compactions (reason !== 'manual') racing
+            // between admission and the first poll must never be settled as
+            // ours: their summary would end the wait while OUR compaction is
+            // still running. When the entries carry a reason field at all,
+            // restrict candidates to manual ones; an auto-only pool means no
+            // visibility into ours yet (stall counting applies).
+            const withReason = candidates.filter((entry) => isObjectRecord(entry) && typeof entry.reason === 'string');
+            if (withReason.length > 0) {
+                candidates = candidates.filter((entry) => (entry as { reason?: unknown }).reason === 'manual');
+            }
         }
         const latestCompaction = candidates[0] ?? null;
         if (!latestCompaction) return unverified;

@@ -398,7 +398,12 @@ export async function discoverOpencodeV2RestPort(opts: {
             try {
                 const owned = [...await scanOwned(ownerPids!)].sort((a, b) => a - b);
                 if (owned.length > 0) {
-                    return owned[0]!;
+                    // Ownership already excludes other processes, but prefer a
+                    // port that is NEW since the snapshot: our tree could own
+                    // more than one listener, and the oldest one may predate
+                    // this compaction's REST surface.
+                    const fresh = owned.filter((port) => !opts.beforeSnapshot.has(port));
+                    return (fresh[0] ?? owned[0])!;
                 }
                 // Ownership check works but the pid owns nothing yet — keep
                 // polling it; the diff heuristic could only misattribute a

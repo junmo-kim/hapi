@@ -635,6 +635,36 @@ describe('fetchCompactionResultV2', () => {
         expect(result).toEqual({ status: 'success', text: 'fresh summary' });
     });
 
+    it('exclude recovery never settles a server auto-compaction as ours', async () => {
+        // GLM finding: an auto compaction (reason != manual) racing between
+        // admission and the first poll must not be mistaken for ours — its
+        // summary would end the wait while OUR manual compaction is pending.
+        const autoCompleted = { id: 'msg_auto', type: 'compaction', status: 'completed', reason: 'auto', summary: 'auto summary' };
+        let calls = 0;
+        const fetchImpl = vi.fn(async () => {
+            calls++;
+            return calls === 1
+                ? new Response(JSON.stringify({ data: [autoCompleted] }), { status: 200 })
+                : new Response(JSON.stringify({ data: [
+                    autoCompleted,
+                    { id: 'msg_mine', type: 'compaction', status: 'completed', reason: 'manual', summary: 'mine' }
+                ] }), { status: 200 });
+        });
+        const result = await pollCompactionResultV2({
+            baseUrl: 'http://127.0.0.1:1',
+            sessionId: 's',
+            password: 'pw',
+            expectedCompactionId: null,
+            excludeCompactionIds: [],
+            pollIntervalMs: 1,
+            maxAttempts: 5,
+            delayImpl: async () => {},
+            fetchImpl: fetchImpl as unknown as typeof fetch
+        });
+        expect(result).toEqual({ status: 'success', text: 'mine' });
+        expect(calls).toBe(2);
+    });
+
     it('ambiguous recovery ends the poll once ALL candidates are terminal (sawPending must not hold forever)', async () => {
         // Bot round-4 Minor: with a prior pending observation, sawPending
         // disables the stall cap — an all-terminal ambiguous state would

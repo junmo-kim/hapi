@@ -1963,7 +1963,14 @@ describe('AcpSdkBackend acpModelSwitchViaConfigOption', () => {
         ]);
     });
 
-    it('keeps the legacy set_model path unchanged when the flag is off', async () => {
+    it('flag off (opencode flavor) keeps the legacy opencode path, which itself tries set_config_option before set_model', async () => {
+        // The pre-existing opencode legacy path already attempts
+        // session/set_config_option first and falls back to set_model on
+        // "method not found" — identical traffic to the flag-on shortcut.
+        // The flag only changes the guard: with it OFF, v2 sessions without
+        // a model option go straight to legacy instead of being refused.
+        // Shared-backend guarantee (no flavor → set_model only) is pinned by
+        // the dedicated test above.
         const { backend, calls } = await makeBackendWithModelOption(false);
         await backend.setModel('s1', 'ollama/b', { flavor: 'opencode' });
         expect(calls).toEqual([

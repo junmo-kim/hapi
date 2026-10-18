@@ -377,6 +377,17 @@ describe('listLoopbackListenersForPids', () => {
 });
 
 describe('discoverOpencodeV2RestPort ownerPid preference', () => {
+    it('prefers a post-snapshot owned port over a pre-existing one owned by the same tree', async () => {
+        const port = await discoverOpencodeV2RestPort({
+            beforeSnapshot: new Set([41234]),
+            pollIntervalMs: 1,
+            ownerPids: [4242],
+            scanImpl: async () => new Set([41234, 40000, 47777]),
+            scanOwnedImpl: async () => new Set([41234, 47777])
+        });
+        expect(port).toBe(47777);
+    });
+
     it('returns the pid-owned port even when it was already in the before snapshot', async () => {
         const port = await discoverOpencodeV2RestPort({
             beforeSnapshot: new Set([41234]),
