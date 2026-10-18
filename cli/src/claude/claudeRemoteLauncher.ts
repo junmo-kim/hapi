@@ -542,9 +542,19 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                 // The status bar keeps the last pre-compaction
                                 // usage until the next model response; refresh
                                 // it with the boundary's post-tokens the same
-                                // way the Pi launcher does.
+                                // way the Pi launcher does. Carry the resolved
+                                // context window along: the reducer replaces
+                                // latestUsage wholesale, so a context-only
+                                // sample would otherwise drop a known window
+                                // (e.g. 1M) and fall back to the heuristic.
                                 const convertedUsage = convertAgentMessage(
-                                    { type: 'usage', inputTokens: 0, outputTokens: 0, contextTokens: compactContextTokens },
+                                    {
+                                        type: 'usage',
+                                        inputTokens: 0,
+                                        outputTokens: 0,
+                                        contextTokens: compactContextTokens,
+                                        contextWindow: sdkToLogConverter.currentContextWindow()
+                                    },
                                     session.getModel()
                                 );
                                 if (convertedUsage) session.client.sendAgentMessage(convertedUsage);
