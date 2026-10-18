@@ -325,29 +325,42 @@ export function parsePsEnvironPassword(output: string): string | null {
  */
 export async function readOpencodeV2ServerPassword(acpPid: number, opts?: {
     platform?: NodeJS.Platform;
-    listChildPids?: (acpPid: number) => Promise<number[]>;
+    listDescendantPids?: (acpPid: number) => Promise<number[]>;
     readChildEnviron?: (childPid: number) => Promise<string>;
+    readChildCmdline?: (childPid: number) => Promise<string>;
     execImpl?: (command: string, args: string[]) => Promise<string>;
 }): Promise<string | null> {
     const platform = opts?.platform ?? process.platform;
+    // Preference order among descendants carrying OPENCODE_PASSWORD: the
+    // `serve` process. With an npm wrapper the tree is wrapper → native acp
+    // → serve, and a user-exported OPENCODE_PASSWORD is INHERITED by the
+    // native child while serve gets the freshly generated one — accepting
+    // the first match would report the inherited credential and every
+    // /compact would 401.
+    const preferServe = (candidates: Array<{ password: string; isServe: boolean }>): string | null => {
+        const serve = candidates.find((candidate) => candidate.isServe);
+        return (serve ?? candidates[0])?.password ?? null;
+    };
     try {
+        const descendants = opts?.listDescendantPids ?? (async (pid: number) =>
+            await listChildPids(pid, { platform }));
         if (platform === 'linux') {
             const readEnviron = opts?.readChildEnviron ?? (async (childPid: number) =>
                 await readFile(`/proc/${childPid}/environ`, 'utf8'));
-            // Child discovery is shared with the port-discovery util
-            // (opencodeBackend.listChildPids) — same /proc/pgrep mechanics,
-            // same "unknown children = none" semantics.
-            const childPids = opts?.listChildPids ?? (async (pid: number) =>
-                await listChildPids(pid, { platform }));
-            for (const childPid of await childPids(acpPid)) {
+            const readCmdline = opts?.readChildCmdline ?? (async (childPid: number) =>
+                await readFile(`/proc/${childPid}/cmdline`, 'utf8'));
+            const candidates: Array<{ password: string; isServe: boolean }> = [];
+            for (const childPid of await descendants(acpPid)) {
                 try {
                     const password = parseOpencodeEnvironPassword(await readEnviron(childPid));
-                    if (password) return password;
+                    if (!password) continue;
+                    const cmdline = await readCmdline(childPid).catch(() => '');
+                    candidates.push({ password, isServe: /serve/.test(cmdline) });
                 } catch {
-                    // Fall through to null if no child yields a password.
+                    // Fall through if this child yields nothing.
                 }
             }
-            return null;
+            return preferServe(candidates);
         }
         const run = async (command: string, args: string[]): Promise<string> => {
             if (opts?.execImpl) {
@@ -356,22 +369,21 @@ export async function readOpencodeV2ServerPassword(acpPid: number, opts?: {
             const { stdout } = await execFileAsync(command, args, { timeout: 5000 });
             return stdout;
         };
-        // Iterate EVERY child: pgrep order is unspecified and the acp parent
-        // may own a helper before the serve child — checking only the first
-        // would miss the password on macOS while Linux (same helper, /proc
-        // loop) finds it.
-        const childrenOutput = await run('pgrep', ['-P', String(acpPid)]);
-        const children = childrenOutput.trim().split('\n').map((line) => line.trim()).filter(Boolean);
-        for (const child of children) {
+        // Iterate EVERY descendant (recursive — the npm wrapper makes serve a
+        // grandchild) via a single `ps Eww` per pid, which carries both the
+        // environment and the command line.
+        const candidates: Array<{ password: string; isServe: boolean }> = [];
+        for (const child of await descendants(acpPid)) {
             try {
-                const psOutput = await run('ps', ['Eww', '-p', child]);
+                const psOutput = await run('ps', ['Eww', '-p', String(child)]);
                 const password = parsePsEnvironPassword(psOutput);
-                if (password) return password;
+                if (!password) continue;
+                candidates.push({ password, isServe: /serve/.test(psOutput) });
             } catch {
-                // Try the next child.
+                // Try the next descendant.
             }
         }
-        return null;
+        return preferServe(candidates);
     } catch {
         return null;
     }

@@ -439,8 +439,9 @@ describe('readOpencodeV2ServerPassword', () => {
         const environ = 'PATH=/usr/bin\0HOME=/home/u\0OPENCODE_PASSWORD=abc123\0TERM=xterm\0';
         const password = await readOpencodeV2ServerPassword(4242, {
             platform: 'linux',
-            listChildPids: async () => [5150],
-            readChildEnviron: async () => environ
+            listDescendantPids: async () => [5150],
+            readChildEnviron: async () => environ,
+            readChildCmdline: async () => 'opencode\0serve\0--stdio'
         });
         expect(password).toBe('abc123');
     });
@@ -448,7 +449,7 @@ describe('readOpencodeV2ServerPassword', () => {
     it('returns null when the environ payload has no OPENCODE_PASSWORD', async () => {
         const password = await readOpencodeV2ServerPassword(4242, {
             platform: 'linux',
-            listChildPids: async () => [5150],
+            listDescendantPids: async () => [5150],
             readChildEnviron: async () => 'PATH=/usr/bin\0HOME=/home/u\0'
         });
         expect(password).toBeNull();
@@ -457,7 +458,7 @@ describe('readOpencodeV2ServerPassword', () => {
     it('returns null when environ parsing fails (read error)', async () => {
         const password = await readOpencodeV2ServerPassword(4242, {
             platform: 'linux',
-            listChildPids: async () => [5150],
+            listDescendantPids: async () => [5150],
             readChildEnviron: async () => {
                 throw new Error('ENOENT');
             }
@@ -465,14 +466,11 @@ describe('readOpencodeV2ServerPassword', () => {
         expect(password).toBeNull();
     });
 
-    it('extracts OPENCODE_PASSWORD from ps Eww output on non-linux platforms', async () => {
+    it('extracts OPENCODE_PASSWORD from ps Eww output on non-linux platforms (descendants)', async () => {
         const password = await readOpencodeV2ServerPassword(4242, {
             platform: 'darwin',
+            listDescendantPids: async () => [5150],
             execImpl: async (command, args) => {
-                if (command === 'pgrep') {
-                    expect(args).toEqual(['-P', '4242']);
-                    return '5150\n';
-                }
                 expect(command).toBe('ps');
                 expect(args).toEqual(['Eww', '-p', '5150']);
                 return '  PID TTY      STAT   TIME COMMAND\n  5150 ?      Ss     0:00 /bin/opencode serve --stdio OPENCODE_PASSWORD=darwin-pw PATH=/usr/bin';
@@ -481,9 +479,27 @@ describe('readOpencodeV2ServerPassword', () => {
         expect(password).toBe('darwin-pw');
     });
 
+    it('prefers the serve descendant over one that merely inherited OPENCODE_PASSWORD', async () => {
+        // Bot round-4 Minor: an npm wrapper tree is wrapper → native acp →
+        // serve; a user-exported OPENCODE_PASSWORD is inherited by the
+        // native child while serve gets the freshly generated one.
+        const password = await readOpencodeV2ServerPassword(4242, {
+            platform: 'darwin',
+            listDescendantPids: async () => [111, 222],
+            execImpl: async (_command, args) => {
+                if (args[1] === '111') {
+                    return '  PID TTY      STAT   TIME COMMAND\n  111 ?      Ss     0:00 /bin/opencode acp OPENCODE_PASSWORD=inherited-pw PATH=/usr/bin';
+                }
+                return '  PID TTY      STAT   TIME COMMAND\n  222 ?      Ss     0:00 /bin/opencode serve --stdio OPENCODE_PASSWORD=generated-pw PATH=/usr/bin';
+            }
+        });
+        expect(password).toBe('generated-pw');
+    });
+
     it('returns null when pgrep/ps path yields nothing', async () => {
         const password = await readOpencodeV2ServerPassword(4242, {
             platform: 'darwin',
+            listDescendantPids: async () => [],
             execImpl: async () => {
                 throw new Error('no such process');
             }
