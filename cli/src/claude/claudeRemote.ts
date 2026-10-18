@@ -157,6 +157,28 @@ export async function claudeRemote(opts: {
             opts.onCompletionEvent('📦 Compaction started');
         }
     };
+    // Manual /compact keeps two kinds of CLI bookkeeping out of the chat
+    // relay, and both must be scoped by the armed command state so identical
+    // output from other slash commands stays visible:
+    // - the compact_boundary system message: its only web rendering is a
+    //   "Conversation compacted" status line that would duplicate the
+    //   completion output (summary card or token-delta line) right below it.
+    //   Auto-compact boundaries keep relaying as before.
+    // - the command's own stdout echo, which opens with the compact result.
+    const isManualCompactBoundaryMessage = (message: SDKMessage): boolean => {
+        if (compactState.active === null) return false;
+        return message.type === 'system'
+            && message.subtype === 'compact_boundary'
+            && (message as { compact_metadata?: { trigger?: string } }).compact_metadata?.trigger === 'manual';
+    };
+    const isCompactEchoMessage = (message: SDKMessage): boolean => {
+        if (compactState.active === null) return false;
+        if (message.type !== 'user') return false;
+        const content = (message as SDKUserMessage).message?.content;
+        return typeof content === 'string'
+            && /^<local-command-stdout>\s*Compacted\s*<\/local-command-stdout>$/.test(content.trim());
+    };
+
     const lookupCompactSummary = async (
         failure: string | null,
         sessionId: string | null,
@@ -451,28 +473,11 @@ export async function claudeRemote(opts: {
             );
             logger.debugLargeJson(`[claudeRemote] Message ${message.type}`, message);
 
-            // Handle messages. During a manual /compact the compact_boundary
-            // system message stays unrelayed: its only web rendering is a
-            // "Conversation compacted" status line, which would duplicate the
-            // completion output (summary card or token-delta line) right below
-            // it. Auto-compact boundaries keep relaying as before.
             const compactMetadata =
                 message.type === 'system' && message.subtype === 'compact_boundary'
                     ? (message as any).compact_metadata
                     : undefined;
-            const isManualCompactBoundary =
-                compactState.active !== null && compactMetadata?.trigger === 'manual';
-            // The stdout echo of the active /compact is CLI bookkeeping for
-            // this turn — suppress it here where the command state lives, so
-            // identical output from other slash commands stays visible.
-            const echo = message.type === 'user'
-                ? (message as SDKUserMessage).message?.content
-                : undefined;
-            const isManualCompactBookkeeping =
-                compactState.active !== null &&
-                typeof echo === 'string' &&
-                /^<local-command-stdout>\s*Compacted\s*<\/local-command-stdout>$/.test(echo.trim());
-            if (!isManualCompactBoundary && !isManualCompactBookkeeping) {
+            if (!isManualCompactBoundaryMessage(message) && !isCompactEchoMessage(message)) {
                 opts.onMessage(message);
             }
 
@@ -546,7 +551,7 @@ export async function claudeRemote(opts: {
 
             // Capture the compaction token delta from the boundary metadata
             // (pre_tokens/post_tokens are the context sizes on each side).
-            if (isManualCompactBoundary && compactState.active) {
+            if (isManualCompactBoundaryMessage(message) && compactState.active) {
                 compactState.active.sawCompactSignal = true;
                 if (typeof compactMetadata?.pre_tokens === 'number') compactState.active.tokensBefore = compactMetadata.pre_tokens;
                 if (typeof compactMetadata?.post_tokens === 'number') compactState.active.tokensAfter = compactMetadata.post_tokens;
