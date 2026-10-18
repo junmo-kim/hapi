@@ -479,6 +479,20 @@ describe('readOpencodeV2ServerPassword', () => {
         expect(password).toBe('darwin-pw');
     });
 
+    it('linux path prefers the serve descendant (cmdline) over an inherited-password native child', async () => {
+        const password = await readOpencodeV2ServerPassword(4242, {
+            platform: 'linux',
+            listDescendantPids: async () => [111, 222],
+            readChildEnviron: async (pid) => pid === 111
+                ? 'OPENCODE_PASSWORD=inherited-pw\0PATH=/usr/bin'
+                : 'OPENCODE_PASSWORD=generated-pw\0PATH=/usr/bin',
+            readChildCmdline: async (pid) => pid === 111
+                ? 'opencode\0acp'
+                : 'opencode\0serve\0--stdio'
+        });
+        expect(password).toBe('generated-pw');
+    });
+
     it('prefers the serve descendant over one that merely inherited OPENCODE_PASSWORD', async () => {
         // Bot round-4 Minor: an npm wrapper tree is wrapper → native acp →
         // serve; a user-exported OPENCODE_PASSWORD is inherited by the
@@ -487,8 +501,24 @@ describe('readOpencodeV2ServerPassword', () => {
             platform: 'darwin',
             listDescendantPids: async () => [111, 222],
             execImpl: async (_command, args) => {
-                if (args[1] === '111') {
+                if (args[2] === '111') {
                     return '  PID TTY      STAT   TIME COMMAND\n  111 ?      Ss     0:00 /bin/opencode acp OPENCODE_PASSWORD=inherited-pw PATH=/usr/bin';
+                }
+                return '  PID TTY      STAT   TIME COMMAND\n  222 ?      Ss     0:00 /bin/opencode serve --stdio OPENCODE_PASSWORD=generated-pw PATH=/usr/bin';
+            }
+        });
+        expect(password).toBe('generated-pw');
+    });
+
+    it('darwin serve detection matches the command portion only, not inherited env values', async () => {
+        const password = await readOpencodeV2ServerPassword(4242, {
+            platform: 'darwin',
+            listDescendantPids: async () => [111, 222],
+            execImpl: async (_command, args) => {
+                if (args[2] === '111') {
+                    // Inherited env contains a `serve` substring (e.g. a path
+                    // segment) — must NOT be misflagged as the serve process.
+                    return '  PID TTY      STAT   TIME COMMAND\n  111 ?      Ss     0:00 /bin/opencode acp OPENCODE_PASSWORD=inherited-pw PRESERVE_DIR=/x/serve-cache PATH=/usr/bin';
                 }
                 return '  PID TTY      STAT   TIME COMMAND\n  222 ?      Ss     0:00 /bin/opencode serve --stdio OPENCODE_PASSWORD=generated-pw PATH=/usr/bin';
             }

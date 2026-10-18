@@ -378,7 +378,11 @@ export async function readOpencodeV2ServerPassword(acpPid: number, opts?: {
                 const psOutput = await run('ps', ['Eww', '-p', String(child)]);
                 const password = parsePsEnvironPassword(psOutput);
                 if (!password) continue;
-                candidates.push({ password, isServe: /serve/.test(psOutput) });
+                // `ps Eww` embeds the environment after COMMAND; match `serve`
+                // against the command portion only, or an inherited env value
+                // containing the substring would misflag the candidate.
+                const commandPortion = psOutput.split(/\s+[A-Z_]+=/)[0] ?? psOutput;
+                candidates.push({ password, isServe: /serve/.test(commandPortion) });
             } catch {
                 // Try the next descendant.
             }
