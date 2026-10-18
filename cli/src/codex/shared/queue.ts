@@ -521,9 +521,12 @@ export class SharedCodexQueue {
             return;
         }
         if (existing?.state === 'released') input = existing.input;
-        const entry: Entry = { state: 'unknown', input };
+        // Read-only preflight cannot deliver input; keep it retryable until a mutation is journaled.
+        const entry: Entry = { state: existing?.state === 'released' ? 'released' : 'rejected', input };
         this.entries[id] = entry; await this.save();
         const tail = (await this.list()).at(-1);
+        if (entry.state === 'consumed') return;
+        entry.state = 'unknown';
         const batch = tail ? this.batches[tail.clientUserMessageId] : undefined;
         // Never cross a mode boundary, and never extend a tail whose own append/update outcome is still unknown.
         const version = batch && batch.state === 'queued' && batch.key === batchKey

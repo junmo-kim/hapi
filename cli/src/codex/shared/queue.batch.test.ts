@@ -304,6 +304,95 @@ it('keeps an indeterminate add unknown and never replays it after a ledger reloa
     expect(calls.filter(call => call.method === 'thread/queue/add')).toHaveLength(1);
 });
 
+it.each([false, true])('retries an unsent input after a failed preflight read and ledger reload (existing tail: %s)', async hasTail => {
+    const f = await fixture();
+    if (hasTail) await f.queue.enqueue('original-A', text('A'), false, 'same-mode');
+    const before = f.calls.length;
+    f.overrides.set('thread/queue/list', async () => {
+        const ledger = JSON.parse(await readFile(join(f.directory, 'ledger.json'), 'utf8'));
+        expect(ledger.entries['retry-B'].state).toBe('rejected');
+        throw lost('preflight connection lost');
+    });
+    await expect(f.queue.enqueue('retry-B', text('B'), false, 'same-mode')).rejects.toThrow('preflight connection lost');
+    expect(f.queue.state('retry-B')).toBe('rejected');
+    expect(f.calls.slice(before).map(call => call.method)).toEqual(['thread/queue/list']);
+    expect(f.uncertain).not.toHaveBeenCalled();
+
+    const restarted = new SharedCodexQueue(f.client, 'thread', join(f.directory, 'ledger.json'), f.consumed, f.uncertain);
+    await restarted.load();
+    expect(restarted.state('retry-B')).toBe('rejected');
+    f.overrides.delete('thread/queue/list');
+    await restarted.reconcile();
+    await restarted.enqueue('retry-B', text('B'), false, 'same-mode');
+    expect(restarted.state('retry-B')).toBe('queued');
+    expect(f.native).toHaveLength(1);
+    expect(f.native[0].input).toEqual(hasTail ? [...text('A'), ...text('B')] : text('B'));
+    expect(f.calls.filter(call => call.method === 'thread/queue/add')).toHaveLength(1);
+    expect(f.calls.filter(call => call.method === 'thread/queue/update')).toHaveLength(hasTail ? 1 : 0);
+    expect(f.consumed).not.toHaveBeenCalled();
+});
+
+it('allows cancellation of an input whose preflight read failed before dispatch', async () => {
+    const f = await fixture();
+    f.overrides.set('thread/queue/list', () => { throw new Error('queue unavailable'); });
+    await expect(f.queue.enqueue('original-A', text('A'), false, 'same-mode')).rejects.toThrow('queue unavailable');
+    const restarted = new SharedCodexQueue(f.client, 'thread', join(f.directory, 'ledger.json'), f.consumed, f.uncertain);
+    await restarted.load();
+    expect(await restarted.cancel('original-A')).toBe(true);
+    expect(restarted.state('original-A')).toBe('canceled');
+    expect(f.calls.map(call => call.method)).toEqual(['thread/queue/list']);
+});
+
+it('preserves released native edits when the next preflight read fails and the ledger reloads', async () => {
+    const f = await fixture();
+    await f.queue.enqueue('original-A', text('A'), false, 'same-mode');
+    await f.queue.nativeMutation('thread/queue/update', {
+        threadId: 'thread', queuedSubmissionId: f.native[0].id, input: text('EDITED')
+    });
+    await f.queue.suspend();
+    f.overrides.set('thread/queue/list', () => { throw new Error('queue unavailable'); });
+    await expect(f.queue.enqueue('original-A', text('stale hub text'), false, 'same-mode')).rejects.toThrow('queue unavailable');
+    const restarted = new SharedCodexQueue(f.client, 'thread', join(f.directory, 'ledger.json'), f.consumed, f.uncertain);
+    await restarted.load();
+    f.overrides.delete('thread/queue/list');
+    await restarted.enqueue('original-A', text('stale hub text'), false, 'same-mode');
+    expect(f.native).toHaveLength(1);
+    expect(f.native[0].input).toEqual(text('EDITED'));
+});
+
+it.each(['add', 'update'])('journals uncertainty before dispatching the native %s after preflight', async mutation => {
+    const f = await fixture();
+    if (mutation === 'update') await f.queue.enqueue('original-A', text('A'), false, 'same-mode');
+    const method = `thread/queue/${mutation}`;
+    f.overrides.set(method, async () => {
+        const ledger = JSON.parse(await readFile(join(f.directory, 'ledger.json'), 'utf8'));
+        expect(ledger.entries['original-B'].state).toBe('unknown');
+        expect(ledger.entries['original-B'].batchId).toEqual(expect.any(String));
+        throw lost('mutation reply lost');
+    });
+    await expect(f.queue.enqueue('original-B', text('B'), false, 'same-mode')).rejects.toThrow('mutation reply lost');
+    const before = f.calls.filter(call => call.method === method).length;
+    const restarted = new SharedCodexQueue(f.client, 'thread', join(f.directory, 'ledger.json'), f.consumed, f.uncertain);
+    await restarted.load();
+    expect(restarted.state('original-B')).toBe('unknown');
+    f.overrides.delete(method);
+    await restarted.enqueue('original-B', text('B'), false, 'same-mode');
+    expect(restarted.state('original-B')).toBe('unknown');
+    expect(f.calls.filter(call => call.method === method)).toHaveLength(before);
+});
+
+it('does not redispatch acceptance proven while a preflight read is in flight', async () => {
+    const f = await fixture();
+    f.overrides.set('thread/queue/list', async () => {
+        await f.queue.committed('original-A');
+        return { data: [], nextCursor: null };
+    });
+    await f.queue.enqueue('original-A', text('A'), false, 'same-mode');
+    expect(f.queue.state('original-A')).toBe('consumed');
+    expect(f.consumed).toHaveBeenCalledExactlyOnceWith(['original-A']);
+    expect(f.calls.map(call => call.method)).toEqual(['thread/queue/list']);
+});
+
 it('matches accepted content that only adds an empty text_elements representation', async () => {
     const { queue, native, consumed } = await fixture();
     await queue.enqueue('original-A', text('MARKER-A'), false, 'same-mode');

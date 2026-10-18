@@ -59,9 +59,11 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
     let metadata: Metadata = { path: directory, host: 'test', flavor: 'codex' };
     let reconnect: (() => void) | null = null;
     let userMessage: Parameters<ApiSessionClient['onUserMessage']>[0] | undefined;
+    let retryMessage: Parameters<ApiSessionClient['onRetryQueuedMessage']>[0] | undefined;
     const updateState = vi.fn((fn: (value: AgentState) => AgentState) => { state = fn(state); });
     const rpc = new Map<string, (raw: unknown) => Promise<unknown>>();
     const send = vi.fn();
+    const events = vi.fn();
     const hubArchivedListeners: Array<() => void> = [];
     const session = {
         sessionId: 'sid', getMetadata: () => metadata,
@@ -69,13 +71,14 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
         updateMetadata: (fn: (value: Metadata) => Metadata) => { metadata = fn(metadata); },
         updateAgentState: updateState, keepAlive() {},
         onUserMessage: (callback: Parameters<ApiSessionClient['onUserMessage']>[0]) => { userMessage = callback; },
-        onCancelQueuedMessage() {}, onRetryQueuedMessage() {},
+        onCancelQueuedMessage() {},
+        onRetryQueuedMessage: (callback: Parameters<ApiSessionClient['onRetryQueuedMessage']>[0]) => { retryMessage = callback; },
         onReconnect: (fn: (() => void) | null) => { reconnect = fn; },
         on(event: string, listener: () => void) {
             if (event === 'hub-archived') hubArchivedListeners.push(listener);
         },
         rpcHandlerManager: { registerHandler: (name: string, handler: (raw: unknown) => Promise<unknown>) => rpc.set(name, handler) },
-        sendSessionEvent() {}, sendAgentMessage: send, emitSessionReady() {},
+        sendSessionEvent: events, sendAgentMessage: send, emitSessionReady() {},
         sendUserMessage() {}, emitMessagesConsumed() {}, emitSteerIndeterminate() {}, syncNativeQueuedMessage() {},
         sendSessionDeath() {}, async flush() {}, close() {}
     } as unknown as ApiSessionClient;
@@ -96,7 +99,9 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
         abandoned(): void;
     };
     return {
-        root, native, rpc, send, submit: (text: string, id: string) => userMessage?.({ role: 'user', content: { type: 'text', text } }, id), metadata: () => metadata, state: () => state, updateState,
+        root, native, rpc, send, events,
+        retry: (id: string) => retryMessage?.(id),
+        submit: (text: string, id: string) => userMessage?.({ role: 'user', content: { type: 'text', text } }, id), metadata: () => metadata, state: () => state, updateState,
         reconnect: () => reconnect?.(),
         emitHubArchived: () => { for (const listener of hubArchivedListeners) listener(); },
         hubArchivedListenerCount: () => hubArchivedListeners.length,
@@ -118,6 +123,29 @@ async function completePlan(f: Awaited<ReturnType<typeof fixture>>, status = 'co
 }
 
 describe('shared plan actions', () => {
+    it('allows the Hub retry callback to resubmit input after a failed preflight read', async () => {
+        const f = await fixture();
+        await f.root.activate();
+        const original = f.root.client.request.bind(f.root.client);
+        let failLookup = true;
+        vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+            if (method === 'thread/queue/list' && failLookup) {
+                failLookup = false;
+                throw new Error('preflight read failed');
+            }
+            return original(method, params);
+        });
+        f.submit('retry me', 'retry-id');
+        await vi.waitFor(() => expect(f.events).toHaveBeenCalledWith({
+            type: 'message', message: expect.stringContaining('preflight read failed')
+        }));
+        expect(f.native.queue).toHaveLength(0);
+        await expect(f.retry('retry-id')).resolves.toBe(true);
+        f.submit('retry me', 'retry-id');
+        await vi.waitFor(() => expect(f.native.queue).toHaveLength(1));
+        await expect(f.retry('retry-id')).resolves.toBe(false);
+    });
+
     it('applies remote change_title as metadata.name then lets native terminal rename win', async () => {
         const f = await fixture();
         const item = { id: 'title', type: 'mcpToolCall', server: 'hapi', tool: 'change_title',
