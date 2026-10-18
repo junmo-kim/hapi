@@ -165,6 +165,9 @@ export async function claudeRemote(opts: {
     //   completion output (summary card or token-delta line) right below it.
     //   Auto-compact boundaries keep relaying as before.
     // - the command's own stdout echo, which opens with the compact result.
+    //   PostCompact hook output is appended to the same echo (measured:
+    //   `Compacted PostCompact [script]`), so any echo opening with the
+    //   compact result is compact bookkeeping, not just the bare one.
     const isManualCompactBoundaryMessage = (message: SDKMessage): boolean => {
         if (compactState.active === null) return false;
         return message.type === 'system'
@@ -176,7 +179,7 @@ export async function claudeRemote(opts: {
         if (message.type !== 'user') return false;
         const content = (message as SDKUserMessage).message?.content;
         return typeof content === 'string'
-            && /^<local-command-stdout>\s*Compacted\s*<\/local-command-stdout>$/.test(content.trim());
+            && /^<local-command-stdout>\s*Compacted\b/.test(content.trim());
     };
 
     const lookupCompactSummary = async (

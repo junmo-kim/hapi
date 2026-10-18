@@ -651,6 +651,54 @@ describe('claudeRemote /compact result reporting', () => {
         ).toBe(false);
     }, 15_000);
 
+    it('does not relay a compact stdout echo carrying hook output during a manual /compact', async () => {
+        // PostCompact hooks append their stdout to the same echo
+        // (production: `Compacted PostCompact [script]`), so the echo starts
+        // with the compact result but is no longer the bare token.
+        const hookEcho = '<local-command-stdout>Compacted PostCompact [if [ -z "${HOME-}" ]; then case "${OSTYPE-}" in msys*) printf \'{}\\n\' ;; esac; fi</local-command-stdout>';
+        await runCompact([
+            {
+                type: 'system',
+                subtype: 'status',
+                status: 'compacting',
+                session_id: 's-1',
+                uuid: 'u-1'
+            } as unknown as SDKMessage,
+            {
+                type: 'user',
+                message: { role: 'user', content: hookEcho }
+            } as unknown as SDKMessage,
+            resultMessage
+        ]);
+
+        expect(
+            lastForwarded.some((m) =>
+                m.type === 'user' &&
+                (m as { message?: { content?: unknown } }).message?.content === hookEcho
+            )
+        ).toBe(false);
+    }, 15_000);
+
+    it('keeps non-compact stdout output visible during a manual /compact', async () => {
+        // Only the compact's own echo (opening with "Compacted") is
+        // bookkeeping; other command output in the same turn stays visible.
+        const other = '<local-command-stdout>context window usage</local-command-stdout>';
+        await runCompact([
+            {
+                type: 'user',
+                message: { role: 'user', content: other }
+            } as unknown as SDKMessage,
+            resultMessage
+        ]);
+
+        expect(
+            lastForwarded.some((m) =>
+                m.type === 'user' &&
+                (m as { message?: { content?: unknown } }).message?.content === other
+            )
+        ).toBe(true);
+    }, 15_000);
+
     it('keeps the Compacted stdout echo visible outside a compact turn', async () => {
         const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
         const { claudeRemote } = await import('./claudeRemote');
