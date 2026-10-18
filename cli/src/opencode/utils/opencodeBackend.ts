@@ -364,6 +364,88 @@ export async function listLoopbackListeners(opts?: {
     }
 }
 
+
+/**
+ * Finds the descendant process that actually serves the v2 REST API: its
+ * command line contains the standalone `serve` argument with `--stdio`.
+ * Identifying it lets port discovery and credential lookup use a single,
+ * unambiguous process instead of picking the lowest listener across a tree
+ * that may also own unrelated listeners (e.g. configured MCP servers).
+ * Returns null when no descendant matches (caller falls back to the
+ * tree-wide scan).
+ */
+export async function findOpencodeServePid(opts: {
+    rootPids: number[];
+    platform?: NodeJS.Platform;
+    readCmdlineFile?: (pid: number) => Promise<string>;
+    execImpl?: (command: string, args: string[]) => Promise<string>;
+    maxDepth?: number;
+}): Promise<number | null> {
+    const platform = opts?.platform ?? process.platform;
+    const isServeCommand = (cmdline: string): boolean =>
+        /\bserve\b/.test(cmdline) && /--stdio/.test(cmdline);
+    try {
+        if (platform === 'linux') {
+            const readCmdline = opts?.readCmdlineFile ?? (async (p: number) =>
+                await readFileUtf8(`/proc/${p}/cmdline`));
+            const seen = new Set<number>();
+            const queue = [...opts.rootPids];
+            let depth = 0;
+            while (queue.length > 0 && depth <= (opts?.maxDepth ?? 4)) {
+                const pid = queue.shift()!;
+                if (seen.has(pid)) continue;
+                seen.add(pid);
+                try {
+                    if (isServeCommand(await readCmdline(pid))) return pid;
+                } catch {
+                    // Unreadable pid: skip, keep walking.
+                }
+                if (depth < (opts?.maxDepth ?? 4)) {
+                    for (const child of await listChildPids(pid, { platform })) {
+                        if (!seen.has(child)) queue.push(child);
+                    }
+                }
+                depth += 1;
+            }
+            return null;
+        }
+        const run = async (command: string, args: string[]): Promise<string> => {
+            if (opts?.execImpl) {
+                return await opts.execImpl(command, args);
+            }
+            const { stdout } = await execFileAsync(command, args, { timeout: 5000 });
+            return stdout;
+        };
+        const seen = new Set<number>();
+        const queue = [...opts.rootPids];
+        let depth = 0;
+        while (queue.length > 0 && depth <= (opts?.maxDepth ?? 4)) {
+            const pid = queue.shift()!;
+            if (seen.has(pid)) continue;
+            seen.add(pid);
+            try {
+                // ps Eww embeds the environment after COMMAND; isolate the
+                // command portion before matching (mirrors the credential
+                // reader's env-substring guard).
+                const psOutput = await run('ps', ['Eww', '-p', String(pid)]);
+                const commandPortion = psOutput.split(/\s+[A-Za-z_][A-Za-z0-9_]*=/)[0] ?? psOutput;
+                if (isServeCommand(commandPortion)) return pid;
+            } catch {
+                // Unreadable pid: skip, keep walking.
+            }
+            if (depth < (opts?.maxDepth ?? 4)) {
+                for (const child of await listChildPids(pid, { platform, execImpl: opts?.execImpl })) {
+                    if (!seen.has(child)) queue.push(child);
+                }
+            }
+            depth += 1;
+        }
+        return null;
+    } catch {
+        return null;
+    }
+}
+
 /**
  * Discovers the random loopback port opencode v2 bound for its internal HTTP
  * API. v2 (unlike v1's `--port` flag) picks the port itself and exposes it

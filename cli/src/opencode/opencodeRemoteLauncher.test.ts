@@ -3,6 +3,8 @@ import { MessageQueue2 } from '@/utils/MessageQueue2';
 import type { OpencodeMode, PermissionMode } from './types';
 
 const harness = vi.hoisted(() => ({
+    servePid: null as number | null,
+    servePidCalls: [] as number[][],
     setModelArgs: [] as Array<{ sessionId: string; modelId: string; flavor?: string }>,
     setConfigOptionArgs: [] as Array<{ sessionId: string; configId: string; value: string }>,
     promptCount: 0,
@@ -56,7 +58,7 @@ const harness = vi.hoisted(() => ({
     discoveredPassword: null as null | string,
     backendPid: 4242 as null | number,
     createBackendArgs: [] as Array<Record<string, unknown>>,
-    v2DiscoveryCalls: [] as Array<{ beforeSnapshot: Set<number> }>,
+    v2DiscoveryCalls: [] as Array<{ beforeSnapshot: Set<number>; ownerPids?: number[] | null }>,
     v2PasswordCalls: [] as Array<{ pid: number }>
 }));
 
@@ -170,11 +172,14 @@ vi.mock('./utils/opencodeBackend', () => ({
     listChildPids: vi.fn(async () => []),
     detectOpencodeFlavorVersion: vi.fn(async () => harness.detectedVersion ?? 'v1'),
     listLoopbackListeners: vi.fn(async () => new Set(harness.loopbackListeners)),
-    discoverOpencodeV2RestPort: vi.fn(async (opts: { beforeSnapshot: Set<number> }) => {
-        harness.v2DiscoveryCalls.push({ beforeSnapshot: opts.beforeSnapshot });
-return harness.discoveredPort;
-    })
-}));
+    discoverOpencodeV2RestPort: vi.fn(async (opts: { beforeSnapshot: Set<number>; ownerPids?: number[] }) => {
+        harness.v2DiscoveryCalls.push({ beforeSnapshot: opts.beforeSnapshot, ownerPids: opts.ownerPids ?? null });
+        return harness.discoveredPort;
+    }),
+    findOpencodeServePid: vi.fn(async (opts: { rootPids: number[] }) => {
+        harness.servePidCalls.push(opts.rootPids);
+        return harness.servePid;
+    }),}));
 
 vi.mock('@/codex/utils/buildHapiMcpBridge', () => ({
     buildHapiMcpBridge: async (_client: unknown, options?: { enableChangeTitle?: boolean; skillLookup?: { workingDirectory: string; flavor: string } }) => {
@@ -222,6 +227,8 @@ const compactHarness = vi.hoisted(() => ({
     triggerImpl: null as null | ((opts: { baseUrl: string; sessionId: string; providerId: string; modelId: string; signal?: AbortSignal }) => Promise<{ ok: true } | { ok: false; error: string }>),
     triggerV2Impl: null as null | ((opts: { baseUrl: string; sessionId: string; providerId: string; modelId: string; password: string; signal?: AbortSignal }) => Promise<{ kind: 'admitted'; compactionId: string | null } | { kind: 'rejected'; error: string } | { kind: 'transport-error'; message: string }>),
     preExistingCompactionIds: [] as string[] | null,
+    servePid: null as number | null,
+    servePidCalls: [] as number[][],
     snapshotV2Impl: null as null | ((signal: AbortSignal | null) => Promise<string[] | null>),
     pollImpl: null as null | ((opts: { baseUrl: string; sessionId: string; password: string; signal?: AbortSignal; expectedCompactionId?: string | null; excludeCompactionIds?: string[] | null }) => Promise<
         | { status: 'success'; text: string }
@@ -474,6 +481,8 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         harness.thoughtLevelOption = null;
         harness.thoughtLevelLookups = [];
         harness.stderrHandler = null;
+        harness.servePid = null;
+        harness.servePidCalls = [];
         harness.hangPrompt = false;
         harness.resolvePrompt = null;
         harness.cancelPrompt.mockClear();
@@ -2511,6 +2520,8 @@ describe('opencodeRemoteLauncher v2 flavor wiring', () => {
         harness.createBackendArgs = [];
         harness.v2DiscoveryCalls = [];
         harness.v2PasswordCalls = [];
+        harness.servePid = null;
+        harness.servePidCalls = [];
         harness.events = [];
         harness.sessionModelsMetadata = undefined;
         harness.promptCount = 0;
@@ -2556,6 +2567,33 @@ describe('opencodeRemoteLauncher v2 flavor wiring', () => {
         expect(compactHarness.v2Calls[0]?.password).toBe('pw-secret');
         expect(availability[0]).toBe(true);
         expect(harness.v2PasswordCalls).toEqual([{ pid: 4242 }]);
+    });
+
+    it('v2: scopes port discovery to the serve process so an unrelated descendant listener cannot win', async () => {
+        // GPT finding: the tree can own other listeners (e.g. a configured
+        // MCP server with a lower port). Discovery must scan the serve
+        // process only, not the lowest port across the whole tree.
+        harness.detectedVersion = 'v2';
+        harness.discoveredPort = 47777;
+        harness.discoveredPassword = 'pw-secret';
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        harness.servePid = 999;
+        harness.backendPid = 4242;
+        compactHarness.preExistingCompactionIds = [];
+        compactHarness.triggerV2Impl = async () => ({ kind: 'admitted' as const, compactionId: 'msg_1' });
+        compactHarness.pollImpl = async () => ({ status: 'success', text: 'v2 summary text' });
+        const { session, sessionEvents } = createSessionStub([{ message: '', mode: createCompactMode('ollama/x') }]);
+
+        await opencodeRemoteLauncher(session as never, {});
+
+        // The owned scan was scoped to the serve pid alone (no acpPid, no
+        // other descendants).
+        // findOpencodeServePid received the whole tree; the owned scan was
+        // then scoped to the serve pid it returned (no acpPid, no other
+        // descendants).
+        expect(harness.servePidCalls).toEqual([[4242]]);
+        expect(harness.v2DiscoveryCalls.at(-1)?.ownerPids).toEqual([999]);
+        expect(sessionEvents.some((event) => (event as { message?: string }).message === '📦 Compaction completed')).toBe(true);
     });
 
     it('v2: falls back to compact-unavailable when port discovery or password lookup fails', async () => {

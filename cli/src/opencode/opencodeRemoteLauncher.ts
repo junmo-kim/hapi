@@ -18,6 +18,7 @@ import {
     createOpencodeBackend,
     detectOpencodeFlavorVersion,
     discoverOpencodeV2RestPort,
+    findOpencodeServePid,
     listChildPids,
     listLoopbackListeners,
     type OpencodeFlavorVersion
@@ -270,11 +271,22 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         // exactly like the pre-v2 "not yet supported" fallback.
         if (isV2) {
             const acpPid = backend.getProcessPid?.() ?? null;
-            // v2's random port is owned by the `serve --stdio` child, not the
-            // acp parent — scan the union of parent + every child pid.
-            const ownerPids = acpPid !== null
-                ? [acpPid, ...await listChildPids(acpPid)]
-                : undefined;
+            // v2's random port is owned by the `serve --stdio` process, not
+            // the acp parent — and the tree can own OTHER listeners too
+            // (configured MCP servers bind their own ports). Identify the
+            // serve process by its command line and scope the port scan to
+            // it, so an unrelated descendant listener cannot win the
+            // lowest-port race; without a match, fall back to the tree-wide
+            // scan.
+            const descendants = acpPid !== null ? await listChildPids(acpPid) : [];
+            const servePid = acpPid !== null
+                ? await findOpencodeServePid({ rootPids: [acpPid, ...descendants] })
+                : null;
+            const ownerPids = servePid !== null
+                ? [servePid]
+                : acpPid !== null
+                    ? [acpPid, ...descendants]
+                    : undefined;
             const discoveredPort = await discoverOpencodeV2RestPort({
                 beforeSnapshot: beforeSnapshot ?? new Set(),
                 ownerPids
