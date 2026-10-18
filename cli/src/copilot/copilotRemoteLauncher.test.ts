@@ -11,6 +11,8 @@ const abortHarness = vi.hoisted(() => {
     let resolveCancelAllEntered: (() => void) | null = null;
     let cancelAllGated = false;
     let cancelAllRejects = false;
+    let cancelAllHook: (() => Promise<void>) | null = null;
+    let cancelPromptSettles = true;
     const cancelAllEntered = new Promise<void>((resolve) => { resolveCancelAllEntered = resolve; });
     return {
         prompts: [] as Array<Array<{ type: string; text: string }>>,
@@ -19,6 +21,10 @@ const abortHarness = vi.hoisted(() => {
         isCancelAllGated: () => cancelAllGated,
         setCancelAllRejects: (rejects: boolean) => { cancelAllRejects = rejects; },
         isCancelAllRejects: () => cancelAllRejects,
+        setCancelAllHook: (hook: (() => Promise<void>) | null) => { cancelAllHook = hook; },
+        runCancelAllHook: () => cancelAllHook?.(),
+        setCancelPromptSettles: (settles: boolean) => { cancelPromptSettles = settles; },
+        cancelPromptSettles: () => cancelPromptSettles,
         settleActivePrompt: () => { resolveActivePrompt?.(); resolveActivePrompt = null; },
         waitActivePrompt: () => new Promise<void>((resolve) => { resolveActivePrompt = resolve; }),
         gateCancelAll: () => new Promise<void>((resolve) => { releaseCancelAll = resolve; }),
@@ -41,7 +47,7 @@ vi.mock('./utils/copilotBackend', () => ({
             await abortHarness.waitActivePrompt();
         }),
         cancelPrompt: vi.fn(async () => {
-            abortHarness.settleActivePrompt();
+            if (abortHarness.cancelPromptSettles()) abortHarness.settleActivePrompt();
         }),
         onStderrError: vi.fn(),
         setSessionInfoUpdateListener: vi.fn(),
@@ -53,6 +59,10 @@ vi.mock('./utils/copilotBackend', () => ({
 vi.mock('./utils/permissionHandler', () => ({
     CopilotPermissionHandler: class {
         async cancelAll(reason: string): Promise<void> {
+            if (reason === 'User aborted') {
+                const pending = abortHarness.runCancelAllHook();
+                if (pending) { await pending; return; }
+            }
             if (reason === 'User aborted' && abortHarness.isCancelAllRejects()) {
                 throw new Error('cancelAll boom');
             }
@@ -280,10 +290,109 @@ beforeEach(() => {
     process.stdout.isTTY = false;
     abortHarness.setCancelAllGated(false);
     abortHarness.setCancelAllRejects(false);
+    abortHarness.setCancelAllHook(null);
+    abortHarness.setCancelPromptSettles(true);
     abortHarness.prompts.length = 0;
 });
 
 describe('CopilotRemoteLauncher Abort queue preservation', () => {
+    it('does not ACK newly arriving input while an idle Stop is awaiting teardown', async () => {
+        let entered!: () => void;
+        let release!: () => void;
+        const enteredPromise = new Promise<void>(resolve => { entered = resolve; });
+        const teardown = new Promise<void>(resolve => { release = resolve; });
+        abortHarness.setCancelAllHook(async () => { entered(); await teardown; });
+        const queue = new MessageQueue2<CopilotTestMode>((mode) => mode.permissionMode);
+        const consumed = vi.fn();
+        queue.onBatchConsumed = consumed;
+        const { session, rpcHandlers } = createAbortSession(queue);
+        const launcherPromise = new CopilotRemoteLauncher(session as never, {}).launch();
+        let stop: Promise<unknown> | undefined;
+        try {
+            await vi.waitFor(() => expect(rpcHandlers.has(RPC_METHODS.Abort)).toBe(true));
+            await new Promise<void>(resolve => setImmediate(resolve));
+            stop = rpcHandlers.get(RPC_METHODS.Abort)!();
+            await enteredPromise;
+            queue.push('A', { permissionMode: 'default' }, 'id-a');
+            queue.push('B', { permissionMode: 'default' }, 'id-b');
+            await new Promise<void>(resolve => setImmediate(resolve));
+            expect(queue.pendingLocalIds()).toEqual(['id-a', 'id-b']);
+            expect(consumed).not.toHaveBeenCalled();
+            expect(abortHarness.prompts).toHaveLength(0);
+            release();
+            await stop;
+            await vi.waitFor(() => expect(abortHarness.prompts).toHaveLength(1));
+            expect(abortHarness.prompts[0][0].text).toBe('A\nB');
+            expect(consumed).toHaveBeenCalledExactlyOnceWith(['id-a', 'id-b']);
+        } finally {
+            release();
+            abortHarness.setCancelAllHook(null);
+            queue.close();
+            await stop?.catch(() => {});
+            await new Promise<void>(resolve => setImmediate(resolve));
+            abortHarness.settleActivePrompt();
+            await launcherPromise;
+        }
+    });
+
+    it('keeps pending input behind the second Stop after the first teardown completes', async () => {
+        // A cancellation ACK can precede the active prompt's final completion.
+        abortHarness.setCancelPromptSettles(false);
+        const gates = [0, 1].map(() => {
+            let enter!: () => void;
+            let release!: () => void;
+            const entered = new Promise<void>(resolve => { enter = resolve; });
+            const pending = new Promise<void>(resolve => { release = resolve; });
+            return { enter, release, entered, pending };
+        });
+        let call = 0;
+        abortHarness.setCancelAllHook(async () => {
+            const gate = gates[call++];
+            gate.enter();
+            await gate.pending;
+        });
+        const queue = new MessageQueue2<CopilotTestMode>((mode) => mode.permissionMode);
+        const consumed = vi.fn();
+        queue.onBatchConsumed = consumed;
+        queue.push('active', { permissionMode: 'default' }, 'id-active');
+        const { session, rpcHandlers } = createAbortSession(queue);
+        const launcherPromise = new CopilotRemoteLauncher(session as never, {}).launch();
+        let first: Promise<unknown> | undefined;
+        let second: Promise<unknown> | undefined;
+        try {
+            await vi.waitFor(() => expect(abortHarness.prompts).toHaveLength(1));
+            consumed.mockClear();
+            const abort = rpcHandlers.get(RPC_METHODS.Abort)!;
+            first = abort();
+            await gates[0].entered;
+            second = abort();
+            queue.push('A', { permissionMode: 'default' }, 'id-a');
+            queue.push('B', { permissionMode: 'default' }, 'id-b');
+            gates[0].release();
+            await first;
+            await gates[1].entered;
+            abortHarness.settleActivePrompt();
+            await new Promise<void>(resolve => setImmediate(resolve));
+            expect(queue.pendingLocalIds()).toEqual(['id-a', 'id-b']);
+            expect(consumed).not.toHaveBeenCalled();
+            expect(abortHarness.prompts).toHaveLength(1);
+            gates[1].release();
+            await second;
+            await vi.waitFor(() => expect(abortHarness.prompts).toHaveLength(2));
+            expect(abortHarness.prompts[1][0].text).toBe('A\nB');
+            expect(consumed).toHaveBeenCalledExactlyOnceWith(['id-a', 'id-b']);
+        } finally {
+            gates[0].release();
+            gates[1].release();
+            abortHarness.setCancelAllHook(null);
+            queue.close();
+            await Promise.allSettled([first, second]);
+            await new Promise<void>(resolve => setImmediate(resolve));
+            abortHarness.settleActivePrompt();
+            await launcherPromise;
+        }
+    });
+
     it('keeps pending A/B queued and dispatches them exactly once in order after a plain Stop', async () => {
         const queue = new MessageQueue2<CopilotTestMode>((mode) => mode.permissionMode);
         queue.push('active', { permissionMode: 'default' }, 'id-active');
