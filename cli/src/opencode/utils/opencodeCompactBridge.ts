@@ -175,7 +175,11 @@ export async function triggerOpencodeCompactV2(opts: OpencodeCompactCallOpts & {
             authorization: 'Basic ' + Buffer.from(`opencode:${opts.password}`).toString('base64'),
             'content-type': 'application/json'
         },
-        body: JSON.stringify({ providerID: opts.providerId, modelID: opts.modelId }),
+        // v2.0.29 compact payload schema is {id?, delivery?} with
+        // additionalProperties: false (packages/protocol/openapi.json) — the
+        // session's current model governs server-side, so no provider/model
+        // fields are sent.
+        body: JSON.stringify({}),
         // Bun-specific: disables Bun's hardcoded ~5min fetch timeout.
         timeout: false,
         signal: opts.signal
@@ -191,8 +195,14 @@ export async function triggerOpencodeCompactV2(opts: OpencodeCompactCallOpts & {
         return { kind: 'transport-error', message: error instanceof Error ? error.message : String(error) };
     }
     if (!response.ok) {
-        // The server answered and refused: definitive, nothing was admitted.
+        // 4xx: the server answered and refused — definitive, nothing was
+        // admitted. 5xx: the server may have admitted the compaction and
+        // then failed while processing it (side effects already created) —
+        // admission is UNCERTAIN, so recovery (not failure) applies.
         const text = await response.text().catch(() => '');
+        if (response.status >= 500) {
+            return { kind: 'transport-error', message: `OpenCode v2 compact request failed after admission risk (${response.status}): ${text.slice(0, 300)}` };
+        }
         return { kind: 'rejected', error: `OpenCode v2 compact request failed (${response.status}): ${text.slice(0, 300)}` };
     }
     // The admitted compaction message echoes back in the response body
@@ -383,7 +393,7 @@ export async function readOpencodeV2ServerPassword(acpPid: number, opts?: {
                 // `ps Eww` embeds the environment after COMMAND; match `serve`
                 // against the command portion only, or an inherited env value
                 // containing the substring would misflag the candidate.
-                const commandPortion = psOutput.split(/\s+[A-Z_]+=/)[0] ?? psOutput;
+                const commandPortion = psOutput.split(/\s+[A-Za-z_][A-Za-z0-9_]*=/)[0] ?? psOutput;
                 candidates.push({ password, isServe: /\bserve\b/.test(commandPortion) && /--stdio/.test(commandPortion) });
             } catch {
                 // Try the next descendant.
@@ -459,11 +469,16 @@ function safeErrorReason(value: unknown): string | null {
     // OpenCode persists provider failures as `{ name, data: { message, ... } }`.
     // Read only that scalar message: serializing error/data would risk exposing
     // request headers, provider metadata, or other sensitive fields.
+    // v2 compaction errors (verified against v2.0.29,
+    // packages/schema/src/session-error.ts) are `{ type, message }` — read
+    // the top-level message scalar the same way.
     const message = typeof value === 'string'
         ? value
-        : isObjectRecord(value) && isObjectRecord(value.data) && typeof value.data.message === 'string'
-            ? value.data.message
-            : null;
+        : isObjectRecord(value) && typeof value.message === 'string'
+            ? value.message
+            : isObjectRecord(value) && isObjectRecord(value.data) && typeof value.data.message === 'string'
+                ? value.data.message
+                : null;
     if (!message) return 'OpenCode reported a compaction error.';
     const normalized = message.trim().replace(/\s+/g, ' ');
     return normalized ? normalized.slice(0, 200) : 'OpenCode reported a compaction error.';
@@ -658,9 +673,12 @@ export async function fetchCompactionResultV2(opts: {
                 : null;
         if (!entries) return unverified;
 
-        // v2 compaction shape (verified 2026-10-16 against opencode 2.0.29):
+        // v2 compaction shape (verified 2026-10-16/18 against opencode
+        // v2.0.29, release commit 042d0832f; schema:
+        // packages/protocol/openapi.json → Session.Message.Compaction.*):
         // the compaction entry itself carries the outcome inline —
-        // `{ type: 'compaction', status: 'completed', reason: 'manual', summary: '...' }`.
+        // `{ type: 'compaction', status: 'running'|'completed'|'failed',
+        //   reason: 'auto'|'manual', summary, providerContext }`.
         // There is no assistant message linked via parentID like v1, so the
         // v1 parsing rules do not apply here.
         const compactionEntries = entries.filter((entry) => entry.type === 'compaction');
@@ -679,9 +697,14 @@ export async function fetchCompactionResultV2(opts: {
             // still running. When the entries carry a reason field at all,
             // restrict candidates to manual ones; an auto-only pool means no
             // visibility into ours yet (stall counting applies).
+            // v2.0.29 always stamps reason (auto|manual — verified against
+            // the release schema); entries without one are an unknown shape,
+            // so settlement is refused rather than guessed.
             const withReason = candidates.filter((entry) => isObjectRecord(entry) && typeof entry.reason === 'string');
             if (withReason.length > 0) {
                 candidates = candidates.filter((entry) => (entry as { reason?: unknown }).reason === 'manual');
+            } else {
+                candidates = [];
             }
         }
         const latestCompaction = candidates[0] ?? null;

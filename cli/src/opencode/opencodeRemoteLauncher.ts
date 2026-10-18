@@ -1050,7 +1050,12 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 // read, any compaction entry appearing afterwards must be
                 // ours. Admission is refused without this boundary — a
                 // successful POST admits server-side work, so verifying it
-                // must never depend on guessing.
+                // must never depend on guessing. Wire contract verified
+                // against opencode v2.0.29 (release commit 042d0832f):
+                // POST /api/session/:id/compact, GET /api/session/:id/message
+                // ({data: [Session.Message.Compaction...]}), /api/event SSE
+                // with {id, type, data} envelopes, OPENCODE_PASSWORD injected
+                // into the serve child (cli/src/services/standalone.ts).
                 this.compactOperationPhase = 'snapshot';
                 const preExistingIds = await captureCompactionIdsV2({
                     baseUrl,

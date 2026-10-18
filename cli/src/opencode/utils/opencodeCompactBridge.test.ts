@@ -355,7 +355,7 @@ describe('fetchCompactionResult', () => {
 });
 
 describe('triggerOpencodeCompactV2', () => {
-    it('posts to /api/session/:id/compact with Basic auth and providerID/modelID body', async () => {
+    it('posts to /api/session/:id/compact with Basic auth and the v2.0.29 payload shape', async () => {
         const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
         const signal = new AbortController().signal;
         await triggerOpencodeCompactV2({
@@ -374,7 +374,9 @@ describe('triggerOpencodeCompactV2', () => {
         expect((init.headers as Record<string, string>).authorization)
             .toBe('Basic ' + Buffer.from('opencode:secret-pw').toString('base64'));
         expect((init.headers as Record<string, string>)['content-type']).toBe('application/json');
-        expect(JSON.parse(String(init.body))).toEqual({ providerID: 'anthropic', modelID: 'claude-sonnet-4-5' });
+        // v2.0.29 payload schema is {id?, delivery?} — the session's current
+        // model governs server-side, so no provider/model fields are sent.
+        expect(JSON.parse(String(init.body))).toEqual({});
     });
 
     it('encodes the Basic credentials from the OPENCODE_PASSWORD value', async () => {
@@ -415,6 +417,34 @@ describe('triggerOpencodeCompactV2', () => {
             fetchImpl
         });
         expect(second.kind).toBe('rejected');
+    });
+
+    it('treats 5xx as admission-uncertain (recovery, not definitive failure)', async () => {
+        const fetchImpl = vi.fn(async () => new Response('boom', { status: 503 }));
+        const result = await triggerOpencodeCompactV2({
+            baseUrl: 'http://127.0.0.1:1',
+            sessionId: 's',
+            providerId: 'p',
+            modelId: 'm',
+            password: 'pw',
+            signal: new AbortController().signal,
+            fetchImpl
+        });
+        expect(result.kind).toBe('transport-error');
+    });
+
+    it('treats 4xx as definitive rejection', async () => {
+        const fetchImpl = vi.fn(async () => new Response('denied', { status: 400 }));
+        const result = await triggerOpencodeCompactV2({
+            baseUrl: 'http://127.0.0.1:1',
+            sessionId: 's',
+            providerId: 'p',
+            modelId: 'm',
+            password: 'pw',
+            signal: new AbortController().signal,
+            fetchImpl
+        });
+        expect(result.kind).toBe('rejected');
     });
 
     it('reports kind transport-error on fetch failures (admission uncertain)', async () => {
@@ -699,6 +729,20 @@ describe('fetchCompactionResultV2', () => {
             fetchImpl: async () => fixtureEntry(entry)
         });
         expect(result).toEqual({ status: 'success', text: '' });
+    });
+
+    it('reads the v2 top-level error message ({type, message}) as the failure reason', async () => {
+        // v2.0.29 session-error shape: { type, message } — safeErrorReason
+        // must read the top-level message, not only the v1 data.message.
+        const entry = { id: 'msg_fail', type: 'compaction', status: 'failed', reason: 'manual', error: { type: 'compaction.unavailable', message: 'Nothing to compact yet' } };
+        const result = await fetchCompactionResultV2({
+            baseUrl: 'http://127.0.0.1:1',
+            sessionId: 's',
+            password: 'pw',
+            expectedCompactionId: 'msg_fail',
+            fetchImpl: async () => fixtureEntry(entry)
+        });
+        expect(result).toEqual({ status: 'failed', reason: 'Nothing to compact yet' });
     });
 
     it('a completed entry with an empty summary and NO providerContext stays failed', async () => {
