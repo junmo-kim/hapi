@@ -97,6 +97,7 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({ error: `${parsed.data.agent.toUpperCase()} only supports remote mode` }, 400)
         }
         const startingMode = parsed.data.startingMode
+        const namespace = c.get('namespace')
 
         const result = await engine.spawnSession(
             machineId,
@@ -114,7 +115,8 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             undefined,
             parsed.data.collaborationMode,
             parsed.data.copilotAgentMode,
-            startingMode
+            startingMode,
+            namespace
         )
         return c.json(result)
     })
@@ -211,7 +213,9 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         try {
-            const result = await engine.listAgyModelsForMachine(machineId)
+            const result = await engine.listAgyModelsForMachine(machineId, {
+                refresh: c.req.query('refresh') === 'true'
+            })
             return c.json(result)
         } catch (error) {
             return c.json({
@@ -309,6 +313,36 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
     })
 
+    app.get('/machines/:id/opencode-model-variants', async (c) => {
+        const engine = getSyncEngine()
+        if (!engine) {
+            return c.json({ success: false, error: 'Not connected' }, 503)
+        }
+
+        const machineId = c.req.param('id')
+        const machine = requireMachine(c, engine, machineId)
+        if (machine instanceof Response) {
+            return machine
+        }
+
+        try {
+            const result = await engine.listOpencodeModelVariantsForMachine(machineId, c.req.query('cwd') || null)
+            return c.json(result)
+        } catch (error) {
+            if (error instanceof RpcTargetMissingError) {
+                return c.json({
+                    success: false,
+                    error: error.message,
+                    code: RPC_TARGET_MISSING_ERROR_CODE
+                }, 503)
+            }
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Failed to list OpenCode model variants'
+            }, 500)
+        }
+    })
+
     app.get('/machines/:id/grok-models', async (c) => {
         const engine = getSyncEngine()
         if (!engine) {
@@ -330,6 +364,31 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({
                 success: false,
                 error: error instanceof Error ? error.message : 'Failed to list Grok models'
+            }, 500)
+        }
+    })
+
+    app.get('/machines/:id/kimi-models', async (c) => {
+        const engine = getSyncEngine()
+        if (!engine) {
+            return c.json({ success: false, error: 'Not connected' }, 503)
+        }
+
+        const machineId = c.req.param('id')
+        const machine = requireMachine(c, engine, machineId)
+        if (machine instanceof Response) return machine
+
+        const cwd = (c.req.query('cwd') ?? '').trim()
+        if (!cwd) {
+            return c.json({ success: false, error: 'cwd query parameter is required' }, 400)
+        }
+
+        try {
+            return c.json(await engine.listKimiModelsForCwd(machineId, cwd))
+        } catch (error) {
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Failed to list Kimi models'
             }, 500)
         }
     })

@@ -1,45 +1,76 @@
-import { describe, expect, it, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
-import { CompactSummaryCard } from './SystemMessage'
+import type { HTMLAttributes } from 'react'
+import { fireEvent, render, screen } from '@testing-library/react'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { I18nProvider } from '@/lib/i18n-context'
+import { HappySystemMessage } from './SystemMessage'
 
-vi.mock('./MessageTimestamp', () => ({
-    MessageTimestamp: () => <time data-testid="timestamp">12:00</time>
+const { message } = vi.hoisted(() => ({
+    message: {
+        role: 'system', id: 'status-example',
+        content: [] as { type: string; text: string }[],
+        metadata: { custom: {} as Record<string, unknown> }
+    }
 }))
-
-vi.mock('@/components/MarkdownRenderer', () => ({
-    MarkdownRenderer: ({ content }: { content: string }) => (
-        <div data-testid="compact-summary-body">{content}</div>
-    )
+vi.mock('@assistant-ui/react', () => ({
+    useAuiState: (selector: (state: { message: typeof message }) => unknown) => selector({ message }),
+    MessagePrimitive: { Root: (props: HTMLAttributes<HTMLDivElement>) => <div {...props} /> }
 }))
+vi.mock('./MessageTimestamp', () => ({ MessageTimestamp: () => <span>12:00</span> }))
 
-describe('CompactSummaryCard', () => {
-    it('renders the header with token delta collapsed by default', () => {
-        render(<CompactSummaryCard delta="34,492 → 2,082 tokens" text="the summary body" />)
+const goal = {
+    threadId: 'thread-example-1', objective: 'Compare the options and validate the chosen approach.',
+    status: 'active', tokenBudget: null, tokensUsed: 0, timeUsedSeconds: 0,
+    createdAt: 1704067200, updatedAt: 1704067200
+}
+function show(text: string, eventType = 'message', kind = 'event') {
+    message.content = [{ type: 'text', text }]
+    message.metadata.custom = { kind, event: { type: eventType, message: text } }
+    return render(<I18nProvider><HappySystemMessage /></I18nProvider>)
+}
 
-        expect(screen.getByText('Context compacted')).toBeTruthy()
-        expect(screen.getByText(/34,492/)).toBeTruthy()
-        expect(screen.queryByTestId('compact-summary-body')).toBeNull()
+beforeEach(() => { message.role = 'system' })
+
+describe('slash-command goal status messages', () => {
+    it('renders the actual event/message response as a goal snapshot card', () => {
+        const raw = JSON.stringify({ goal })
+        const { container } = show(raw)
+        expect(screen.getByText('Goal')).toBeInTheDocument()
+        expect(screen.getByText(goal.objective)).toBeInTheDocument()
+        expect(screen.getByText('Active')).toBeInTheDocument()
+        expect(screen.getByText('0 tokens')).toBeInTheDocument()
+        expect(screen.getByText('No limit')).toBeInTheDocument()
+        expect(screen.getByText('0.0s')).toBeInTheDocument()
+        expect(container.querySelector('[data-goal-status="active"]')).not.toBeNull()
+        const details = screen.getByText('Raw JSON').closest('details')!
+        expect(details.open).toBe(false)
+        fireEvent.click(screen.getByText('Raw JSON'))
+        expect(details.open).toBe(true)
+        expect(details.textContent).toContain('thread-example-1')
+        expect(details.textContent).toContain(raw)
     })
 
-    it('shows the summary body when expanded', () => {
-        render(<CompactSummaryCard delta={null} text="the summary body" />)
-
-        const toggle = screen.getByRole('button')
-        expect(screen.queryByTestId('compact-summary-body')).toBeNull()
-
-        fireEvent.click(toggle)
-        expect(screen.getByTestId('compact-summary-body')).toHaveTextContent('the summary body')
-
-        fireEvent.click(toggle)
-        expect(screen.queryByTestId('compact-summary-body')).toBeNull()
+    it('shows an explicitly empty goal', () => {
+        show('{"goal":null}')
+        expect(screen.getByText('No goal set')).toBeInTheDocument()
     })
 
-    it('reflects the expanded state on aria-expanded', () => {
-        render(<CompactSummaryCard delta={null} text="" />)
+    it.each(['Goal cleared', '{broken', '{"objective":"ordinary data"}', JSON.stringify({ goal, error: 'denied' })])
+        ('preserves ordinary and malformed status text', (text) => {
+            const { container } = show(text)
+            expect(screen.getByText(text)).toBeInTheDocument()
+            expect(container.querySelector('[data-goal-status]')).toBeNull()
+        })
 
-        const toggle = screen.getByRole('button')
-        expect(toggle.getAttribute('aria-expanded')).toBe('false')
-        fireEvent.click(toggle)
-        expect(toggle.getAttribute('aria-expanded')).toBe('true')
+    it.each([['error', 'event'], ['message', 'other']])('only formats confirmed message events', (eventType, kind) => {
+        const raw = JSON.stringify({ goal })
+        const { container } = show(raw, eventType, kind)
+        expect(screen.getByText(raw)).toBeInTheDocument()
+        expect(container.querySelector('[data-goal-status]')).toBeNull()
+    })
+
+    it('does not format ordinary assistant content', () => {
+        message.role = 'assistant'
+        const { container } = show(JSON.stringify({ goal }))
+        expect(container).toBeEmptyDOMElement()
     })
 })

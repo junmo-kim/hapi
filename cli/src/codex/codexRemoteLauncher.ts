@@ -8,6 +8,7 @@ import { DiffProcessor } from './utils/diffProcessor';
 import { logger } from '@/ui/logger';
 import { CodexDisplay } from '@/ui/ink/CodexDisplay';
 import { buildHapiMcpBridge } from './utils/buildHapiMcpBridge';
+import { applySessionDisplayRename } from '@/agent/sessionDisplayRename';
 import { emitReadyIfIdle } from './utils/emitReadyIfIdle';
 import type { CodexSession } from './session';
 import type { EnhancedMode } from './loop';
@@ -16,7 +17,17 @@ import { hasCodexCliOverrides } from './utils/codexCliOverrides';
 import { AppServerEventConverter } from './utils/appServerEventConverter';
 import { registerGeneratedImageFromPath } from '@/modules/common/generatedImages';
 import { registerAppServerPermissionHandlers } from './utils/appServerPermissionAdapter';
-import { buildThreadStartParams, buildTurnStartParams } from './utils/appServerConfig';
+import {
+    buildThreadStartParams,
+    buildTurnStartParams,
+    type CodexContextManagementConfig
+} from './utils/appServerConfig';
+import {
+    extractCodexMcpServers,
+    mergeCodexMcpServers,
+    type CodexMcpServersConfig
+} from './utils/codexMcpServers';
+import { prepareCodexMcpServers } from './utils/codexMcpProxy';
 import type { SkillMetadata, ThreadGoal, ThreadGoalStatus } from './appServerTypes';
 import { shouldIgnoreTerminalEvent } from './utils/terminalEventGuard';
 import { parseCodexSpecialCommand } from './codexSpecialCommands';
@@ -228,6 +239,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
     private reasoningProcessor: ReasoningProcessor | null = null;
     private diffProcessor: DiffProcessor | null = null;
     private happyServer: HappyServer | null = null;
+    private mcpProxyCleanup: (() => Promise<void>) | null = null;
     private abortController: AbortController = new AbortController();
     /** Invalidates queued-message steer handlers after abort or cleanup. */
     private steerEpoch = 0;
@@ -462,11 +474,9 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         };
 
         const sendTitleSummary = (title: string): void => {
-            session.client.sendClaudeSessionMessage({
-                type: 'summary',
-                summary: title,
-                leafUuid: randomUUID()
-            });
+            // Matches MCP change_title / web rename: set metadata.name so a
+            // prior spawn --name does not hide the agent rename.
+            applySessionDisplayRename(session.client, title);
         };
 
         const formatOutputPreview = (value: unknown): string => {
@@ -740,6 +750,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         const isScopeSensitiveCodexEvent = (type: string): boolean => {
             return type === 'token_count'
                 || type === 'context_compacted'
+                || type === 'compaction_started'
                 || type === 'thread_goal_updated'
                 || type === 'thread_goal_cleared';
         };
@@ -1506,6 +1517,16 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     id: randomUUID()
                 });
                 updateActivity('Context compacted', 'compact');
+                return;
+            }
+
+            if (msgType === 'compaction_started') {
+                emitAgentRunTraceMessage(agentId, {
+                    type: 'compaction_started',
+                    statusText: '📦 Compaction started',
+                    id: randomUUID()
+                });
+                updateActivity('Compacting context', 'compact');
                 return;
             }
 
@@ -3230,6 +3251,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 const threadId = eventThreadId ?? this.currentThreadId;
                 session.sendAgentMessage({
                     ...addCodexEventScope(msg, 'parent', threadId),
+                    flavor: 'codex',
                     model: asString(msg.model) ?? usageModel,
                     id: randomUUID()
                 });
@@ -3243,6 +3265,17 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     }, 'parent', threadId),
                     id: randomUUID()
                 });
+            }
+            if (msgType === 'compaction_started') {
+                const threadId = eventThreadId ?? this.currentThreadId;
+                const manualInFlight = manualCompact
+                    && (!threadId || manualCompact.threadId === threadId)
+                    && (!manualCompact.turnId || !eventTurnId || manualCompact.turnId === eventTurnId);
+                if (!manualInFlight) {
+                    const message = '📦 Compaction started';
+                    messageBuffer.addMessage(message, 'status');
+                    session.sendSessionEvent({ type: 'message', message });
+                }
             }
             if (msgType === 'plan_update') {
                 session.sendAgentMessage({
@@ -3524,7 +3557,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             failPendingAgentStartsForSpawnArgumentError(spawnAgentError);
         });
 
-        const { server: happyServer, mcpServers } = await buildHapiMcpBridge(session.client, {
+        const { server: happyServer, mcpServers: hapiMcpServers } = await buildHapiMcpBridge(session.client, {
             // In app-server/collab mode, child agents share this MCP bridge.
             // If the MCP handler writes the title directly, child title calls
             // leak into the parent HAPI session. Defer the side effect until
@@ -3533,6 +3566,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             emitTitleSummary: false
         });
         this.happyServer = happyServer;
+        let mcpServers: CodexMcpServersConfig = hapiMcpServers;
 
         this.setupAbortHandlers(session.client.rpcHandlerManager, {
             onAbort: () => this.handleAbort(),
@@ -3565,6 +3599,47 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 experimentalApi: true
             }
         });
+
+        let contextManagementConfig: CodexContextManagementConfig | undefined;
+        try {
+            const effectiveConfig = (await appServerClient.readConfig({
+                cwd: session.path,
+                includeLayers: false
+            })).config;
+            try {
+                const userMcpServers = extractCodexMcpServers(effectiveConfig);
+                const preparedMcpServers = await prepareCodexMcpServers(userMcpServers);
+                this.mcpProxyCleanup = preparedMcpServers.cleanup;
+                mcpServers = mergeCodexMcpServers(preparedMcpServers.servers, hapiMcpServers);
+                if (Object.keys(userMcpServers).length > 0) {
+                    logger.debug(`[Codex] Loaded ${Object.keys(userMcpServers).length} user MCP server(s)`);
+                }
+                if (preparedMcpServers.proxiedServerNames.length > 0) {
+                    logger.debug(
+                        `[Codex] Added stdio compatibility proxy for ${preparedMcpServers.proxiedServerNames.length} Windows MCP server(s)`
+                    );
+                }
+            } catch (error) {
+                logger.warn(`[Codex] Failed to merge user MCP servers; using HAPI bridge only: ${errorMessage(error)}`);
+            }
+            const modelContextWindow = effectiveConfig.model_context_window;
+            const modelAutoCompactTokenLimit = effectiveConfig.model_auto_compact_token_limit;
+            contextManagementConfig = {
+                ...(typeof modelContextWindow === 'number' && Number.isInteger(modelContextWindow) && modelContextWindow > 0
+                    ? { modelContextWindow }
+                    : {}),
+                ...(typeof modelAutoCompactTokenLimit === 'number'
+                    && Number.isInteger(modelAutoCompactTokenLimit)
+                    && modelAutoCompactTokenLimit > 0
+                    ? { modelAutoCompactTokenLimit }
+                    : {})
+            };
+            if (Object.keys(contextManagementConfig).length === 0) {
+                contextManagementConfig = undefined;
+            }
+        } catch (error) {
+            logger.debug('[Codex] Failed to read effective context management config; using app-server defaults', error);
+        }
 
         const publishConversationHistoryCapabilities = async () => {
             const conversationHistory = this.conversationHistory.getCapabilitiesForMetadata()?.conversationHistory
@@ -3716,7 +3791,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 cwd: session.path,
                 mode,
                 mcpServers,
-                cliOverrides: session.codexCliOverrides
+                cliOverrides: session.codexCliOverrides,
+                contextManagementConfig
             });
 
             try {
@@ -3781,7 +3857,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     cwd: session.path,
                     mode,
                     mcpServers,
-                    cliOverrides: session.codexCliOverrides
+                    cliOverrides: session.codexCliOverrides,
+                    contextManagementConfig
                 });
                 try {
                     const resumeResponse = await appServerClient.resumeThread({
@@ -3812,7 +3889,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     cwd: session.path,
                     mode,
                     mcpServers,
-                    cliOverrides: session.codexCliOverrides
+                    cliOverrides: session.codexCliOverrides,
+                    contextManagementConfig
                 });
                 const threadResponse = await appServerClient.startThread({
                     ...threadParams,
@@ -3966,7 +4044,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 return true;
             }
 
-            sendVisibleStatus('Compaction started');
+            sendVisibleStatus('📦 Compaction started');
             const compactCompletion = beginManualCompact(threadId);
             void compactCompletion.catch(() => {});
             try {
@@ -3974,10 +4052,10 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     signal: this.abortController.signal
                 });
                 await compactCompletion;
-                sendVisibleStatus('Compaction completed');
+                sendVisibleStatus('📦 Compaction completed');
             } catch (error) {
                 const detail = error instanceof Error ? error.message : String(error);
-                sendVisibleStatus(`Compaction failed: ${detail}`);
+                sendVisibleStatus(`📦 Compaction failed: ${detail}`);
             } finally {
                 if (manualCompact?.threadId === threadId) {
                     const compact = manualCompact;
@@ -4063,7 +4141,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                         cwd: session.path,
                         mode: message.mode,
                         mcpServers,
-                        cliOverrides: session.codexCliOverrides
+                        cliOverrides: session.codexCliOverrides,
+                        contextManagementConfig
                     });
 
                     const resumeCandidate = session.sessionId ?? null;
@@ -4297,6 +4376,15 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         if (this.happyServer) {
             this.happyServer.stop();
             this.happyServer = null;
+        }
+
+        if (this.mcpProxyCleanup) {
+            try {
+                await this.mcpProxyCleanup();
+            } catch (error) {
+                logger.debug('[codex-remote]: Error cleaning MCP proxy specs', error);
+            }
+            this.mcpProxyCleanup = null;
         }
 
         this.permissionHandler?.reset();

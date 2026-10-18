@@ -57,6 +57,25 @@ describe('ApiClient error mapping', () => {
         }
     })
 
+    it('preserves the structured ambiguous-boundary code for Rewind fallbacks', async () => {
+        fetchMock.mockResolvedValueOnce(
+            new Response(
+                JSON.stringify({
+                    error: 'Rewind is unavailable for this Codex history',
+                    code: 'ambiguous_native_boundary_fork_safe',
+                    hydrateFailed: false
+                }),
+                { status: 409, statusText: 'Conflict' }
+            )
+        )
+
+        const api = new ApiClient('test-token')
+        await expect(api.rewindConversation('session-1', 'local-1')).rejects.toMatchObject({
+            status: 409,
+            code: 'ambiguous_native_boundary_fork_safe'
+        })
+    })
+
     it('passes the 422 missing-metadata body through unchanged so the UI can show the missing fields', async () => {
         fetchMock.mockResolvedValueOnce(
             new Response(
@@ -151,6 +170,20 @@ describe('ApiClient error mapping', () => {
             capabilities: { titleSuggestion: true }
         })
         expect(fetchMock.mock.calls[0]?.[0]).toBe('/health')
+    })
+
+    it('asks the machine to re-probe agy only when the caller forces a refresh', async () => {
+        fetchMock.mockImplementation(() => Promise.resolve(
+            new Response(JSON.stringify({ success: true, availableModels: [] }), { status: 200 })
+        ))
+
+        const api = new ApiClient('test-token')
+        await api.getMachineAgyModels('machine-1')
+        await api.getMachineAgyModels('machine-1', { refresh: true })
+
+        expect(fetchMock.mock.calls[0][0]).toContain('/api/machines/machine-1/agy-models')
+        expect(fetchMock.mock.calls[0][0]).not.toContain('refresh')
+        expect(fetchMock.mock.calls[1][0]).toContain('/api/machines/machine-1/agy-models?refresh=true')
     })
 
     it('lists and imports Pi sessions through the selected machine', async () => {
@@ -294,5 +327,35 @@ describe('ApiClient error mapping', () => {
         expect(fetchMock.mock.calls[1]?.[0]).toBe('/api/voice/transcription/credentials')
         expect(init?.method).toBe('PUT')
         expect(init?.body).toBe(JSON.stringify({ openai: 'sk-test' }))
+    })
+})
+
+describe('ApiClient Kimi session model discovery', () => {
+    let originalFetch: typeof globalThis.fetch
+    let fetchMock: ReturnType<typeof vi.fn>
+
+    beforeEach(() => {
+        originalFetch = globalThis.fetch
+        fetchMock = vi.fn()
+        globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch
+    })
+
+    afterEach(() => {
+        globalThis.fetch = originalFetch
+    })
+
+    it('requests the running session instead of the machine kimi-models endpoint', async () => {
+        const catalog = {
+            success: true,
+            availableModels: [
+                { modelId: 'GLM-5.3-flash', name: 'thehive / GLM-5.3-flash', provider: 'thehive' }
+            ],
+            currentModelId: 'GLM-5.3-flash'
+        }
+        fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(catalog), { status: 200 }))
+
+        const api = new ApiClient('test-token')
+        await expect(api.getSessionKimiModels('session/1')).resolves.toEqual(catalog)
+        expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/sessions/session%2F1/kimi-models')
     })
 })

@@ -25,6 +25,7 @@ export interface Settings {
     corsOrigins?: string[]
     // Push delivery (FCM + iOS/APNs) — persisted from env like the rest of
     // this section; interpreted by fcmConfig.ts / iosPushConfig.ts.
+    androidPushMode?: string
     fcmServiceAccountPath?: string
     iosPushMode?: string
     iosPushRelayUrl?: string
@@ -50,6 +51,11 @@ export interface Settings {
      * Env vars still win when set at process start (ops override).
      */
     providerCredentials?: Partial<Record<string, string>>
+    /**
+     * Cap (seconds) on one ElevenLabs ConvAI conversation. Env
+     * ELEVENLABS_MAX_DURATION_SECONDS still wins when set at process start.
+     */
+    elevenLabsMaxDurationSeconds?: number
 }
 
 export function getSettingsFile(dataDir: string): string {
