@@ -1150,9 +1150,15 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 switch (v2Outcome.result.status) {
                     case 'success': {
                         session.sendSessionEvent({ type: 'message', message: '📦 Compaction completed' });
-                        const converted = convertAgentMessage({ type: 'reasoning', text: v2Outcome.result.text, id: randomUUID() });
-                        if (converted) {
-                            session.sendAgentMessage(converted);
+                        // Native provider compaction completes with an empty
+                        // summary (the context checkpoint lives in
+                        // providerContext on the server) — skip the synthetic
+                        // summary message in that case.
+                        if (v2Outcome.result.text.trim().length > 0) {
+                            const converted = convertAgentMessage({ type: 'reasoning', text: v2Outcome.result.text, id: randomUUID() });
+                            if (converted) {
+                                session.sendAgentMessage(converted);
+                            }
                         }
                         return;
                     }

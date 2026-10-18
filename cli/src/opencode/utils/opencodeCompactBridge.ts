@@ -355,7 +355,9 @@ export async function readOpencodeV2ServerPassword(acpPid: number, opts?: {
                     const password = parseOpencodeEnvironPassword(await readEnviron(childPid));
                     if (!password) continue;
                     const cmdline = await readCmdline(childPid).catch(() => '');
-                    candidates.push({ password, isServe: /serve/.test(cmdline) });
+                    // Exact serve argument, not a substring: an executable
+                    // under /home/server/ must not flag an `acp` child.
+                    candidates.push({ password, isServe: /\bserve\b/.test(cmdline) && /--stdio/.test(cmdline) });
                 } catch {
                     // Fall through if this child yields nothing.
                 }
@@ -382,7 +384,7 @@ export async function readOpencodeV2ServerPassword(acpPid: number, opts?: {
                 // against the command portion only, or an inherited env value
                 // containing the substring would misflag the candidate.
                 const commandPortion = psOutput.split(/\s+[A-Z_]+=/)[0] ?? psOutput;
-                candidates.push({ password, isServe: /serve/.test(commandPortion) });
+                candidates.push({ password, isServe: /\bserve\b/.test(commandPortion) && /--stdio/.test(commandPortion) });
             } catch {
                 // Try the next descendant.
             }
@@ -400,6 +402,7 @@ type OpencodeMessageEntry = {
     status?: unknown;
     reason?: unknown;
     summary?: unknown;
+    providerContext?: unknown;
     error?: unknown;
     info?: {
         id?: unknown;
@@ -716,6 +719,14 @@ export async function fetchCompactionResultV2(opts: {
         if (status === 'completed') {
             if (summary && summary.trim().length > 0) {
                 return { status: 'success', text: summary };
+            }
+            // Native provider compaction (verified 2026-10-18 against the v2
+            // binary: `model.compaction?.type === "native"` skips the summary
+            // prompt and publishes providerContext instead) legitimately
+            // completes with an empty summary — the context checkpoint lives
+            // in providerContext.
+            if (isObjectRecord(entryRecord?.providerContext)) {
+                return { status: 'success', text: '' };
             }
             return { status: 'failed', reason: 'OpenCode returned an empty compaction summary.' };
         }

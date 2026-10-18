@@ -493,6 +493,22 @@ describe('readOpencodeV2ServerPassword', () => {
         expect(password).toBe('generated-pw');
     });
 
+    it('linux serve detection requires the exact serve argument, not an executable path substring', async () => {
+        // Bot round-5 Minor: an executable under /home/server/ must not flag
+        // the acp child as serve.
+        const password = await readOpencodeV2ServerPassword(4242, {
+            platform: 'linux',
+            listDescendantPids: async () => [111, 222],
+            readChildEnviron: async (pid) => pid === 111
+                ? 'OPENCODE_PASSWORD=inherited-pw\0PATH=/usr/bin'
+                : 'OPENCODE_PASSWORD=generated-pw\0PATH=/usr/bin',
+            readChildCmdline: async (pid) => pid === 111
+                ? '/home/server/bin/opencode\0acp'
+                : 'opencode\0serve\0--stdio'
+        });
+        expect(password).toBe('generated-pw');
+    });
+
     it('prefers the serve descendant over one that merely inherited OPENCODE_PASSWORD', async () => {
         // Bot round-4 Minor: an npm wrapper tree is wrapper → native acp →
         // serve; a user-exported OPENCODE_PASSWORD is inherited by the
@@ -517,8 +533,9 @@ describe('readOpencodeV2ServerPassword', () => {
             execImpl: async (_command, args) => {
                 if (args[2] === '111') {
                     // Inherited env contains a `serve` substring (e.g. a path
-                    // segment) — must NOT be misflagged as the serve process.
-                    return '  PID TTY      STAT   TIME COMMAND\n  111 ?      Ss     0:00 /bin/opencode acp OPENCODE_PASSWORD=inherited-pw PRESERVE_DIR=/x/serve-cache PATH=/usr/bin';
+                    // segment) AND the executable path contains 'server' —
+                    // neither may flag the acp child as the serve process.
+                    return '  PID TTY      STAT   TIME COMMAND\n  111 ?      Ss     0:00 /home/server/bin/opencode acp OPENCODE_PASSWORD=inherited-pw PRESERVE_DIR=/x/serve-cache PATH=/usr/bin';
                 }
                 return '  PID TTY      STAT   TIME COMMAND\n  222 ?      Ss     0:00 /bin/opencode serve --stdio OPENCODE_PASSWORD=generated-pw PATH=/usr/bin';
             }
@@ -666,6 +683,34 @@ describe('fetchCompactionResultV2', () => {
             fetchImpl: async () => fixtureEntry(newerCompleted, olderCompleted)
         });
         expect(result).toEqual({ status: 'success', text: 'fresh summary' });
+    });
+
+    it('a completed entry with an empty summary but a providerContext is a native-compaction success', async () => {
+        // Upstream v2 native provider compaction (verified against the v2
+        // binary: model.compaction?.type === "native" publishes
+        // providerContext instead of summary text) legitimately completes
+        // with summary: "".
+        const entry = { id: 'msg_native', type: 'compaction', status: 'completed', reason: 'manual', summary: '', providerContext: { version: 1, messages: [] } };
+        const result = await fetchCompactionResultV2({
+            baseUrl: 'http://127.0.0.1:1',
+            sessionId: 's',
+            password: 'pw',
+            expectedCompactionId: 'msg_native',
+            fetchImpl: async () => fixtureEntry(entry)
+        });
+        expect(result).toEqual({ status: 'success', text: '' });
+    });
+
+    it('a completed entry with an empty summary and NO providerContext stays failed', async () => {
+        const entry = { id: 'msg_empty', type: 'compaction', status: 'completed', reason: 'manual', summary: '   ' };
+        const result = await fetchCompactionResultV2({
+            baseUrl: 'http://127.0.0.1:1',
+            sessionId: 's',
+            password: 'pw',
+            expectedCompactionId: 'msg_empty',
+            fetchImpl: async () => fixtureEntry(entry)
+        });
+        expect(result).toEqual({ status: 'failed', reason: 'OpenCode returned an empty compaction summary.' });
     });
 
     it('an empty exclude snapshot is a valid basis — a fresh session evaluates the single new entry', async () => {
