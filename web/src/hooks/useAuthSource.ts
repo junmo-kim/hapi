@@ -118,6 +118,12 @@ export function useAuthSource(baseUrl: string): {
         let pollingExhausted = false
         let pendingCloudflare = false
 
+        const cleanup = () => {
+            cancelled = true
+            if (telegramInterval) clearInterval(telegramInterval)
+            if (discoveryTimer) clearTimeout(discoveryTimer)
+        }
+
         const setTelegram = (initData: string) => {
             if (cancelled || committed) return
             committed = true
@@ -207,7 +213,7 @@ export function useAuthSource(baseUrl: string): {
         // cross-origin hubs all fall through to the existing manual login.
         if (!isSameOriginHub(baseUrl)) {
             afterDiscovery()
-            return
+            return cleanup
         }
 
         if (isTelegramEnvironment()) {
@@ -243,11 +249,7 @@ export function useAuthSource(baseUrl: string): {
             .then(finishDiscovery)
             .catch(() => finishDiscovery(false))
 
-        return () => {
-            cancelled = true
-            if (telegramInterval) clearInterval(telegramInterval)
-            if (discoveryTimer) clearTimeout(discoveryTimer)
-        }
+        return cleanup
     }, [accessTokenKey, baseUrl])
 
     const setAccessToken = useCallback((token: string) => {

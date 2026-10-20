@@ -259,4 +259,40 @@ describe('useAuthSource — Cloudflare Access discovery', () => {
             vi.useRealTimers()
         }
     })
+
+    it.each([false, true])('clears cross-origin Telegram polling on unmount (StrictMode: %s)', (reactStrictMode) => {
+        window.history.replaceState({}, '', '/#tgWebAppVersion=1&tgWebAppPlatform=web')
+        vi.useFakeTimers()
+        const { unmount } = renderHook(() => useAuthSource('https://other-hub.example'), { reactStrictMode })
+        try {
+            unmount()
+            expect(vi.getTimerCount()).toBe(0)
+        } finally {
+            unmount()
+            vi.clearAllTimers()
+            vi.useRealTimers()
+        }
+    })
+
+    it.each([false, true])('keeps the Telegram wait window when switching cross-origin hubs (StrictMode: %s)', async (reactStrictMode) => {
+        window.history.replaceState({}, '', '/#tgWebAppVersion=1&tgWebAppPlatform=web')
+        vi.useFakeTimers()
+        const { result, rerender, unmount } = renderHook(({ baseUrl }) => useAuthSource(baseUrl), {
+            initialProps: { baseUrl: 'https://first-hub.example' },
+            reactStrictMode
+        })
+        try {
+            rerender({ baseUrl: 'https://second-hub.example' })
+            await act(async () => { await vi.advanceTimersByTimeAsync(3500) })
+            expect(result.current.isLoading).toBe(true)
+            act(() => { window.history.pushState({}, '', '/?tgWebAppData=late-init-data') })
+            await act(async () => { await vi.advanceTimersByTimeAsync(250) })
+            expect(result.current.authSource).toEqual({ type: 'telegram', initData: 'late-init-data' })
+            expect(result.current.isTelegram).toBe(true)
+        } finally {
+            unmount()
+            vi.clearAllTimers()
+            vi.useRealTimers()
+        }
+    })
 })
