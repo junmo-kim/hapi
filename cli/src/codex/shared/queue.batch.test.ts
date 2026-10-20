@@ -732,6 +732,27 @@ it('preserves original identities when restoration is consumed before its update
     expect(f.consumed).toHaveBeenCalledWith(['original-A', 'original-B']);
 });
 
+it.each([false, true])('does not retry an uncertain append with missing-submission text (applied: %s)', async applied => {
+    const f = await fixture();
+    await f.queue.enqueue('original-A', text('A'), false, 'same');
+    f.overrides.set('thread/queue/update', params => {
+        if (applied) f.native[0].input = structuredClone(params.input as QueueInput);
+        throw lost('queued submission not found');
+    });
+    await expect(f.queue.enqueue('original-B', text('B'), false, 'same')).rejects.toThrow('queued submission not found');
+    expect(f.queue.state('original-B')).toBe('unknown');
+    expect(f.calls.filter(c => c.method === 'thread/queue/add')).toHaveLength(1);
+    const restarted = new SharedCodexQueue(f.client, 'thread', join(f.directory, 'ledger.json'), f.consumed, f.uncertain);
+    await restarted.load();
+    f.overrides.delete('thread/queue/update');
+    await restarted.enqueue('original-B', text('B'), false, 'same');
+    expect(f.calls.filter(c => c.method === 'thread/queue/add')).toHaveLength(1);
+    expect(f.calls.filter(c => c.method === 'thread/queue/update')).toHaveLength(1);
+    expect(f.native).toHaveLength(1);
+    expect(f.native[0].input).toEqual(applied ? [...text('A'), ...text('B')] : text('A'));
+    expect(f.consumed).not.toHaveBeenCalled();
+});
+
 it('never retries restoration whose missing-submission response is itself uncertain', async () => {
     const f = await fixture();
     await f.queue.enqueue('original-A', text('A'), false, 'same');

@@ -551,7 +551,7 @@ export class SharedCodexQueue {
             if (resumeInterrupted) await this.client.request('thread/queue/start', { threadId: this.threadId }).catch(() => {});
         } catch (error) {
             if (entry.state === 'consumed') return;
-            if (queuedSubmissionNotFound(error)) {
+            if (!indeterminate(error) && queuedSubmissionNotFound(error)) {
                 // Proven unaccepted: detach only this new member and enqueue it normally.
                 batch.versions.pop(); batch.current = batch.versions.length - 1;
                 delete entry.batchId; batch.state = 'unknown';
