@@ -297,16 +297,28 @@ beforeEach(() => {
 });
 
 describe('CopilotRemoteLauncher Abort queue preservation', () => {
-    it.each([
-        ['switch', false], ['exit', false], ['switch', true], ['exit', true]
-    ] as const)('settles %s during delayed Stop teardown without another message (active: %s)', async (reason, active) => {
-        let entered!: () => void;
-        let release!: () => void;
-        const enteredPromise = new Promise<void>(resolve => { entered = resolve; });
-        const teardown = new Promise<void>(resolve => { release = resolve; });
+    it.each(
+        (['switch', 'exit'] as const).flatMap(reason =>
+            [false, true].flatMap(active =>
+                [false, true].flatMap(repeated =>
+                    [false, true].map(failing => ({ reason, active, repeated, failing })))))
+    )('settles $reason during delayed Stop teardown (active: $active, repeated: $repeated, failing: $failing)', async ({ reason, active, repeated, failing }) => {
+        const gates = [0, 1].map(() => {
+            let enter!: () => void;
+            let release!: () => void;
+            const entered = new Promise<void>(resolve => { enter = resolve; });
+            const pending = new Promise<void>(resolve => { release = resolve; });
+            return { enter, release, entered, pending };
+        });
         let cancels = 0;
         abortHarness.setCancelAllHook(async () => {
-            if (++cancels === 1) { entered(); await teardown; }
+            const call = ++cancels;
+            // Call 2 is terminal cleanup, which overtakes the serialized Stops.
+            if (call === 2) return;
+            const gate = gates[call === 1 ? 0 : 1];
+            gate.enter();
+            await gate.pending;
+            if (failing && call === (repeated ? 3 : 1)) throw new Error('cancelAll boom');
         });
         const queue = new MessageQueue2<CopilotTestMode>((mode) => mode.permissionMode);
         const wait = vi.spyOn(queue, 'waitForMessagesAndGetAsString');
@@ -320,29 +332,43 @@ describe('CopilotRemoteLauncher Abort queue preservation', () => {
         }
         const launcher = new TestLauncher(session as never, {});
         const barrier = vi.spyOn(launcher as unknown as { waitForAbortBarrier(): Promise<void> }, 'waitForAbortBarrier');
-        const launched = launcher.launch();
-        let stop: Promise<unknown> | undefined;
+        const launched = launcher.launch().catch((error: unknown) => error);
+        const stops: Array<Promise<unknown>> = [];
         try {
             await vi.waitFor(() => expect(wait).toHaveBeenCalledTimes(1));
             if (active) await vi.waitFor(() => expect(abortHarness.prompts).toHaveLength(1));
-            stop = rpcHandlers.get(RPC_METHODS.Abort)!();
-            await enteredPromise;
+            const stop = () => rpcHandlers.get(RPC_METHODS.Abort)!().catch((error: unknown) => error);
+            stops.push(stop());
+            await gates[0].entered;
             await vi.waitFor(() => expect(barrier).toHaveBeenCalledTimes(2));
+            if (repeated) stops.push(stop());
             consumed.mockClear();
+            queue.push('A', { permissionMode: 'default' }, 'pending-a');
+            queue.push('B', { permissionMode: 'default' }, 'pending-b');
+            expect(queue.pendingLocalIds()).toEqual(['pending-a', 'pending-b']);
             if (reason === 'switch') await rpcHandlers.get(RPC_METHODS.Switch)!();
             else await terminal.onExit();
-            release();
-            await stop;
+            gates[0].release();
+            if (repeated) {
+                await gates[1].entered;
+                expect(wait).toHaveBeenCalledTimes(1);
+                expect(consumed).not.toHaveBeenCalled();
+                gates[1].release();
+            }
+            const results = await Promise.all(stops);
+            if (failing) expect(results.at(-1)).toEqual(new Error('cancelAll boom'));
+            else expect(results.every(result => result === undefined)).toBe(true);
             await new Promise<void>(resolve => setImmediate(resolve));
             expect(wait).toHaveBeenCalledTimes(1);
             expect(consumed).not.toHaveBeenCalled();
+            expect(abortHarness.prompts).toHaveLength(active ? 1 : 0);
             expect(queue.pendingLocalIds()).toEqual([]);
-            await expect(launched).resolves.toBe(reason);
+            expect(await launched).toEqual(failing ? new Error('cancelAll boom') : reason);
         } finally {
-            release();
+            gates.forEach(gate => gate.release());
             abortHarness.setCancelAllHook(null);
             queue.close();
-            await stop?.catch(() => {});
+            await Promise.all(stops);
             abortHarness.settleActivePrompt();
             await launched;
         }
