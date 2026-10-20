@@ -4,6 +4,7 @@ import { CopilotRemoteLauncher } from './copilotRemoteLauncher';
 import type { AgentMessage } from '@/agent/types';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
+import type { RemoteLauncherTerminalHandlers } from '@/modules/common/remote/RemoteLauncherBase';
 
 const abortHarness = vi.hoisted(() => {
     let resolveActivePrompt: (() => void) | null = null;
@@ -296,6 +297,57 @@ beforeEach(() => {
 });
 
 describe('CopilotRemoteLauncher Abort queue preservation', () => {
+    it.each([
+        ['switch', false], ['exit', false], ['switch', true], ['exit', true]
+    ] as const)('settles %s during delayed Stop teardown without another message (active: %s)', async (reason, active) => {
+        let entered!: () => void;
+        let release!: () => void;
+        const enteredPromise = new Promise<void>(resolve => { entered = resolve; });
+        const teardown = new Promise<void>(resolve => { release = resolve; });
+        let cancels = 0;
+        abortHarness.setCancelAllHook(async () => {
+            if (++cancels === 1) { entered(); await teardown; }
+        });
+        const queue = new MessageQueue2<CopilotTestMode>((mode) => mode.permissionMode);
+        const wait = vi.spyOn(queue, 'waitForMessagesAndGetAsString');
+        const consumed = vi.fn();
+        queue.onBatchConsumed = consumed;
+        if (active) queue.push('active', { permissionMode: 'default' }, 'active-id');
+        const { session, rpcHandlers } = createAbortSession(queue);
+        let terminal!: RemoteLauncherTerminalHandlers;
+        class TestLauncher extends CopilotRemoteLauncher {
+            protected override setupTerminal(handlers: RemoteLauncherTerminalHandlers): void { terminal = handlers; }
+        }
+        const launcher = new TestLauncher(session as never, {});
+        const barrier = vi.spyOn(launcher as unknown as { waitForAbortBarrier(): Promise<void> }, 'waitForAbortBarrier');
+        const launched = launcher.launch();
+        let stop: Promise<unknown> | undefined;
+        try {
+            await vi.waitFor(() => expect(wait).toHaveBeenCalledTimes(1));
+            if (active) await vi.waitFor(() => expect(abortHarness.prompts).toHaveLength(1));
+            stop = rpcHandlers.get(RPC_METHODS.Abort)!();
+            await enteredPromise;
+            await vi.waitFor(() => expect(barrier).toHaveBeenCalledTimes(2));
+            consumed.mockClear();
+            if (reason === 'switch') await rpcHandlers.get(RPC_METHODS.Switch)!();
+            else await terminal.onExit();
+            release();
+            await stop;
+            await new Promise<void>(resolve => setImmediate(resolve));
+            expect(wait).toHaveBeenCalledTimes(1);
+            expect(consumed).not.toHaveBeenCalled();
+            expect(queue.pendingLocalIds()).toEqual([]);
+            await expect(launched).resolves.toBe(reason);
+        } finally {
+            release();
+            abortHarness.setCancelAllHook(null);
+            queue.close();
+            await stop?.catch(() => {});
+            abortHarness.settleActivePrompt();
+            await launched;
+        }
+    });
+
     it('does not ACK newly arriving input while an idle Stop is awaiting teardown', async () => {
         let entered!: () => void;
         let release!: () => void;

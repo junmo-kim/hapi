@@ -67,6 +67,7 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
 
         while (!this.shouldExit) {
             await this.waitForAbortBarrier();
+            if (this.shouldExit) break
             const waitSignal = this.abortController.signal
             const batch = await this.session.queue.waitForMessagesAndGetAsString(waitSignal)
             if (!batch) {

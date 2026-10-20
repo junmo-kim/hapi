@@ -585,6 +585,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         try {
         while (!this.shouldExit) {
             await this.waitForAbortBarrier();
+            if (this.shouldExit) break;
             const waitSignal = this.abortController.signal;
             const batch = await session.queue.waitForMessagesAndGetAsString(waitSignal);
 
