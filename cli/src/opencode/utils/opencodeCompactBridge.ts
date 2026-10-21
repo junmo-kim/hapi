@@ -413,6 +413,7 @@ type OpencodeMessageEntry = {
     reason?: unknown;
     summary?: unknown;
     providerContext?: unknown;
+    native?: unknown;
     error?: unknown;
     info?: {
         id?: unknown;
@@ -679,8 +680,10 @@ export async function fetchCompactionResultV2(opts: {
         // the compaction entry itself carries the outcome inline —
         // `{ type: 'compaction', status: 'running'|'completed'|'failed',
         //   reason: 'auto'|'manual', summary, providerContext }`.
-        // There is no assistant message linked via parentID like v1, so the
-        // v1 parsing rules do not apply here.
+        // OpenCode 2.1 dropped providerContext in favor of a generic `native`
+        // record (packages/schema/src/session-message.ts at v2.1.2). There is
+        // no assistant message linked via parentID like v1, so the v1 parsing
+        // rules do not apply here.
         const compactionEntries = entries.filter((entry) => entry.type === 'compaction');
         let candidates = compactionEntries;
         if (opts.expectedCompactionId) {
@@ -747,8 +750,13 @@ export async function fetchCompactionResultV2(opts: {
             // binary: `model.compaction?.type === "native"` skips the summary
             // prompt and publishes providerContext instead) legitimately
             // completes with an empty summary — the context checkpoint lives
-            // in providerContext.
-            if (isObjectRecord(entryRecord?.providerContext)) {
+            // in providerContext. OpenCode 2.1 stores the replacement window in
+            // `native.messages` instead and recognizes a native compaction by
+            // `native.messages !== undefined` (isNativeCompaction in
+            // packages/core/src/session/history.ts at v2.1.2), so accept either
+            // shape with the same test.
+            const nativeRecord = isObjectRecord(entryRecord?.native) ? entryRecord.native : null;
+            if (isObjectRecord(entryRecord?.providerContext) || nativeRecord?.messages !== undefined) {
                 return { status: 'success', text: '' };
             }
             return { status: 'failed', reason: 'OpenCode returned an empty compaction summary.' };

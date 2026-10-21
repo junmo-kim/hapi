@@ -731,6 +731,44 @@ describe('fetchCompactionResultV2', () => {
         expect(result).toEqual({ status: 'success', text: '' });
     });
 
+    it('a completed entry with an empty summary but a native window is a 2.1-native-compaction success', async () => {
+        // OpenCode 2.1 stores a native compaction's replacement window in
+        // native.messages (retained messages plus the assistant checkpoint)
+        // and still completes with summary: "", which must not be reported as
+        // an empty summary.
+        const entry = {
+            id: 'msg_native21',
+            type: 'compaction',
+            status: 'completed',
+            reason: 'manual',
+            summary: '',
+            native: { messages: [{ role: 'assistant', content: [{ type: 'text', text: 'checkpoint' }] }] }
+        };
+        const result = await fetchCompactionResultV2({
+            baseUrl: 'http://127.0.0.1:1',
+            sessionId: 's',
+            password: 'pw',
+            expectedCompactionId: 'msg_native21',
+            fetchImpl: async () => fixtureEntry(entry)
+        });
+        expect(result).toEqual({ status: 'success', text: '' });
+    });
+
+    it('a completed entry with an empty summary and a native record without a window is a failure', async () => {
+        // OpenCode 2.1 only treats a compaction as native when
+        // native.messages is present; other native metadata alone does not
+        // replace the summary.
+        const entry = { id: 'msg_native21_empty', type: 'compaction', status: 'completed', reason: 'manual', summary: '', native: {} };
+        const result = await fetchCompactionResultV2({
+            baseUrl: 'http://127.0.0.1:1',
+            sessionId: 's',
+            password: 'pw',
+            expectedCompactionId: 'msg_native21_empty',
+            fetchImpl: async () => fixtureEntry(entry)
+        });
+        expect(result).toEqual({ status: 'failed', reason: 'OpenCode returned an empty compaction summary.' });
+    });
+
     it('reads the v2 top-level error message ({type, message}) as the failure reason', async () => {
         // v2.0.29 session-error shape: { type, message } — safeErrorReason
         // must read the top-level message, not only the v1 data.message.
