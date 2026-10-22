@@ -96,9 +96,19 @@ export class AcpSdkBackend implements AgentBackend {
     private agentActivityListener: ((thinking: boolean) => void) | null = null;
     /** Debounce timer for state_update running → thinking (#1502 chatter). */
     private runningThinkingTimer: ReturnType<typeof setTimeout> | null = null;
-    private idleDrainTimer: ReturnType<typeof setTimeout> | null = null;
     private lastForwardedUsageUpdate: AcpUsageUpdate | null = null;
     private sessionUpdateQueue: Promise<void> = Promise.resolve();
+    /**
+     * Most recent prompt()'s onUpdate. Child handlers emit through it, and
+     * keep using it after the prompt ends so background subagent output is
+     * not dropped between turns.
+     */
+    private childEmitSink: ((msg: AgentMessage) => void) | null = null;
+    /** Per-child message handlers, created on first update and kept across parent prompt changes. */
+    private readonly childHandlers = new Map<string, {
+        handler: AcpMessageHandler;
+        timer: ReturnType<typeof setTimeout> | null;
+    }>();
 
     /** Retry configuration for ACP initialization */
     private static readonly INIT_RETRY_OPTIONS = {
@@ -635,6 +645,7 @@ export class AcpSdkBackend implements AgentBackend {
         this.latestUsageUpdate = null;
         this.lastForwardedUsageUpdate = null;
         this.promptUsageCallback = onUpdate;
+        this.childEmitSink = onUpdate;
         let stopReason: string | null = null;
         let promptUsage: AcpPromptUsage | null = null;
 
@@ -948,8 +959,13 @@ export class AcpSdkBackend implements AgentBackend {
         }
         this.sessionInfoRefreshTimers.clear();
         this.clearRunningThinkingTimer();
-        this.clearIdleDrainTimer();
         await this.sessionUpdateQueue;
+        for (const entry of this.childHandlers.values()) {
+            this.clearChildQuietTimer(entry);
+            entry.handler.drainBuffers();
+        }
+        this.childHandlers.clear();
+        this.childEmitSink = null;
         this.messageHandler?.drainBuffers();
         this.messageHandler = null;
         this.activeSessionId = null;
@@ -980,14 +996,107 @@ export class AcpSdkBackend implements AgentBackend {
     }
 
     /**
-     * OpenCode already projects a child's update the way it would have sent
-     * it as a parent `session/update` (child-prefixed tool call ids and
-     * titles), so it takes the same path. Child status events have no
-     * timeline counterpart and are ignored.
+     * OpenCode v2 child (background subagent) updates. Unlike ordinary
+     * session/update traffic, these never touch the parent's prompt-scoped
+     * `messageHandler`: OpenCode namespaces child tool call ids but not
+     * child text, so routing child text through the parent handler would
+     * merge it into the parent's (or another child's) text buffer, and the
+     * compact window's handler suppression would drop it. Each child gets
+     * its own handler keyed by `childSessionId`, kept across parent prompt
+     * changes, unaffected by `suppressUpdatesDuring` and by abort (OpenCode
+     * keeps children running after a cancelled turn). Emission goes through
+     * the most recent prompt()'s onUpdate; before any prompt has run there
+     * is no sink, so updates are dropped.
      */
     private handleChildSessionUpdate(params: unknown): void {
-        if (!isObject(params) || params.type !== 'update' || !isObject(params.update)) return;
-        this.handleSessionUpdate({ sessionId: asString(params.rootSessionId), update: params.update });
+        if (!isObject(params)) return;
+        // Same root-session guard handleSessionUpdate applies.
+        const rootSessionId = asString(params.rootSessionId);
+        if (this.activeSessionId && rootSessionId && rootSessionId !== this.activeSessionId) {
+            return;
+        }
+        const childSessionId = asString(params.childSessionId);
+        if (!childSessionId) return;
+
+        if (params.type === 'status') {
+            const status = asString(params.status);
+            if (status === 'completed' || status === 'failed' || status === 'interrupted') {
+                this.finishChildHandler(childSessionId);
+            }
+            // created/running have no handler to manage yet.
+            return;
+        }
+        if (params.type !== 'update' || !isObject(params.update)) return;
+
+        const entry = this.childHandlers.get(childSessionId) ?? this.createChildHandler(childSessionId);
+        if (!entry) return;
+        const update = params.update;
+        this.sessionUpdateQueue = this.sessionUpdateQueue
+            .then(async () => {
+                await entry.handler.handleUpdate(update);
+            })
+            .catch((error) => {
+                logger.debug(
+                    '[AcpSdkBackend] child session update failed:',
+                    error instanceof Error ? error.message : String(error)
+                );
+            });
+        this.armChildQuietTimer(childSessionId, entry);
+    }
+
+    private createChildHandler(childSessionId: string): { handler: AcpMessageHandler; timer: ReturnType<typeof setTimeout> | null } | null {
+        if (!this.childEmitSink) {
+            logger.debug('[AcpSdkBackend] dropping child update: no prompt has run yet');
+            return null;
+        }
+        const handler = new AcpMessageHandler((message) => {
+            this.childEmitSink?.(message);
+        }, {
+            textChunkMode: this.options.textChunkMode,
+            flavor: this.options.flavor,
+        });
+        const entry = { handler, timer: null };
+        this.childHandlers.set(childSessionId, entry);
+        return entry;
+    }
+
+    /** Per-child quiet timer: drains that child's buffers once its stream goes quiet. */
+    private armChildQuietTimer(
+        childSessionId: string,
+        entry: { handler: AcpMessageHandler; timer: ReturnType<typeof setTimeout> | null }
+    ): void {
+        if (entry.timer) {
+            clearTimeout(entry.timer);
+        }
+        entry.timer = setTimeout(() => {
+            entry.timer = null;
+            void this.sessionUpdateQueue.then(() => entry.handler.drainBuffers());
+        }, AcpSdkBackend.LATE_FLUSH_QUIET_PERIOD_MS);
+    }
+
+    private clearChildQuietTimer(entry: { handler: AcpMessageHandler; timer: ReturnType<typeof setTimeout> | null }): void {
+        if (entry.timer) {
+            clearTimeout(entry.timer);
+            entry.timer = null;
+        }
+    }
+
+    /** Child turn ended: flush its buffers now and retire its handler and timer. */
+    private finishChildHandler(childSessionId: string): void {
+        const entry = this.childHandlers.get(childSessionId);
+        if (!entry) return;
+        this.childHandlers.delete(childSessionId);
+        this.clearChildQuietTimer(entry);
+        this.sessionUpdateQueue = this.sessionUpdateQueue
+            .then(() => {
+                entry.handler.drainBuffers();
+            })
+            .catch((error) => {
+                logger.debug(
+                    '[AcpSdkBackend] child flush failed:',
+                    error instanceof Error ? error.message : String(error)
+                );
+            });
     }
 
     private handleSessionUpdate(params: unknown): void {
@@ -1021,34 +1130,6 @@ export class AcpSdkBackend implements AgentBackend {
                     error instanceof Error ? error.message : String(error)
                 );
             });
-        if (!this.isProcessingMessage) {
-            this.scheduleIdleDrain(handler);
-        }
-    }
-
-    /**
-     * With child session updates on, a background subagent can keep answering
-     * after the parent turn ended. Those updates would otherwise sit in the
-     * previous turn's text buffer until the next prompt starts, so flush them
-     * once the stream goes quiet. Also armed when a prompt settles, which
-     * covers an update queued during the prompt's final drain.
-     */
-    private scheduleIdleDrain(handler: AcpMessageHandler | null): void {
-        if (!this.options.childSessionUpdates) return;
-        this.clearIdleDrainTimer();
-        if (!handler) return;
-        this.idleDrainTimer = setTimeout(() => {
-            this.idleDrainTimer = null;
-            if (this.isProcessingMessage) return;
-            void this.sessionUpdateQueue.then(() => handler.drainBuffers());
-        }, AcpSdkBackend.LATE_FLUSH_QUIET_PERIOD_MS);
-    }
-
-    private clearIdleDrainTimer(): void {
-        if (this.idleDrainTimer) {
-            clearTimeout(this.idleDrainTimer);
-            this.idleDrainTimer = null;
-        }
     }
 
     private notifyAgentActivity(update: unknown): void {
@@ -1325,7 +1406,6 @@ export class AcpSdkBackend implements AgentBackend {
     }
 
     private notifyResponseComplete(): void {
-        this.scheduleIdleDrain(this.messageHandler);
         const resolvers = this.responseCompleteResolvers;
         this.responseCompleteResolvers = [];
         for (const resolve of resolvers) {
