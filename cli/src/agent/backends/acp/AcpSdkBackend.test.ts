@@ -1978,3 +1978,205 @@ describe('AcpSdkBackend acpModelSwitchViaConfigOption', () => {
         ]);
     });
 });
+
+describe('AcpSdkBackend OpenCode child session updates', () => {
+    type ChildBackendInternal = {
+        transport: {
+            sendRequest: (...args: unknown[]) => Promise<unknown>;
+            close: () => Promise<void>;
+        } | null;
+        handleNotification: (method: string, params: unknown) => void;
+    };
+
+    function useFastDrains(): void {
+        backendStatics.UPDATE_QUIET_PERIOD_MS = 5;
+        backendStatics.UPDATE_DRAIN_TIMEOUT_MS = 50;
+        backendStatics.PRE_PROMPT_UPDATE_QUIET_PERIOD_MS = 1;
+        backendStatics.PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS = 50;
+        backendStatics.LATE_FLUSH_INTERVAL_MS = 5;
+        backendStatics.LATE_FLUSH_QUIET_PERIOD_MS = 10;
+        backendStatics.LATE_FLUSH_WINDOW_MS = 50;
+    }
+
+    function childText(text: string): { method: string; params: unknown } {
+        return {
+            method: 'opencode/session/child_update',
+            params: {
+                rootSessionId: 'session-1',
+                childSessionId: 'ses_child',
+                parentSessionId: 'session-1',
+                depth: 1,
+                type: 'update',
+                update: {
+                    sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+                    content: { type: 'text', text },
+                    _meta: { 'opencode/child-session': { id: 'ses_child', parentID: 'session-1', depth: 1 } }
+                }
+            }
+        };
+    }
+
+    function texts(messages: AgentMessage[]): string[] {
+        return messages.flatMap((m) => (m.type === 'text' ? [m.text] : []));
+    }
+
+    it('routes child updates through the session/update pipeline during a prompt', async () => {
+        useFastDrains();
+        const backend = new AcpSdkBackend({ command: 'opencode', childSessionUpdates: true });
+        const internal = backend as unknown as ChildBackendInternal;
+        internal.transport = {
+            sendRequest: async () => {
+                const { method, params } = childText('child says hi');
+                internal.handleNotification(method, params);
+                return { stopReason: 'end_turn' };
+            },
+            close: async () => {}
+        };
+
+        const messages: AgentMessage[] = [];
+        await backend.prompt('session-1', [{ type: 'text', text: 'hi' }], (m) => messages.push(m));
+
+        expect(texts(messages)).toEqual(['child says hi']);
+    });
+
+    it('ignores child updates when the capability is not enabled', async () => {
+        useFastDrains();
+        const backend = new AcpSdkBackend({ command: 'opencode' });
+        const internal = backend as unknown as ChildBackendInternal;
+        internal.transport = {
+            sendRequest: async () => {
+                const { method, params } = childText('child says hi');
+                internal.handleNotification(method, params);
+                return { stopReason: 'end_turn' };
+            },
+            close: async () => {}
+        };
+
+        const messages: AgentMessage[] = [];
+        await backend.prompt('session-1', [{ type: 'text', text: 'hi' }], (m) => messages.push(m));
+
+        expect(texts(messages)).toEqual([]);
+    });
+
+    it('ignores child status events', async () => {
+        useFastDrains();
+        const backend = new AcpSdkBackend({ command: 'opencode', childSessionUpdates: true });
+        const internal = backend as unknown as ChildBackendInternal;
+        internal.transport = {
+            sendRequest: async () => {
+                internal.handleNotification('opencode/session/child_update', {
+                    rootSessionId: 'session-1',
+                    childSessionId: 'ses_child',
+                    parentSessionId: 'session-1',
+                    depth: 1,
+                    type: 'status',
+                    status: 'running'
+                });
+                return { stopReason: 'end_turn' };
+            },
+            close: async () => {}
+        };
+
+        const messages: AgentMessage[] = [];
+        await backend.prompt('session-1', [{ type: 'text', text: 'hi' }], (m) => messages.push(m));
+
+        expect(messages.filter((m) => m.type !== 'turn_complete')).toEqual([]);
+    });
+
+    it('emits a background child answer that arrives after the parent turn ended', async () => {
+        useFastDrains();
+        const backend = new AcpSdkBackend({ command: 'opencode', childSessionUpdates: true });
+        const internal = backend as unknown as ChildBackendInternal;
+        internal.transport = {
+            sendRequest: async () => ({ stopReason: 'end_turn' }),
+            close: async () => {}
+        };
+
+        const messages: AgentMessage[] = [];
+        await backend.prompt('session-1', [{ type: 'text', text: 'start a background task' }], (m) => messages.push(m));
+        expect(messages.some((m) => m.type === 'turn_complete')).toBe(true);
+
+        const { method, params } = childText('RESULT=391');
+        internal.handleNotification(method, params);
+        await sleep(100);
+
+        expect(texts(messages)).toEqual(['RESULT=391']);
+        const answerIdx = messages.findIndex((m) => m.type === 'text' && m.text === 'RESULT=391');
+        const turnCompleteIdx = messages.findIndex((m) => m.type === 'turn_complete');
+        expect(answerIdx).toBeGreaterThan(turnCompleteIdx);
+    });
+
+    it('flushes a child update queued while the parent prompt is settling', async () => {
+        useFastDrains();
+        const backend = new AcpSdkBackend({ command: 'opencode', childSessionUpdates: true });
+        const internal = backend as unknown as ChildBackendInternal;
+        internal.transport = {
+            sendRequest: async () => ({ stopReason: 'end_turn' }),
+            close: async () => {}
+        };
+
+        const messages: AgentMessage[] = [];
+        await backend.prompt('session-1', [{ type: 'text', text: 'start a background task' }], (m) => {
+            messages.push(m);
+            if (m.type === 'turn_complete') {
+                // After the prompt's final drain, before it settles.
+                const { method, params } = childText('RESULT=391');
+                internal.handleNotification(method, params);
+            }
+        });
+        await sleep(100);
+
+        expect(texts(messages)).toEqual(['RESULT=391']);
+    });
+
+    it('does not schedule idle flushes when child session updates are off', async () => {
+        useFastDrains();
+        const backend = new AcpSdkBackend({ command: 'opencode' });
+        const internal = backend as unknown as ChildBackendInternal & {
+            handleSessionUpdate: (params: unknown) => void;
+        };
+        internal.transport = {
+            sendRequest: async () => ({ stopReason: 'end_turn' }),
+            close: async () => {}
+        };
+
+        const messages: AgentMessage[] = [];
+        await backend.prompt('session-1', [{ type: 'text', text: 'hi' }], (m) => messages.push(m));
+        internal.handleSessionUpdate({
+            sessionId: 'session-1',
+            update: {
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+                content: { type: 'text', text: 'stray' }
+            }
+        });
+        await sleep(100);
+
+        expect(texts(messages)).toEqual([]);
+    });
+
+    it('keeps a pending background answer on the previous turn when a new prompt starts', async () => {
+        useFastDrains();
+        backendStatics.LATE_FLUSH_QUIET_PERIOD_MS = 1_000;
+        const backend = new AcpSdkBackend({ command: 'opencode', childSessionUpdates: true });
+        const internal = backend as unknown as ChildBackendInternal;
+        internal.transport = {
+            sendRequest: async () => ({ stopReason: 'end_turn' }),
+            close: async () => {}
+        };
+
+        const first: AgentMessage[] = [];
+        backendStatics.LATE_FLUSH_QUIET_PERIOD_MS = 10;
+        await backend.prompt('session-1', [{ type: 'text', text: 'first' }], (m) => first.push(m));
+        backendStatics.LATE_FLUSH_QUIET_PERIOD_MS = 1_000;
+
+        const { method, params } = childText('late child answer');
+        internal.handleNotification(method, params);
+
+        const second: AgentMessage[] = [];
+        await backend.prompt('session-1', [{ type: 'text', text: 'second' }], (m) => second.push(m));
+        await sleep(50);
+
+        expect(texts(first)).toEqual(['late child answer']);
+        expect(texts(second)).toEqual([]);
+    });
+});

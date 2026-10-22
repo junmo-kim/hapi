@@ -121,6 +121,7 @@ export function createOpencodeBackend(opts: {
             env: filterEnv(env),
             spawnCwd: opts.cwd ?? getInvokedCwd(),
             acpModelSwitchViaConfigOption: true,
+            childSessionUpdates: true,
             textChunkMode: 'delta',
             flavor: 'opencode',
         });

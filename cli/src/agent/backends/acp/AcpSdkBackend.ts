@@ -3,7 +3,7 @@ import type { AgentBackend, AgentMessage, AgentSessionConfig, PermissionRequest,
 import { asString, isObject } from '@hapi/protocol';
 import { AcpStdioTransport, type AcpStderrError } from './AcpStdioTransport';
 import { AcpMessageHandler, type AcpTextChunkMode } from './AcpMessageHandler';
-import { ACP_SESSION_UPDATE_TYPES } from './constants';
+import { ACP_SESSION_UPDATE_TYPES, OPENCODE_CHILD_SESSION_UPDATES, OPENCODE_CHILD_UPDATE_METHOD } from './constants';
 import { thinkingHintFromSessionUpdate } from './shouldBumpThinkingFromSessionUpdate';
 import { logger } from '@/ui/logger';
 import { withRetry } from '@/utils/time';
@@ -96,6 +96,7 @@ export class AcpSdkBackend implements AgentBackend {
     private agentActivityListener: ((thinking: boolean) => void) | null = null;
     /** Debounce timer for state_update running → thinking (#1502 chatter). */
     private runningThinkingTimer: ReturnType<typeof setTimeout> | null = null;
+    private idleDrainTimer: ReturnType<typeof setTimeout> | null = null;
     private lastForwardedUsageUpdate: AcpUsageUpdate | null = null;
     private sessionUpdateQueue: Promise<void> = Promise.resolve();
 
@@ -140,6 +141,13 @@ export class AcpSdkBackend implements AgentBackend {
         spawnCwd?: string;
         /** v2 model switching: use `session/set_config_option('model')` instead of `session/set_model` (removed in v2). */
         acpModelSwitchViaConfigOption?: boolean;
+        /**
+         * OpenCode v2: opt in to `opencode/session/child_update`. Without it a
+         * background subagent's output is never sent once the parent turn has
+         * ended (OpenCode suppresses ordinary updates while it follows the
+         * child in the background).
+         */
+        childSessionUpdates?: boolean;
         textChunkMode?: AcpTextChunkMode;
         flavor?: AgentFlavor;
     }) {}
@@ -177,15 +185,7 @@ export class AcpSdkBackend implements AgentBackend {
         this.transport = transport;
 
         this.transport.onNotification((method, params) => {
-            if (method === 'session/update') {
-                this.handleSessionUpdate(params);
-            } else if (
-                method === '_x.ai/settings/update'
-                && isObject(params)
-                && 'auto_permission_mode_enabled' in params
-            ) {
-                this.autoPermissionModeEnabled = params.auto_permission_mode_enabled === true;
-            }
+            this.handleNotification(method, params);
         });
 
         this.transport.onStderrError((error) => {
@@ -206,7 +206,8 @@ export class AcpSdkBackend implements AgentBackend {
                         // Cursor ACP exposes Composer's non-fast/fast choice as separate
                         // `model` + `fast` config options only when the client advertises
                         // this capability. Agents that do not know this metadata ignore it.
-                        parameterizedModelPicker: true
+                        parameterizedModelPicker: true,
+                        ...(this.options.childSessionUpdates ? { [OPENCODE_CHILD_SESSION_UPDATES]: true } : {})
                     }
                 },
                 clientInfo: {
@@ -947,6 +948,7 @@ export class AcpSdkBackend implements AgentBackend {
         }
         this.sessionInfoRefreshTimers.clear();
         this.clearRunningThinkingTimer();
+        this.clearIdleDrainTimer();
         await this.sessionUpdateQueue;
         this.messageHandler?.drainBuffers();
         this.messageHandler = null;
@@ -961,6 +963,31 @@ export class AcpSdkBackend implements AgentBackend {
         this.notifyResponseComplete();
         await this.transport.close();
         this.transport = null;
+    }
+
+    private handleNotification(method: string, params: unknown): void {
+        if (method === 'session/update') {
+            this.handleSessionUpdate(params);
+        } else if (method === OPENCODE_CHILD_UPDATE_METHOD && this.options.childSessionUpdates) {
+            this.handleChildSessionUpdate(params);
+        } else if (
+            method === '_x.ai/settings/update'
+            && isObject(params)
+            && 'auto_permission_mode_enabled' in params
+        ) {
+            this.autoPermissionModeEnabled = params.auto_permission_mode_enabled === true;
+        }
+    }
+
+    /**
+     * OpenCode already projects a child's update the way it would have sent
+     * it as a parent `session/update` (child-prefixed tool call ids and
+     * titles), so it takes the same path. Child status events have no
+     * timeline counterpart and are ignored.
+     */
+    private handleChildSessionUpdate(params: unknown): void {
+        if (!isObject(params) || params.type !== 'update' || !isObject(params.update)) return;
+        this.handleSessionUpdate({ sessionId: asString(params.rootSessionId), update: params.update });
     }
 
     private handleSessionUpdate(params: unknown): void {
@@ -994,6 +1021,34 @@ export class AcpSdkBackend implements AgentBackend {
                     error instanceof Error ? error.message : String(error)
                 );
             });
+        if (!this.isProcessingMessage) {
+            this.scheduleIdleDrain(handler);
+        }
+    }
+
+    /**
+     * With child session updates on, a background subagent can keep answering
+     * after the parent turn ended. Those updates would otherwise sit in the
+     * previous turn's text buffer until the next prompt starts, so flush them
+     * once the stream goes quiet. Also armed when a prompt settles, which
+     * covers an update queued during the prompt's final drain.
+     */
+    private scheduleIdleDrain(handler: AcpMessageHandler | null): void {
+        if (!this.options.childSessionUpdates) return;
+        this.clearIdleDrainTimer();
+        if (!handler) return;
+        this.idleDrainTimer = setTimeout(() => {
+            this.idleDrainTimer = null;
+            if (this.isProcessingMessage) return;
+            void this.sessionUpdateQueue.then(() => handler.drainBuffers());
+        }, AcpSdkBackend.LATE_FLUSH_QUIET_PERIOD_MS);
+    }
+
+    private clearIdleDrainTimer(): void {
+        if (this.idleDrainTimer) {
+            clearTimeout(this.idleDrainTimer);
+            this.idleDrainTimer = null;
+        }
     }
 
     private notifyAgentActivity(update: unknown): void {
@@ -1270,6 +1325,7 @@ export class AcpSdkBackend implements AgentBackend {
     }
 
     private notifyResponseComplete(): void {
+        this.scheduleIdleDrain(this.messageHandler);
         const resolvers = this.responseCompleteResolvers;
         this.responseCompleteResolvers = [];
         for (const resolve of resolvers) {
