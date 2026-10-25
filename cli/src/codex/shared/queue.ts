@@ -252,8 +252,8 @@ export class SharedCodexQueue {
         } while (cursor);
         return items;
     }
-    reconcile(): Promise<void> { return this.serial(() => this.reconcileLocked()); }
-    private async reconcileLocked(): Promise<void> {
+    reconcile(): Promise<string[]> { return this.serial(() => this.reconcileLocked()); }
+    private async reconcileLocked(): Promise<string[]> {
         const present = new Set<string>();
         const presentMembers = new Set<string>();
         for (const item of await this.list()) {
@@ -269,9 +269,12 @@ export class SharedCodexQueue {
         }
         // Absence could mean consumed, removed, or lost during engine restart.
         // Only an item event/history or a successful delete can decide which.
+        const dequeued: string[] = [];
         for (const [id, entry] of Object.entries(this.entries)) {
             if (entry.state !== 'queued') continue;
-            if (entry.batchId ? !presentMembers.has(id) : !present.has(id)) entry.state = 'unknown';
+            if (entry.batchId ? !presentMembers.has(id) : !present.has(id)) {
+                entry.state = 'unknown'; dequeued.push(id);
+            }
         }
         for (const batch of Object.values(this.batches)) {
             if (!present.has(batch.clientId) && batch.state === 'queued') batch.state = 'unknown';
@@ -280,6 +283,7 @@ export class SharedCodexQueue {
         const unknown = Object.entries(this.entries).filter(([, entry]) => entry.state === 'unknown').map(([id]) => id);
         if (unknown.length) this.uncertain(unknown);
         await this.publishReleased();
+        return dequeued;
     }
     /** Mirror original members, never the synthetic batch client ID as a user row. */
     private reconcileBatch(batch: Batch, item: Submission, presentMembers: Set<string>): void {

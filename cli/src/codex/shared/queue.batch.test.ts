@@ -782,3 +782,21 @@ it('does not reattach a restored standalone input when delayed sibling consumpti
     expect(f.queue.state('original-A')).toBe('released');
     expect(f.queue.state('original-B')).toBe('consumed');
 });
+
+
+it('reports batch dequeues using original members only after the native submission disappears', async () => {
+    const { queue, native, consumed, uncertain } = await fixture();
+    await queue.enqueue('original-A', text('MARKER-A'), false, 'same-mode');
+    await queue.enqueue('original-B', text('MARKER-B'), false, 'same-mode');
+    expect(native).toHaveLength(1);
+    expect(await queue.reconcile()).toEqual([]);
+    expect(queue.state('original-A')).toBe('queued');
+    expect(queue.state('original-B')).toBe('queued');
+    expect(uncertain).not.toHaveBeenCalled();
+    native.splice(0);
+    expect(await queue.reconcile()).toEqual(['original-A', 'original-B']);
+    expect(await queue.reconcile()).toEqual([]);
+    expect(queue.state('original-A')).toBe('unknown');
+    expect(queue.state('original-B')).toBe('unknown');
+    expect(consumed).not.toHaveBeenCalled();
+});

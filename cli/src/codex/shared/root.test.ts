@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { ApiSessionClient } from '@/api/apiSession';
 import type { AgentState, Metadata } from '@/api/types';
 import type { SessionBootstrapResult } from '@/agent/sessionFactory';
@@ -33,6 +34,12 @@ vi.mock('../codexAppServerClient', () => ({
                 this.notify?.('thread/settings/updated', { threadId: 'thread', threadSettings: this.settings });
                 return {};
             }
+            if (method === 'thread/queue/update') {
+                const entry = this.queue.find(item => item.id === params.queuedSubmissionId);
+                if (!entry) throw new Error('queued submission not found');
+                entry.input = params.input;
+                return { queuedSubmission: entry };
+            }
             if (method === 'thread/queue/add') {
                 const entry = { id: `queued-${this.queue.length}`, clientUserMessageId: params.clientUserMessageId, input: params.input };
                 this.queue.push(entry);
@@ -64,6 +71,8 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
     const rpc = new Map<string, (raw: unknown) => Promise<unknown>>();
     const send = vi.fn();
     const events = vi.fn();
+    const consumed = vi.fn();
+    const uncertain = vi.fn();
     const hubArchivedListeners: Array<() => void> = [];
     const session = {
         sessionId: 'sid', getMetadata: () => metadata,
@@ -79,7 +88,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
         },
         rpcHandlerManager: { registerHandler: (name: string, handler: (raw: unknown) => Promise<unknown>) => rpc.set(name, handler) },
         sendSessionEvent: events, sendAgentMessage: send, emitSessionReady() {},
-        sendUserMessage() {}, emitMessagesConsumed() {}, emitSteerIndeterminate() {}, syncNativeQueuedMessage() {},
+        sendUserMessage() {}, emitMessagesConsumed: consumed, emitSteerIndeterminate: uncertain, syncNativeQueuedMessage() {},
         sendSessionDeath() {}, async flush() {}, close() {}
     } as unknown as ApiSessionClient;
     const end = opts?.end ?? (async () => { throw new Error('Unexpected root archive'); });
@@ -99,15 +108,149 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
         abandoned(): void;
     };
     return {
-        root, native, rpc, send, events,
+        root, native, rpc, send, events, consumed, uncertain,
+        ledger: async () => JSON.parse(await readFile(join(directory, 'sid.queue.json'), 'utf8')),
         retry: (id: string) => retryMessage?.(id),
         submit: (text: string, id: string) => userMessage?.({ role: 'user', content: { type: 'text', text } }, id), metadata: () => metadata, state: () => state, updateState,
+        drain: () => (root as unknown as { notifications: Promise<void> }).notifications,
         reconnect: () => reconnect?.(),
         emitHubArchived: () => { for (const listener of hubArchivedListeners) listener(); },
         hubArchivedListenerCount: () => hubArchivedListeners.length,
         end,
     };
 }
+
+async function startCompaction(f: Awaited<ReturnType<typeof fixture>>, id = 'input', turnId = 'compacting-turn') {
+    f.native.queue = [{ id: `native-${id}`, clientUserMessageId: id, input: [{ type: 'text', text: id }] }];
+    await f.root.refresh();
+    f.native.queue = [];
+    // Native removes input before announcing the turn and before recording userMessage.
+    f.native.notify('thread/queue/changed', { threadId: 'thread' });
+    await vi.waitFor(() => expect(f.uncertain).toHaveBeenCalledWith(expect.arrayContaining([id])));
+    const turn = { id: turnId, status: 'inProgress', items: [] };
+    f.native.thread.turns.push(turn);
+    f.native.notify('turn/started', { threadId: 'thread', turn });
+    f.native.notify('item/started', { threadId: 'thread', turnId, item: { id: 'compact', type: 'contextCompaction' } });
+    return turn;
+}
+
+describe('compaction delivery confirmation', () => {
+    async function compactBatch() {
+        const f = await fixture();
+        await f.root.activate();
+        f.submit('BATCH-A', 'original-A');
+        await vi.waitFor(() => expect(f.native.queue).toHaveLength(1));
+        f.submit('BATCH-B', 'original-B');
+        await vi.waitFor(() => expect(f.native.queue[0]?.input).toEqual([
+            { type: 'text', text: 'BATCH-A' }, { type: 'text', text: 'BATCH-B' }
+        ]));
+        const submission = structuredClone(f.native.queue[0]);
+        f.native.notify('thread/queue/changed', { threadId: 'thread' });
+        await f.drain();
+        expect(f.uncertain).not.toHaveBeenCalled();
+        f.native.queue = [];
+        f.native.notify('thread/queue/changed', { threadId: 'thread' });
+        const turn = { id: 'batch-turn', status: 'inProgress', items: [] };
+        f.native.thread.turns.push(turn);
+        f.native.notify('turn/started', { threadId: 'thread', turn });
+        f.native.notify('item/started', { threadId: 'thread', turnId: turn.id,
+            item: { id: 'batch-compact', type: 'contextCompaction' } });
+        await f.drain();
+        expect(f.state().codexCompactionPendingMessageIds).toEqual(['original-A', 'original-B']);
+        expect(f.consumed).not.toHaveBeenCalled();
+        return { f, submission, turn };
+    }
+
+    it('tracks every original batch member during compaction until native acceptance', async () => {
+        const { f, submission, turn } = await compactBatch();
+        f.native.notify('item/started', { threadId: 'thread', turnId: turn.id,
+            item: { id: 'batch-user', type: 'userMessage', clientId: submission.clientUserMessageId, content: submission.input } });
+        await f.drain();
+        expect(f.consumed).toHaveBeenCalledExactlyOnceWith(['original-A', 'original-B'], { steered: undefined });
+        expect(f.state().codexCompactionPendingMessageIds).toEqual([]);
+        expect(f.native.queue).toEqual([]);
+    });
+
+    it.each(['completed', 'interrupted', 'failed'])('keeps an unaccepted batch uncertain after a %s compaction turn', async status => {
+        const { f, turn } = await compactBatch();
+        turn.status = status;
+        f.native.notify('turn/completed', { threadId: 'thread', turn });
+        await f.drain();
+        expect(f.state().codexCompactionPendingMessageIds).toEqual([]);
+        expect(f.consumed).not.toHaveBeenCalled();
+        const ledger = await f.ledger();
+        expect(ledger.entries['original-A'].state).toBe('unknown');
+        expect(ledger.entries['original-B'].state).toBe('unknown');
+        expect(f.native.queue).toEqual([]);
+    });
+
+    it('does not turn uncertainty discovered by a cold snapshot into live compaction evidence', async () => {
+        const f = await fixture();
+        f.native.queue = [{ id: 'old-native', clientUserMessageId: 'old', input: [] }];
+        await f.root.refresh();
+        f.native.queue = [];
+        await f.root.refresh();
+        expect(f.uncertain).toHaveBeenCalledWith(['old']);
+        f.native.thread.turns.push({ id: 'later', status: 'inProgress', items: [] });
+        f.native.notify('turn/started', { threadId: 'thread', turn: { id: 'later' } });
+        f.native.notify('item/started', { threadId: 'thread', turnId: 'later', item: { id: 'c', type: 'contextCompaction' } });
+        await f.drain();
+        expect(f.state()).toMatchObject({ codexCompactionPendingMessageIds: [] });
+    });
+
+    it('reports only freshly dequeued input as waiting, without acknowledging or replaying it', async () => {
+        const f = await fixture();
+        const request = vi.spyOn(f.root.client, 'request');
+        const turn = await startCompaction(f);
+        await vi.waitFor(() => expect(f.state()).toMatchObject({ codexCompactionPendingMessageIds: ['input'] }));
+        expect(f.consumed).not.toHaveBeenCalled();
+        expect(request.mock.calls.some(([method]) => method === 'thread/queue/add')).toBe(false);
+        f.native.notify('item/started', { threadId: 'thread', turnId: turn.id,
+            item: { id: 'user', type: 'userMessage', clientId: 'input', content: [] } });
+        await vi.waitFor(() => expect(f.consumed).toHaveBeenCalledWith(['input'], { steered: undefined }));
+        expect(f.state()).toMatchObject({ codexCompactionPendingMessageIds: [] });
+    });
+
+    it.each(['completed', 'interrupted', 'failed'])('restores uncertainty when the turn is %s without consumption', async status => {
+        const f = await fixture();
+        const turn = await startCompaction(f);
+        await vi.waitFor(() => expect(f.state()).toMatchObject({ codexCompactionPendingMessageIds: ['input'] }));
+        turn.status = status;
+        f.native.notify('turn/completed', { threadId: 'thread', turn });
+        await vi.waitFor(() => expect(f.state()).toMatchObject({ codexCompactionPendingMessageIds: [] }));
+        expect(f.consumed).not.toHaveBeenCalled();
+        await startCompaction(f, 'next', 'next-turn');
+        await vi.waitFor(() => expect(f.state()).toMatchObject({ codexCompactionPendingMessageIds: ['next'] }));
+    });
+
+    it('withdraws waiting at compaction completion and ignores child and stale turn events', async () => {
+        const f = await fixture();
+        const turn = await startCompaction(f);
+        await vi.waitFor(() => expect(f.state()).toMatchObject({ codexCompactionPendingMessageIds: ['input'] }));
+        for (const [threadId, turnId] of [['child', turn.id], ['thread', 'stale']]) {
+            f.native.notify('item/completed', { threadId, turnId, item: { id: 'other', type: 'contextCompaction' } });
+        }
+        await f.drain();
+        expect(f.state()).toMatchObject({ codexCompactionPendingMessageIds: ['input'] });
+        f.native.notify('item/completed', { threadId: 'thread', turnId: turn.id, item: { id: 'compact', type: 'contextCompaction' } });
+        await vi.waitFor(() => expect(f.state()).toMatchObject({ codexCompactionPendingMessageIds: [] }));
+        expect(f.consumed).not.toHaveBeenCalled();
+    });
+
+    it('does not keep waiting after native disconnect or stopping', async () => {
+        const f = await fixture();
+        await startCompaction(f);
+        await vi.waitFor(() => expect(f.state()).toMatchObject({ codexCompactionPendingMessageIds: ['input'] }));
+        f.native.initialized = false;
+        f.native.abandoned();
+        expect(f.state()).toMatchObject({ codexCompactionPendingMessageIds: [] });
+        await vi.waitFor(() => expect(f.native.initialized).toBe(true));
+        await f.root.refresh();
+        expect(f.state()).toMatchObject({ codexCompactionPendingMessageIds: [] });
+        f.root.stopAccepting();
+        expect(f.state()).toMatchObject({ codexCompactionPendingMessageIds: [] });
+    });
+});
 
 async function completePlan(f: Awaited<ReturnType<typeof fixture>>, status = 'completed') {
     await f.root.applySettings({ collaborationMode: 'plan' });
