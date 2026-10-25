@@ -573,6 +573,51 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         (backendModule.createOpencodeBackend as unknown as ReturnType<typeof vi.fn>).mockClear();
     });
 
+    it('forks the actual next prompt after v1 automatic compaction adds internal user messages', async () => {
+        const messages: Array<{ info: { id: string; role: string }; parts?: unknown[] }> = [];
+        let forkBody: unknown;
+        const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+            const url = String(input);
+            if (init?.method === 'POST') {
+                forkBody = JSON.parse(init.body as string);
+                return new Response(JSON.stringify({ id: 'ses_compacted_fork' }));
+            }
+            return new Response(JSON.stringify(url.endsWith('/message')
+                ? messages
+                : { paths: { '/session/{sessionID}/fork': { post: {} } } }));
+        });
+        harness.promptImpl = async () => {
+            if (harness.promptCount === 1) {
+                messages.push(
+                    { info: { id: 'msg_first', role: 'user' } },
+                    { info: { id: 'msg_reply', role: 'assistant' } },
+                    { info: { id: 'msg_compaction', role: 'user' }, parts: [{ type: 'compaction', auto: true }] },
+                    { info: { id: 'msg_summary', role: 'assistant' } },
+                    { info: { id: 'msg_continue', role: 'user' }, parts: [{ type: 'text', synthetic: true, text: 'Continue if you have next steps' }] }
+                );
+            } else {
+                messages.push({ info: { id: 'msg_second', role: 'user' } });
+            }
+        };
+        const { session, rpcHandlers } = createSessionStub([
+            { message: 'first', localId: 'local-first', mode: createMode() },
+            { message: 'second', localId: 'local-second', mode: createMode() }
+        ], { keepOpen: true });
+        const launcherPromise = opencodeRemoteLauncher(session as never);
+        try {
+            await vi.waitFor(() => expect(harness.clientMetadata?.conversationHistoryPoints).toMatchObject({ 'local-second': true }));
+            await new Promise<void>((resolve) => setImmediate(resolve));
+            await expect(rpcHandlers.get('fork-conversation')!({ messageLocalId: 'local-second' }))
+                .resolves.toEqual({ nativeSessionId: 'ses_compacted_fork' });
+            expect(forkBody).toEqual({ messageID: 'msg_second' });
+            expect(harness.clientMetadata?.conversationHistoryIndexes).toMatchObject({ 'local-first': 0, 'local-second': 3 });
+        } finally {
+            session.queue.close();
+            await launcherPromise;
+            fetchSpy.mockRestore();
+        }
+    });
+
     it('records no fork point when native history is unavailable', async () => {
         const { OpencodeConversationHistory } = await import('./conversationHistory');
         const countSpy = vi.spyOn(OpencodeConversationHistory.prototype, 'getNativeUserMessageCount')
@@ -586,6 +631,25 @@ describe('opencodeRemoteLauncher inline model switch', () => {
             await opencodeRemoteLauncher(session as never);
             expect(countSpy).toHaveBeenCalled();
             expect(rememberSpy).not.toHaveBeenCalled();
+        } finally {
+            countSpy.mockRestore();
+            rememberSpy.mockRestore();
+        }
+    });
+
+    it('retries the native count for the next batch instead of reusing an unavailable position', async () => {
+        const { OpencodeConversationHistory } = await import('./conversationHistory');
+        const countSpy = vi.spyOn(OpencodeConversationHistory.prototype, 'getNativeUserMessageCount')
+            .mockResolvedValueOnce(null).mockResolvedValueOnce(3);
+        const rememberSpy = vi.spyOn(OpencodeConversationHistory.prototype, 'rememberPromptIndex');
+        try {
+            const { session } = createSessionStub([
+                { message: 'unavailable', localId: 'local-unavailable', mode: createMode() },
+                { message: 'recovered', localId: 'local-recovered', mode: createMode() }
+            ]);
+            await opencodeRemoteLauncher(session as never);
+            expect(countSpy).toHaveBeenCalledTimes(2);
+            expect(rememberSpy).toHaveBeenCalledExactlyOnceWith('local-recovered', 3);
         } finally {
             countSpy.mockRestore();
             rememberSpy.mockRestore();

@@ -156,12 +156,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     /** Subscription to the agent's own server event stream; null until the ACP session id is known, closed in cleanup(). */
     private eventStream: OpencodeEventSubscription | null = null;
     private stallErrorReportedForPrompt = false;
-    /** Next native user-message index for fork points; null until the first successful count. */
-    private nativeUserIndexCursor: number | null = null;
     /** Cancels the detached capability probe when remote mode is left. */
     private readonly historyProbeAbortController = new AbortController();
-    /** Guards the one-shot native history count attempt (failure must not retry every turn). */
-    private nativeUserCountAttempted = false;
     private readonly conversationHistory = new OpencodeConversationHistory(() => ({
         baseUrl: this.v2RestInfo?.baseUrl ?? this.baseUrl,
         mode: this.majorVersion ?? 'v1',
@@ -858,8 +854,6 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                         // Compaction can reindex native history: old absolute
                         // indexes and their locators are invalid afterwards.
                         this.conversationHistory.clearPromptIndexes();
-                        this.nativeUserIndexCursor = null;
-                        this.nativeUserCountAttempted = false;
                         try {
                             session.client.updateMetadata((metadata) => ({
                                 ...metadata,
@@ -897,35 +891,21 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 session.onThinkingChange(true);
 
             try {
-                // Derive the fork-point index from native history rather than a
-                // launcher-local counter: resumes and local→remote handoffs can
-                // hold native prompts this process never indexed. The count is
-                // fetched once and then advanced locally — re-reading the full
-                // transcript before every prompt would cost quadratic transfer
-                // on long sessions. When native history is unavailable, record
-                // nothing rather than guessing: a synthetic index would fork at
-                // the wrong boundary forever.
-                let nativeUserCount = this.nativeUserIndexCursor;
-                if (nativeUserCount === null && !this.nativeUserCountAttempted) {
-                    // Try the native count exactly once: an endpoint that stalls
-                    // or fails must not re-add its timeout to every turn. The
-                    // lookup also honours the batch abort signal so a Stop that
-                    // lands mid-lookup still cancels the turn.
-                    this.nativeUserCountAttempted = true;
-                    nativeUserCount = await this.conversationHistory.getNativeUserMessageCount(waitSignal);
-                }
+                // Native automatic compaction can append both a user-role
+                // compaction marker and a synthetic continuation. Re-read the
+                // native count before each prompt instead of assuming that the
+                // previous HAPI batch added exactly one user message. This is
+                // one bounded native-history read per batch; a failed read must
+                // omit this point, never reuse a potentially stale position.
+                const nativeUserCount = await this.conversationHistory.getNativeUserMessageCount(waitSignal);
                 if (waitSignal.aborted || this.shouldExit) {
-                    // The aborted turn persisted nothing; allow a fresh count
-                    // attempt on the next prompt instead of staying locked out.
-                    this.nativeUserIndexCursor = null;
-                    this.nativeUserCountAttempted = false;
                     continue;
                 }
                 if (nativeUserCount === null) {
                     logger.warn('[opencode-remote] Native history unavailable; skipping fork point');
                 }
                 logger.debug(`[opencode-remote] history point: localId=${batch.items[0]?.localId} index=${nativeUserCount} items=${batch.items.length}`);
-                // Record the locator and advance the cursor only after OpenCode
+                // Record the locator only after OpenCode
                 // accepted the prompt — a rejected turn persists no user message,
                 // so committing earlier would leave a forkable locator at an
                 // index that belongs to no prompt.
@@ -935,19 +915,12 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 if (nativeUserCount !== null) {
                     // Multi-message batches are joined into one native prompt, so
                     // only the first item's localId becomes a fork point (same
-                    // merge semantics as grok); the cursor advances by one
-                    // because natively exactly one user message was added.
-                    this.nativeUserIndexCursor = nativeUserCount + 1;
+                    // merge semantics as grok).
                     this.conversationHistory.rememberPromptIndex(batch.items[0]?.localId, nativeUserCount);
                     void this.conversationHistory.publish().catch(() => {});
                 }
                 void backend.refreshSessionInfo(acpSessionId, session.path);
                 } catch (error) {
-                    // The cursor is intentionally not advanced on failure; reset
-                    // it so the next turn re-derives the index from native
-                    // history instead of trusting a possibly stale count.
-                    this.nativeUserIndexCursor = null;
-                    this.nativeUserCountAttempted = false;
                     logger.warn('[opencode-remote] prompt failed', error);
                     this.reportPromptFailure(error);
                 } finally {
