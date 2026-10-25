@@ -2711,6 +2711,30 @@ describe('opencodeRemoteLauncher v2 flavor wiring', () => {
         expect(harness.v2PasswordCalls).toEqual([{ pid: 4242 }]);
     });
 
+    it('v2: connects history probes and message counts to the discovered authenticated server', async () => {
+        harness.detectedVersion = 'v2';
+        harness.discoveredPort = 41234;
+        harness.discoveredPassword = 'fixture-password';
+        const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+            const url = String(input);
+            return new Response(JSON.stringify(url.includes('/message?')
+                ? { data: [], cursor: {} }
+                : { paths: { '/api/session/{sessionID}/fork': { post: {} } } }));
+        });
+        try {
+            const { session } = createSessionStub([{ message: 'hello', mode: createMode() }]);
+            await opencodeRemoteLauncher(session as never);
+            const messageCall = fetchSpy.mock.calls.find(([url]) => String(url).includes('/message?'));
+            expect(messageCall).toBeDefined();
+            expect(String(messageCall![0])).toContain('http://127.0.0.1:41234/api/session/');
+            expect(messageCall![1]?.headers).toMatchObject({
+                authorization: 'Basic ' + Buffer.from('opencode:fixture-password').toString('base64')
+            });
+        } finally {
+            fetchSpy.mockRestore();
+        }
+    });
+
     it('v2: scopes port discovery to the serve process so an unrelated descendant listener cannot win', async () => {
         // GPT finding: the tree can own other listeners (e.g. a configured
         // MCP server with a lower port). Discovery must scan the serve

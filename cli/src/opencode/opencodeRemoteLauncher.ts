@@ -163,7 +163,11 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     /** Guards the one-shot native history count attempt (failure must not retry every turn). */
     private nativeUserCountAttempted = false;
     private readonly conversationHistory = new OpencodeConversationHistory(() => ({
-        baseUrl: this.baseUrl,
+        baseUrl: this.v2RestInfo?.baseUrl ?? this.baseUrl,
+        mode: this.majorVersion ?? 'v1',
+        headers: this.v2RestInfo ? {
+            authorization: 'Basic ' + Buffer.from(`opencode:${this.v2RestInfo.password}`).toString('base64')
+        } : undefined,
         sessionId: this.activeAcpSessionId
     }));
     /** opencode major version detected once per session; v2 changes spawn args and baseUrl discovery. */

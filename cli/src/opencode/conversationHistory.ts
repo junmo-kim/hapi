@@ -17,6 +17,13 @@ type OpencodeMessageEntry = {
     };
 };
 
+type HistoryContext = {
+    baseUrl: string | null;
+    sessionId: string | null;
+    mode?: 'v1' | 'v2';
+    headers?: Record<string, string>;
+};
+
 function isRouteMissing(error: unknown): boolean {
     const message = error instanceof Error ? error.message : String(error);
     return /\((404|405)\)/.test(message);
@@ -39,7 +46,7 @@ export class OpencodeConversationHistory {
     private publishCapabilities: (() => Promise<void>) | null = null;
 
     constructor(
-        private readonly getContext: () => { baseUrl: string | null; sessionId: string | null },
+        private readonly getContext: () => HistoryContext,
         fetchImpl?: FetchLike
     ) {
         this.fetchFn = fetchImpl ?? (async (url: string, init?: RequestInit) => {
@@ -149,6 +156,7 @@ export class OpencodeConversationHistory {
     private async fetchDocText(url: string, signal?: AbortSignal): Promise<string> {
         const response = await this.fetchFn(url, {
             method: 'GET',
+            headers: this.getContext().headers,
             signal: AbortSignal.any([AbortSignal.timeout(5_000), ...(signal ? [signal] : [])])
         });
         if (!response.ok) throw new Error(`GET ${url} failed (${response.status})`);
@@ -157,7 +165,7 @@ export class OpencodeConversationHistory {
 
     async fork(messageLocalId?: string): Promise<ForkConversationRpcResult> {
         if (this.busy) throw new Error('Session is busy');
-        const { baseUrl, sessionId } = this.getContext();
+        const { baseUrl, sessionId, mode, headers } = this.getContext();
         if (!baseUrl || !sessionId) throw new Error('OpenCode session is not ready');
 
         let messageID: string | undefined;
@@ -176,11 +184,11 @@ export class OpencodeConversationHistory {
 
         try {
             const response = await this.fetchFn(
-                `${baseUrl}/session/${encodeURIComponent(sessionId)}/fork`,
+                `${baseUrl}${mode === 'v2' ? '/api' : ''}/session/${encodeURIComponent(sessionId)}/fork`,
                 {
                     method: 'POST',
-                    headers: { 'content-type': 'application/json' },
-                    body: JSON.stringify(messageID ? { messageID } : {}),
+                    headers: { ...headers, 'content-type': 'application/json' },
+                    body: JSON.stringify(messageID ? (mode === 'v2' ? { before: messageID } : { messageID }) : {}),
                     signal: AbortSignal.timeout(10_000)
                 }
             );
@@ -188,7 +196,8 @@ export class OpencodeConversationHistory {
                 throw new Error(`OpenCode fork request failed (${response.status}): ${(await response.text().catch(() => '')).slice(0, 300)}`);
             }
             const data: unknown = await response.json().catch(() => null);
-            const nativeSessionId = asString(isObjectRecord(data) ? data.id : null);
+            const session = mode === 'v2' && isObjectRecord(data) ? data.data : data;
+            const nativeSessionId = asString(isObjectRecord(session) ? session.id : null);
             if (!nativeSessionId) throw new Error('OpenCode fork did not return a session id');
 
             this.states = markSupported(this.states, 'forkCurrent');
@@ -211,6 +220,12 @@ export class OpencodeConversationHistory {
     }
 
     private async resolveUserMessageID(baseUrl: string, sessionId: string, targetPromptIndex: number): Promise<string> {
+        if (this.getContext().mode === 'v2') {
+            const messages = await this.fetchV2UserMessages(baseUrl, sessionId, AbortSignal.timeout(10_000));
+            const id = asString(messages[targetPromptIndex]?.id);
+            if (!id) throw new Error(`OpenCode has no user message at index ${targetPromptIndex}`);
+            return id;
+        }
         const response = await this.fetchFn(
             `${baseUrl}/session/${encodeURIComponent(sessionId)}/message`,
             { method: 'GET', signal: AbortSignal.timeout(10_000) }
@@ -236,6 +251,10 @@ export class OpencodeConversationHistory {
         const { baseUrl, sessionId } = this.getContext();
         if (!baseUrl || !sessionId) return null;
         try {
+            if (this.getContext().mode === 'v2') {
+                const combined = AbortSignal.any([AbortSignal.timeout(5_000), ...(signal ? [signal] : [])]);
+                return (await this.fetchV2UserMessages(baseUrl, sessionId, combined)).length;
+            }
             const response = await this.fetchFn(
                 `${baseUrl}/session/${encodeURIComponent(sessionId)}/message`,
                 // Bounded wait: this lookup runs before every first prompt, so a
@@ -253,5 +272,33 @@ export class OpencodeConversationHistory {
         } catch {
             return null;
         }
+    }
+
+    private async fetchV2UserMessages(baseUrl: string, sessionId: string, signal: AbortSignal): Promise<Record<string, unknown>[]> {
+        const messages: Record<string, unknown>[] = [];
+        const seen = new Set<string>();
+        let cursor: string | null = null;
+        do {
+            const query = new URLSearchParams({ type: 'user', limit: '200' });
+            if (cursor) query.set('cursor', cursor);
+            else query.set('order', 'asc');
+            const response = await this.fetchFn(
+                `${baseUrl}/api/session/${encodeURIComponent(sessionId)}/message?${query}`,
+                { method: 'GET', headers: this.getContext().headers, signal }
+            );
+            if (!response.ok) throw new Error(`OpenCode message lookup failed (${response.status})`);
+            const data: unknown = await response.json();
+            if (!isObjectRecord(data) || !Array.isArray(data.data)) throw new Error('OpenCode message list is not available');
+            for (const entry of data.data) {
+                if (!isObjectRecord(entry) || entry.type !== 'user' || !asString(entry.id)) {
+                    throw new Error('OpenCode returned an invalid user message');
+                }
+                messages.push(entry);
+            }
+            cursor = isObjectRecord(data.cursor) ? asString(data.cursor.next) : null;
+            if (cursor && seen.has(cursor)) throw new Error('OpenCode repeated a message cursor');
+            if (cursor) seen.add(cursor);
+        } while (cursor);
+        return messages;
     }
 }

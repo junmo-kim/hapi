@@ -4,6 +4,62 @@ import type { FetchLike } from './utils/opencodeCompactBridge';
 
 const noSignal = new AbortController().signal;
 
+describe('OpenCode v2 history transport', () => {
+    const context = () => ({
+        baseUrl: 'http://127.0.0.1:48273', sessionId: 'ses_v2', mode: 'v2' as const,
+        headers: { authorization: 'Basic fixture' }
+    });
+
+    it('probes authenticated docs and forks current using the v2 response envelope', async () => {
+        const fetchImpl: FetchLike = vi.fn(async (url, init) => {
+            expect(init?.headers).toMatchObject({ authorization: 'Basic fixture' });
+            if (init?.method === 'POST') {
+                expect(url).toBe('http://127.0.0.1:48273/api/session/ses_v2/fork');
+                expect(JSON.parse(init.body as string)).toEqual({});
+                return jsonResponse({ data: { id: 'ses_child' } });
+            }
+            return jsonResponse({ paths: { '/api/session/{sessionID}/fork': { post: {} } } });
+        });
+        const history = new OpencodeConversationHistory(context, fetchImpl);
+        await history.probeCapabilities();
+        expect(history.getCapabilitiesForMetadata()?.conversationHistory?.forkAtMessage).toBe(true);
+        await expect(history.fork()).resolves.toEqual({ nativeSessionId: 'ses_child' });
+    });
+
+    it('counts all paginated user messages and resolves an exclusive before boundary on a later page', async () => {
+        const fetchImpl: FetchLike = vi.fn(async (url, init) => {
+            expect(init?.headers).toMatchObject({ authorization: 'Basic fixture' });
+            if (init?.method === 'POST') {
+                expect(JSON.parse(init.body as string)).toEqual({ before: 'msg_second' });
+                return jsonResponse({ data: { id: 'ses_child' } });
+            }
+            const parsed = new URL(url);
+            expect(parsed.pathname).toBe('/api/session/ses_v2/message');
+            expect(parsed.searchParams.get('type')).toBe('user');
+            if (parsed.searchParams.has('cursor')) {
+                expect(parsed.searchParams.get('cursor')).toBe('page-2');
+                expect(parsed.searchParams.has('order')).toBe(false);
+                return jsonResponse({ data: [{ id: 'msg_second', type: 'user', text: 'second' }], cursor: {} });
+            }
+            expect(parsed.searchParams.get('order')).toBe('asc');
+            return jsonResponse({ data: [{ id: 'msg_first', type: 'user', text: 'first' }], cursor: { next: 'page-2' } });
+        });
+        const history = new OpencodeConversationHistory(context, fetchImpl);
+        await expect(history.getNativeUserMessageCount()).resolves.toBe(2);
+        history.rememberPromptIndex('local-second', 1);
+        await expect(history.fork('local-second')).resolves.toEqual({ nativeSessionId: 'ses_child' });
+    });
+
+    it('fails closed on pagination failure and never posts a guessed boundary', async () => {
+        const fetchImpl = vi.fn(async () => jsonResponse({ data: [], cursor: { next: 'repeated' } }));
+        const history = new OpencodeConversationHistory(context, fetchImpl);
+        await expect(history.getNativeUserMessageCount()).resolves.toBeNull();
+        history.rememberPromptIndex('local-one', 0);
+        await expect(history.fork('local-one')).rejects.toThrow('repeated a message cursor');
+        expect(fetchImpl.mock.calls.every((call) => (call as unknown[])[1] && ((call as unknown[])[1] as RequestInit).method === 'GET')).toBe(true);
+    });
+});
+
 function jsonResponse(body: unknown, status = 200): Response {
     return new Response(JSON.stringify(body), {
         status,
