@@ -778,9 +778,12 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             const roundSummaryAbortController = new AbortController();
             this.roundSummaryAbortController = roundSummaryAbortController;
             this.roundSummaryPhase = 'snapshot';
-            const roundSnapshot = this.nextRoundSnapshot ?? (this.baseUrl
+            const roundApi = this.v2RestInfo
+                ? { baseUrl: this.v2RestInfo.baseUrl, api: { version: 'v2' as const, password: this.v2RestInfo.password } }
+                : this.baseUrl ? { baseUrl: this.baseUrl } : null;
+            const roundSnapshot = this.nextRoundSnapshot ?? (roundApi
                 ? await captureOpencodeRoundSnapshot({
-                    baseUrl: this.baseUrl,
+                    ...roundApi,
                     sessionId: acpSessionId,
                     signal: roundSummaryAbortController.signal
                 }).catch((error) => {
@@ -834,12 +837,12 @@ ${messageText}`;
                     this.roundSummaryAbortController === roundSummaryAbortController
                     && !roundSummaryAbortController.signal.aborted
                     && !this.shouldExit
-                    && this.baseUrl
+                    && roundApi
                     && roundSnapshot
                 ) {
                     const result = await settleRoundSummary(
                         fetchOpencodeRoundSummary({
-                            baseUrl: this.baseUrl,
+                            ...roundApi,
                             sessionId: acpSessionId,
                             promptText: messageText,
                             snapshot: roundSnapshot,

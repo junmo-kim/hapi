@@ -2777,6 +2777,38 @@ function backendCreateArgsIncludePortFlags(): boolean {
 }
 
 describe('opencodeRemoteLauncher v2 flavor wiring', () => {
+    it('collects a v2 round through the discovered authenticated API before ready', async () => {
+        harness.detectedVersion = 'v2';
+        harness.discoveredPort = 41234;
+        harness.discoveredPassword = 'fixture-password';
+        const { session, sentAgentMessages, sessionEvents, deliveryEvents } = createSessionStub([{ message: 'v2 round', mode: createMode() }]);
+
+        await opencodeRemoteLauncher(session as never);
+
+        expect(roundSummaryHarness.snapshotCalls).toEqual([expect.objectContaining({
+            baseUrl: 'http://127.0.0.1:41234', api: { version: 'v2', password: 'fixture-password' }
+        })]);
+        expect(roundSummaryHarness.summaryCalls).toEqual([expect.objectContaining({
+            baseUrl: 'http://127.0.0.1:41234', api: { version: 'v2', password: 'fixture-password' }
+        })]);
+        expect(sentAgentMessages).toEqual([expect.objectContaining({ type: 'round-summary' })]);
+        expect(sessionEvents).toEqual([{ type: 'ready' }]);
+        expect(deliveryEvents).toEqual(['agent', 'ready']);
+    });
+
+    it('preserves the v2 prompt and ready when API discovery fails', async () => {
+        harness.detectedVersion = 'v2';
+        const { session, sentAgentMessages, sessionEvents } = createSessionStub([{ message: 'v2 without discovery', mode: createMode() }]);
+
+        await opencodeRemoteLauncher(session as never);
+
+        expect(JSON.stringify(harness.promptContents)).toContain('v2 without discovery');
+        expect(roundSummaryHarness.snapshotCalls).toEqual([]);
+        expect(roundSummaryHarness.summaryCalls).toEqual([]);
+        expect(sentAgentMessages).toEqual([]);
+        expect(sessionEvents).toContainEqual({ type: 'ready' });
+    });
+
     afterEach(async () => {
         harness.detectedVersion = null;
         harness.loopbackListeners = [];

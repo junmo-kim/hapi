@@ -1,3 +1,4 @@
+import { Buffer } from 'node:buffer';
 import type { FetchLike } from './opencodeCompactBridge';
 
 export type OpencodeRoundSnapshot = {
@@ -42,13 +43,40 @@ type RoundFetchOptions = {
     signal: AbortSignal;
     fetchImpl?: FetchLike;
     timeoutMs?: number;
+    api?: { version: 'v2'; password: string };
 };
 
 const ROUND_FETCH_TIMEOUT_MS = 1_000;
 const ROUND_MESSAGE_LIMIT = 512;
+// OpenCode v2's SessionMessagesQuery allows at most 200 messages per page.
+const V2_MESSAGE_PAGE_LIMIT = 200;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-    return typeof value === 'object' && value !== null;
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function normalizeV2Messages(payload: unknown): OpencodeMessage[] | null {
+    if (!isRecord(payload) || !Array.isArray(payload.data)) return null;
+    const messages: OpencodeMessage[] = [];
+    for (const entry of payload.data) {
+        if (!isRecord(entry)) return null;
+        const hasUsage = entry.type === 'assistant'
+            || (entry.type === 'compaction' && (entry.tokens !== undefined || entry.cost !== undefined));
+        if (hasUsage && entry.type === 'compaction' && entry.status !== 'completed' && entry.status !== 'failed') return null;
+        const model = isRecord(entry.model) ? entry.model : null;
+        messages.push({
+            info: {
+                id: entry.id,
+                role: hasUsage ? 'assistant' : entry.type === 'user' ? 'user' : undefined,
+                providerID: model?.providerID,
+                modelID: model?.id,
+                tokens: entry.tokens,
+                cost: entry.cost
+            },
+            parts: entry.type === 'user' ? [{ type: 'text', text: entry.text }] : undefined
+        });
+    }
+    return messages;
 }
 
 function safeInteger(value: unknown): number | null {
@@ -89,12 +117,18 @@ async function fetchMessages(options: RoundFetchOptions): Promise<OpencodeMessag
     });
     try {
         const request = (async (): Promise<OpencodeMessage[] | null> => {
+            const api = options.api;
             const response = await fetchFn(
-                options.baseUrl + '/session/' + encodeURIComponent(options.sessionId) + '/message?limit=' + ROUND_MESSAGE_LIMIT,
-                { method: 'GET', signal: controller.signal }
+                options.baseUrl + (api ? '/api/session/' : '/session/') + encodeURIComponent(options.sessionId)
+                    + '/message?limit=' + (api ? V2_MESSAGE_PAGE_LIMIT : ROUND_MESSAGE_LIMIT),
+                {
+                    method: 'GET', signal: controller.signal,
+                    ...(api ? { headers: { authorization: 'Basic ' + Buffer.from(`opencode:${api.password}`).toString('base64') } } : {})
+                }
             );
             if (!response.ok) return null;
             const parsed: unknown = await response.json();
+            if (api) return normalizeV2Messages(parsed);
             return Array.isArray(parsed) ? parsed as OpencodeMessage[] : null;
         })();
         return await Promise.race([request, timedOut]);
@@ -121,7 +155,7 @@ export async function captureOpencodeRoundSnapshot(options: RoundFetchOptions): 
     return { messageIds };
 }
 
-function parseAssistantUsage(message: OpencodeMessage): { key: string; usage: OpencodeRoundModelUsage; cost: number } | null {
+function parseAssistantUsage(message: OpencodeMessage, allowMissingCost: boolean): { key: string; usage: OpencodeRoundModelUsage; cost: number | undefined } | null {
     if (message.info?.role !== 'assistant') return null;
     const providerID = message.info.providerID;
     const modelID = message.info.modelID;
@@ -135,7 +169,7 @@ function parseAssistantUsage(message: OpencodeMessage): { key: string; usage: Op
     const reasoningTokens = safeInteger(tokens.reasoning);
     const cacheReadInputTokens = safeInteger(cache.read);
     const cacheCreationInputTokens = safeInteger(cache.write);
-    const cost = finiteNonNegative(message.info.cost);
+    const cost = allowMissingCost && message.info.cost === undefined ? undefined : finiteNonNegative(message.info.cost);
     if (inputTokens === null || outputTokens === null || reasoningTokens === null || cacheReadInputTokens === null || cacheCreationInputTokens === null || cost === null) return null;
 
     const displayOutputTokens = outputTokens + reasoningTokens;
@@ -200,10 +234,11 @@ export async function fetchOpencodeRoundSummary(options: RoundFetchOptions & {
     };
     const modelUsage = new Map<string, OpencodeRoundModelUsage>();
     let totalCostUsd = 0;
+    let hasCompleteCost = true;
     let numTurns = 0;
     for (const message of delta) {
         if (message.info?.role !== 'assistant') continue;
-        const parsed = parseAssistantUsage(message);
+        const parsed = parseAssistantUsage(message, options.api?.version === 'v2');
         if (!parsed) return { snapshot, summary: null };
         let perModel = modelUsage.get(parsed.key);
         if (!perModel) {
@@ -216,7 +251,8 @@ export async function fetchOpencodeRoundSummary(options: RoundFetchOptions & {
             modelUsage.set(parsed.key, perModel);
         }
         if (!addUsage(perModel, parsed.usage) || !addUsage(usage, parsed.usage)) return { snapshot, summary: null };
-        totalCostUsd += parsed.cost;
+        if (parsed.cost === undefined) hasCompleteCost = false;
+        else totalCostUsd += parsed.cost;
         numTurns++;
     }
     if (numTurns === 0 || !Number.isSafeInteger(numTurns) || !Number.isFinite(totalCostUsd)) {
@@ -228,7 +264,7 @@ export async function fetchOpencodeRoundSummary(options: RoundFetchOptions & {
         summary: {
             usage,
             modelUsage: Object.fromEntries(modelUsage),
-            ...(totalCostUsd > 0 ? { totalCostUsd } : {}),
+            ...(hasCompleteCost && totalCostUsd > 0 ? { totalCostUsd } : {}),
             numTurns,
             durationMs: options.durationMs
         }
