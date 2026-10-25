@@ -580,21 +580,57 @@ describe('session model', () => {
                 _machineId: string,
                 _directory: string,
                 agent: string,
-                model?: string
+                model?: string,
+                _modelReasoningEffort?: string,
+                _yolo?: boolean,
+                _sessionType?: string,
+                _worktreeName?: string,
+                _resumeSessionId?: string,
+                _effort?: string,
+                _permissionMode?: string,
+                _serviceTier?: string,
+                existingSessionId?: string,
+                _collaborationMode?: string,
+                _copilotAgentMode?: string,
+                _startingMode?: string,
+                _forkSession?: boolean,
+                reservedSessionId?: string
             ) => {
                 capturedModel = model
-                return { type: 'success', sessionId: 'spawned-cursor-session' }
+                return {
+                    type: 'success',
+                    sessionId: reservedSessionId ?? existingSessionId ?? 'spawned-cursor-session',
+                }
             }
 
             const result = await engine.spawnSession(
                 'machine-cursor',
                 '/tmp/project',
                 'cursor',
-                'composer-2.5[fast=false]'
+                'composer-2.5[fast=false]',
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                'default'
             )
 
-            expect(result).toEqual({ type: 'success', sessionId: 'spawned-cursor-session' })
+            expect(result.type).toBe('success')
             expect(capturedModel).toBe('composer-2.5[fast=false]')
+            if (result.type === 'success') {
+                expect(typeof result.sessionId).toBe('string')
+                expect(result.sessionId.length).toBeGreaterThan(0)
+                const meta = store.sessions.getSession(result.sessionId)?.metadata as { flavor?: string } | null
+                expect(meta?.flavor).toBe('cursor')
+            }
         } finally {
             engine.stop()
         }
@@ -881,6 +917,68 @@ describe('session model', () => {
         expect(activity).toHaveLength(1)
         expect(activity[0].sessionId).toBe(session.id)
         expect(activity[0].updatedAt).toBe(messages[0]?.createdAt)
+    })
+
+    it('sets backgroundTaskCount from Claude background_tasks_changed snapshots', () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+        const session = cache.getOrCreateSession(
+            'session-cli-background-tasks',
+            { path: '/tmp/project', host: 'localhost', flavor: 'claude' },
+            null,
+            'default'
+        )
+        const handlers = new Map<string, (payload: unknown) => void>()
+
+        registerSessionHandlers({
+            on: (event: string, handler: (payload: unknown) => void) => {
+                handlers.set(event, handler)
+            },
+            to: () => ({ emit: () => {} })
+        } as never, {
+            store,
+            resolveSessionAccess: (sessionId) => {
+                const stored = store.sessions.getSessionByNamespace(sessionId, 'default')
+                return stored ? { ok: true, value: stored } : { ok: false, reason: 'not-found' }
+            },
+            emitAccessError: () => {},
+            onBackgroundTaskCount: (sessionId, count) => cache.setBackgroundTaskCount(sessionId, count)
+        })
+        const send = (data: unknown) => handlers.get('message')?.({
+            sid: session.id,
+            message: JSON.stringify({ role: 'agent', content: { type: 'output', data } })
+        })
+        const snapshot = (taskIds: string[]) => send({
+            type: 'system',
+            subtype: 'background_tasks_changed',
+            uuid: `snapshot-${taskIds.length}`,
+            tasks: taskIds.map((task_id) => ({ task_id, task_type: 'local_bash' }))
+        })
+
+        snapshot(['b1', 'b2'])
+        expect(cache.getSession(session.id)?.backgroundTaskCount).toBe(2)
+
+        // The Bash tool result that announces a background task is not a count signal.
+        send({
+            type: 'user',
+            uuid: 'tool-result',
+            message: {
+                role: 'user',
+                content: [{ type: 'tool_result', tool_use_id: 't1', content: 'Command running in background with ID: b3.' }]
+            }
+        })
+        expect(cache.getSession(session.id)?.backgroundTaskCount).toBe(2)
+
+        snapshot([])
+        expect(cache.getSession(session.id)?.backgroundTaskCount).toBe(0)
+        // Snapshots are session state, not chat rows; only the tool result is stored.
+        expect(store.messages.getMessages(session.id)).toHaveLength(1)
+        expect(events
+            .filter((event) => event.type === 'session-updated' && event.sessionId === session.id)
+            .map((event) => (event as { data?: { backgroundTaskCount?: number } }).data?.backgroundTaskCount)
+            .filter((count) => count !== undefined)
+        ).toEqual([2, 0])
     })
 
     it('records activity only for the first messages-consumed transition while retaining duplicate acknowledgements', () => {
@@ -2396,9 +2494,9 @@ describe('session model', () => {
             const result = await engine.reopenSession(session.id, 'default')
             expect(result).toMatchObject({ type: 'error', message: expect.stringContaining('still active') })
             expect(engine.getSessionByNamespace(session.id, 'default')?.active).toBe(true)
-            // Pi keeps the persisted archive snapshot until bootstrap succeeds,
-            // so a failed stop never needs to reconstruct it from memory.
-            expect(engine.getSessionByNamespace(session.id, 'default')?.metadata?.lifecycleState).toBe('archived')
+            // #1911 M1: reopen clears archive before spawn; a live Pi child that
+            // failed stop stays active and must not be re-archived from memory.
+            expect(engine.getSessionByNamespace(session.id, 'default')?.metadata?.lifecycleState).not.toBe('archived')
             expect(engine.getSessionByNamespace(session.id, 'default')?.metadata?.piResumeAttempt?.state).toBe('quarantined')
             expect(await engine.reopenSession(session.id, 'default')).toMatchObject({ type: 'error', message: 'Pi resume is already in progress' })
 
@@ -2450,7 +2548,11 @@ describe('session model', () => {
                 type: 'error', message: 'webhook timeout'
             })
             expect(engine.getSessionByNamespace(session.id, 'default')?.metadata?.piResumeAttempt?.state).toBe('quarantined')
-            expect(engine.getSessionByNamespace(session.id, 'default')?.metadata?.lifecycleState).toBe('archived')
+            // #1911 M1: archive cleared before spawn; quarantine refuses reopen
+            // rollback (rollbackSafe:false). Snapshot lives on the attempt.
+            expect(engine.getSessionByNamespace(session.id, 'default')?.metadata?.lifecycleState).not.toBe('archived')
+            expect(engine.getSessionByNamespace(session.id, 'default')?.metadata?.piResumeAttempt?.archiveSnapshot)
+                .toMatchObject({ lifecycleState: 'archived', archivedBy: 'cli' })
             expect(await engine.reopenSession(session.id, 'default')).toMatchObject({
                 type: 'error', message: 'Pi resume is already in progress'
             })

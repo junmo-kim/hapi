@@ -46,11 +46,18 @@ describe('SessionRowSummary background status', () => {
         localStorage.clear()
     })
 
-    it('shows the basic running label in Basic mode', () => {
-        renderSummary(false)
+    it('draws the background spinner with the thinking spinner markup, only in blue', () => {
+        const background = renderSummary(false).container.querySelector('svg.animate-spin-slow')
+        cleanup()
+        const thinking = render(
+            <I18nProvider>
+                <SessionRowSummary session={makeSummary({ thinking: true, backgroundTaskCount: 0 })} />
+            </I18nProvider>
+        ).container.querySelector('svg.animate-spin-slow')
 
-        expect(screen.getByText('Running', { exact: true })).toBeInTheDocument()
-        expect(screen.queryByRole('tooltip', { hidden: true })).not.toBeInTheDocument()
+        expect(screen.queryByText('Running', { exact: true })).not.toBeInTheDocument()
+        expect(background?.outerHTML.replace('text-blue-400', 'text-[var(--app-badge-success-text)]'))
+            .toBe(thinking?.outerHTML)
     })
 
     it('shows a detailed background dot with the task-count tooltip in Extended mode', () => {
