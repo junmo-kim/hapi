@@ -12,6 +12,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -24,8 +25,6 @@ import app.hapi.companion.ui.theme.hapi
 import app.hapi.protocol.chat.ChatToolCall
 import app.hapi.protocol.chat.getInputString
 import app.hapi.protocol.chat.getInputStringAny
-import app.hapi.protocol.chat.isAskUserQuestionToolName
-import app.hapi.protocol.chat.isRequestUserInputToolName
 import app.hapi.protocol.git.DiffFile
 import app.hapi.protocol.git.UnifiedDiffParser
 import app.hapi.protocol.wire.HapiJson
@@ -48,17 +47,29 @@ import kotlinx.serialization.json.JsonPrimitive
  * - `Write` → the written content as a code block;
  * - `CodexDiff` (and any input/result that parses as a unified diff) → [DiffView];
  * - `TodoWrite`/`update_plan` → checklist rows;
- * - Ask/RequestUserInput → questions + options, read-only;
+ * - `ExitPlanMode`/`exit_plan_mode` → complete Markdown proposal from input;
+ * - Ask/RequestUserInput → questions + selected answers, read-only;
  * - anything else → pretty-printed JSON input, then the generic result.
  */
 @Composable
 internal fun ToolCallBody(tool: ChatToolCall, basePath: String?, modifier: Modifier = Modifier) {
+    val questionTool = isQuestionDetailsTool(tool.name)
+    val plan = planProposalMarkdown(tool)
+    val answers = if (questionTool) tool.permission?.answers else null
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        SectionLabel(stringResource(R.string.settings_usage_input))
-        ToolInputSection(tool)
-        ToolResultSection(tool)
-        var sourceExpanded by remember(tool.id) { mutableStateOf(false) }
-        if (tool.input != null || tool.result != null) {
+        if (questionTool) {
+            QuestionToolBody(tool)
+        } else if (plan != null) {
+            // Plans are reading documents, never paged/truncated tool source.
+            Markdown(text = plan)
+            if (planProposalShowsResult(tool)) ToolResultSection(tool)
+        } else {
+            SectionLabel(stringResource(R.string.settings_usage_input))
+            ToolInputSection(tool)
+            ToolResultSection(tool)
+        }
+        var sourceExpanded by rememberSaveable(tool.id) { mutableStateOf(false) }
+        if (tool.input != null || tool.result != null || answers != null) {
             TextButton(onClick = { sourceExpanded = !sourceExpanded }) {
                 Text(stringResource(R.string.files_viewer_source))
             }
@@ -71,8 +82,28 @@ internal fun ToolCallBody(tool: ChatToolCall, basePath: String?, modifier: Modif
                     SectionLabel(stringResource(R.string.chat_result))
                     GenericJsonInput(it)
                 }
+                answers?.let {
+                    SectionLabel(stringResource(R.string.tool_question_answers))
+                    GenericJsonInput(it)
+                }
             }
         }
+    }
+}
+
+@Composable
+private fun QuestionToolBody(tool: ChatToolCall) {
+    val details by produceState<QuestionToolDetails?>(null, tool) {
+        value = withContext(Dispatchers.Default) { questionToolDetails(tool) }
+    }
+    val prepared = details
+    if (prepared == null) {
+        androidx.compose.material3.CircularProgressIndicator()
+    } else {
+        SectionLabel(stringResource(if (prepared.hasAnswers) R.string.tool_questions_answers else R.string.settings_usage_input))
+        if (prepared.questions.isEmpty()) GenericJsonInput(tool.input)
+        else QuestionDetailsView(prepared.questions)
+        if (prepared.showResult) ToolResultSection(tool)
     }
 }
 
@@ -143,7 +174,7 @@ private fun ToolInputSection(tool: ChatToolCall) {
 
         name == "CodexDiff" -> {
             val unified = getInputString(input, "unified_diff")
-            val files = remember(unified) { unified?.takeIf { it.length <= TOOL_TEXT_PAGE_SIZE }?.let(::tryParseDiff) }
+            val files = remember(unified) { unified?.takeIf { fitsToolPage(it) }?.let(::tryParseDiff) }
             if (files != null) {
                 files.forEach { DiffView(file = it) }
             } else if (unified != null) {
@@ -169,7 +200,7 @@ private fun ToolInputSection(tool: ChatToolCall) {
             }
         }
 
-        isAskUserQuestionToolName(name) || isRequestUserInputToolName(name) || name == "request_user_input_async" -> {
+        name == "request_user_input_async" -> {
             QuestionsReadOnly(input)
         }
 
@@ -258,7 +289,6 @@ private fun ToolResultSection(tool: ChatToolCall) {
     if (result is JsonNull) return
     val isError = tool.state == "error"
     val rendering by produceState<ResultRendering?>(null, tool) {
-        value = null
         value = withContext(Dispatchers.Default) { resultRendering(tool) }
     }
 
@@ -287,10 +317,10 @@ internal fun resultRendering(tool: ChatToolCall): ResultRendering? {
         if (text.isBlank()) return null
         return when (val style = toolResultStyle(tool)) {
             is ToolResultStyle.Code -> ResultRendering.Code(text, style.language)
-            ToolResultStyle.Markdown -> if (text.length <= TOOL_TEXT_PAGE_SIZE) ResultRendering.Prose(text)
+            ToolResultStyle.Markdown -> if (fitsToolPage(text)) ResultRendering.Prose(text)
                 else ResultRendering.Code(text, "markdown")
             ToolResultStyle.Terminal -> {
-                if (tool.state != "error" && text.length <= TOOL_TEXT_PAGE_SIZE) {
+                if (tool.state != "error" && fitsToolPage(text)) {
                     tryParseDiff(text)?.let { return ResultRendering.Diffs(it) }
                 }
                 ResultRendering.Terminal(text)

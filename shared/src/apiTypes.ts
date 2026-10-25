@@ -26,6 +26,11 @@ export type CreateOrLoadMachineRequest = z.infer<typeof CreateOrLoadMachineReque
 
 export const CreateOrLoadSessionRequestSchema = z.object({
     id: z.string().uuid().optional(),
+    /**
+     * When true with `id`, bind a hub-preallocated stub (overwrite tag/metadata)
+     * instead of create/getOrCreate. Rejects non-stub rows (#1911 adopt).
+     */
+    adopt: z.boolean().optional(),
     tag: z.string().min(1),
     metadata: z.unknown(),
     agentState: z.unknown().nullable().optional(),
@@ -33,6 +38,14 @@ export const CreateOrLoadSessionRequestSchema = z.object({
     modelReasoningEffort: z.string().optional(),
     effort: z.string().optional(),
     machine: CreateOrLoadMachineRequestSchema.optional()
+}).superRefine((value, ctx) => {
+    if (value.adopt === true && !value.id) {
+        ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: 'adopt requires id',
+            path: ['id'],
+        })
+    }
 })
 
 export type CreateOrLoadSessionRequest = z.infer<typeof CreateOrLoadSessionRequestSchema>
@@ -558,6 +571,18 @@ export type ForkConversationResponse = {
     sessionId: string
 }
 
+export const ImplementCodexPlanRequestSchema = z.object({
+    planId: z.string().min(1)
+})
+
+export type ImplementCodexPlanRequest = z.infer<typeof ImplementCodexPlanRequestSchema>
+
+export type ImplementCodexPlanResult = { ok: true } | {
+    ok: false
+    code: 'stale_plan' | 'unavailable' | 'indeterminate' | 'failed'
+    error: string
+}
+
 export const RewindConversationRequestSchema = z.object({
     messageLocalId: z.string().min(1)
 })
@@ -571,6 +596,8 @@ export type RewindConversationResponse = {
 /** CLI → hub RPC result for native fork (before HAPI child binding). */
 export type ForkConversationRpcResult = {
     nativeSessionId: string
+    /** Shared runtimes bind the child themselves; hub must not spawn another engine. */
+    sessionId?: string
     /** When true, hub must spawn with --fork-session (Claude). */
     forkSession?: boolean
 }
@@ -824,6 +851,22 @@ export type CopilotModelsResponse = {
 
 export type ListCopilotModelsResponse = CopilotModelsResponse
 
+export type KimiModelSummary = {
+    /** Kimi model alias as used by `--model` / `session/set_model`. */
+    modelId: string
+    name?: string
+    provider?: string
+}
+
+export type KimiModelsResponse = {
+    success: boolean
+    availableModels?: KimiModelSummary[]
+    currentModelId?: string | null
+    error?: string
+}
+
+export type ListKimiModelsResponse = KimiModelsResponse
+
 export type GrokReasoningEffortResponse = {
     success: boolean
     options?: GrokReasoningEffortOption[]
@@ -863,7 +906,15 @@ export type ListAgyModelsResponse = AgyModelsResponse
 
 export type CursorModelSummary = OpencodeModelSummary
 
-export type CursorModelsResponse = OpencodeModelsResponse
+export type CursorModelsResponse = OpencodeModelsResponse & {
+    /**
+     * True when ACP advertised Cursor's parameterized model picker: bare model bases
+     * plus separate `fast` / `thought_level` config options. The ACP apply path
+     * expresses variant CLI skus through those options, so variant rows stay valid
+     * even when the catalog itself carries no bracket wire ids.
+     */
+    parameterized?: boolean
+}
 
 export type ListCursorModelsResponse = CursorModelsResponse
 

@@ -45,6 +45,7 @@ export interface HapiMcpBridge {
 }
 
 export interface HapiMcpBridgeOptions {
+    exportSessionEnv?: boolean;
     emitTitleSummary?: boolean;
     enableChangeTitle?: boolean;
     skillLookup?: {
@@ -76,19 +77,23 @@ export async function buildHapiMcpBridge(
         }
     }
     // Belt-and-suspenders: onMaterialized already exports; keep env set for non-lazy too.
-    exportHapiSessionEnv(client.sessionId);
+    if (options.exportSessionEnv !== false) exportHapiSessionEnv(client.sessionId);
 
     const happyServer = await startHappyServer(client, {
         emitTitleSummary: options.emitTitleSummary,
         enableChangeTitle: options.enableChangeTitle,
         skillLookup: options.skillLookup
     });
+    // Stamp the hub row id so orphanReap can find MCP helpers after the agent
+    // root dies without a full tree kill (#2003 / #1911 follow-up).
     const bridgeCommand = getHappyCliCommand([
         'mcp',
         '--url',
         happyServer.url,
         '--tools',
-        happyServer.toolNames.join(',')
+        happyServer.toolNames.join(','),
+        '--hapi-session-id',
+        client.sessionId,
     ]);
     const tools: Record<string, McpServerToolConfig> = {
         display_image: {

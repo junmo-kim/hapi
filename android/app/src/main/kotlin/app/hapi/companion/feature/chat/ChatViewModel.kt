@@ -2,6 +2,7 @@ package app.hapi.companion.feature.chat
 
 import androidx.annotation.MainThread
 import app.hapi.companion.feature.chat.attachments.ComposerAttachments
+import app.hapi.companion.feature.chat.blocks.planProposalMarkdown
 import app.hapi.companion.feature.chat.composer.ChatDrafts
 import app.hapi.companion.feature.chat.composer.SlashCommands
 import app.hapi.companion.feature.chat.composer.appendTranscript
@@ -31,6 +32,7 @@ import app.hapi.protocol.catalog.PermissionMode
 import app.hapi.protocol.catalog.PermissionModes
 import app.hapi.protocol.chat.NormalizedMessage
 import app.hapi.protocol.chat.ToolGroupBlock
+import app.hapi.protocol.chat.ToolCallBlock
 import app.hapi.protocol.chat.ToolGroupingOptions
 import app.hapi.protocol.chat.VisibleChatBlock
 import app.hapi.protocol.chat.buildVisibleChatBlocks
@@ -143,6 +145,7 @@ data class ChatUiState(
     val historyVersion: Long = 0,
     val messagesVersion: Long = 0,
     val requiresLatestReset: Boolean = false,
+    val processSteps: Map<String, Int> = emptyMap(),
 )
 
 /** Composer bar state (M3a). */
@@ -152,6 +155,8 @@ data class ComposerUiState(
     val isSending: Boolean,
     /** A turn is active: long-press send offers Steer; an empty draft shows Stop. */
     val canSteer: Boolean,
+    /** Local focus intent; does not replace or send the draft. */
+    val focusRequest: Long = 0,
 )
 
 /** One row of the queued-messages bar (uninvoked sends). */
@@ -363,6 +368,29 @@ class ChatViewModel(
     private var historyGate: AtomicBoolean? = null
     private var historyDemand = false
     private var readerFollowsTail = true
+    private var transcriptVisible = true
+    internal val inspection = ChatInspectionState()
+    private val transcriptProjection = TranscriptProjection()
+    val reconnecting: StateFlow<Boolean> = sseEngine.reconnecting(subscriptionKey)
+        .stateIn(scope, SharingStarted.Eagerly, false)
+
+    @MainThread
+    internal fun setTranscriptVisible(visible: Boolean) {
+        transcriptVisible = visible
+        if (!visible) {
+            historyDemand = false
+            cancelHistory()
+        }
+    }
+
+    @MainThread
+    internal fun beginInspection() {
+        jumpJob?.cancel()
+        jumpJob = null
+        mutableJumpingLatest.value = false
+        readingViewportChanged(followsTail = false, needsOlder = false)
+        setTranscriptVisible(false)
+    }
     private var historyPumpScheduled = false
     private var lastHistoryLayout: Pair<Long, Boolean>? = null
     private var lastHistoryEpoch: Long? = null
@@ -383,6 +411,14 @@ class ChatViewModel(
     private val queuedOpPending = MutableStateFlow(false)
     private val permissionOverrides = MutableStateFlow<Map<String, PermissionRowOverride>>(emptyMap())
     private val configOpPending = MutableStateFlow(false)
+    private val composerFocusRequest = MutableStateFlow(0L)
+    private data class CodexPlanOperations(
+        val pendingPlanId: String? = null,
+        val implementedPlanIds: Set<String> = emptySet(),
+        val continuedPlanIds: Set<String> = emptySet(),
+        val errors: Map<String, CodexPlanFailure> = emptyMap(),
+    )
+    private val codexPlanOperations = MutableStateFlow(CodexPlanOperations())
 
     private sealed interface CodexModels {
         data object Idle : CodexModels
@@ -454,11 +490,13 @@ class ChatViewModel(
         composerText,
         sendInFlight,
         sessionStateFlow(),
-    ) { text, sending, session ->
+        composerFocusRequest,
+    ) { text, sending, session, focusRequest ->
         ComposerUiState(
             text = text,
             isSending = sending,
             canSteer = session.thinking && session.active,
+            focusRequest = focusRequest,
         )
     }.stateIn(scope, SharingStarted.Eagerly, ComposerUiState(text = "", isSending = false, canSteer = false))
 
@@ -472,6 +510,13 @@ class ChatViewModel(
             }
         }
         .stateIn(scope, SharingStarted.Eagerly, emptyList())
+
+    /** Plan availability updates independently of the transcript pipeline. */
+    val codexPlanActions: StateFlow<CodexPlanActions> = combine(
+        sessionStore.sessionDetail(sessionId), codexPlanOperations, sendInFlight, configOpPending,
+    ) { detail, operations, sending, configuring ->
+        buildCodexPlanActions(detail, operations, sending || configuring)
+    }.stateIn(scope, SharingStarted.Eagerly, CodexPlanActions())
 
     /** Session config sheet model. */
     val config: StateFlow<SessionConfigUi> = combine(
@@ -513,7 +558,7 @@ class ChatViewModel(
 
     // ------------------------------------------------------------ lifecycle --
 
-    /** Idempotent; call from the screen's composition, paired with [stop]. */
+    /** Idempotent; the conversation host starts this, the holder calls [stop] on exit. */
     @MainThread
     fun start() {
         if (started) return
@@ -621,6 +666,7 @@ class ChatViewModel(
 
     /** Initial-load error state → try again (detail + tail). */
     fun retry() {
+        sseEngine.requestReconnect(subscriptionKey)
         scope.launch {
             loadDetail()
             windowStore.value?.let { store -> runCatching { store.syncTail(ensureAfterCurrent = true) } }
@@ -637,6 +683,7 @@ class ChatViewModel(
 
     @MainThread
     fun readingViewportChanged(followsTail: Boolean, needsOlder: Boolean) {
+        if (!transcriptVisible) return
         val changed = readerFollowsTail != followsTail
         readerFollowsTail = followsTail
         historyDemand = needsOlder
@@ -685,7 +732,7 @@ class ChatViewModel(
     private fun pumpHistory() {
         val store = windowStore.value ?: return
         val window = store.state.value
-        if (!started || mutableJumpingLatest.value || !historyDemand || !window.hasMore ||
+        if (!started || !transcriptVisible || mutableJumpingLatest.value || !historyDemand || !window.hasMore ||
             window.isSyncingTail || window.isLoadingMore || olderJob != null ||
             mutableHistoryPaging.value.phase != ChatHistoryPagingState.Phase.Idle) return
         val request = mutableHistoryPaging.value.begin()
@@ -886,16 +933,33 @@ class ChatViewModel(
         if (text.isEmpty() && attachmentMetadata == null) return
         composerText.value = ""
         draftJob?.cancel()
+        sendInFlight.value = true
         scope.launch {
-            drafts?.let { runCatching { it.clear(sessionId) } }
-            performSend(
-                text = text,
-                localId = localIdGenerator(),
-                createdAt = now(),
-                deliveryMode = if (steer) "steer" else "queue",
-                attachments = attachmentMetadata,
-                isRetry = false,
-            )
+            try {
+                drafts?.let { runCatching { it.clear(sessionId) } }
+                if (attachmentMetadata == null && (text == "/clear" || text == "/new") &&
+                    sessionStore.sessionDetail(sessionId).first()?.metadata?.capabilities?.concurrentClients == true) {
+                    sendInFlight.value = true
+                    try {
+                        val result = api.clearConversation(sessionId)
+                        _events.tryEmit(ChatEvent.SessionSuperseded(result.sessionId))
+                    } catch (cancellation: CancellationException) {
+                        throw cancellation
+                    } catch (error: Exception) {
+                        composerText.value = text
+                        _events.tryEmit(ChatEvent.Notice(ChatNotice.ReopenFailed(error.message)))
+                    } finally { sendInFlight.value = false }
+                    return@launch
+                }
+                performSend(
+                    text = text,
+                    localId = localIdGenerator(),
+                    createdAt = now(),
+                    deliveryMode = if (steer) "steer" else "queue",
+                    attachments = attachmentMetadata,
+                    isRetry = false,
+                )
+            } finally { sendInFlight.value = false }
         }
     }
 
@@ -1397,10 +1461,91 @@ class ChatViewModel(
         }
     }
 
+    // ---------------------------------------------------- Codex plan actions --
+
+    private fun buildCodexPlanActions(
+        detail: Session?, operations: CodexPlanOperations, busy: Boolean,
+    ): CodexPlanActions = CodexPlanActions(
+        proposalId = detail?.agentState?.codexPlanProposalId?.takeIf {
+            detail.active && detail.metadata?.flavor == "codex"
+                && detail.metadata?.capabilities?.concurrentClients == true
+                && it !in operations.implementedPlanIds
+                && it !in operations.continuedPlanIds
+        },
+        pendingPlanId = operations.pendingPlanId,
+        disabled = busy || detail?.thinking == true,
+        errors = operations.errors,
+    )
+
+    // Re-read live inputs for callbacks; a combined StateFlow can lag a UI tap.
+    private fun currentCodexPlanActions() = buildCodexPlanActions(
+        sessionStore.currentDetail(sessionId), codexPlanOperations.value,
+        sendInFlight.value || configOpPending.value,
+    )
+
+    fun implementCodexPlan(planId: String) {
+        val previous = codexPlanOperations.value
+        if (!currentCodexPlanActions().forPlan(planId).canAct) return
+        if (!codexPlanOperations.compareAndSet(previous, previous.copy(
+                pendingPlanId = planId, errors = previous.errors - planId,
+            ))) return
+        scope.launch {
+            try {
+                try {
+                    api.implementCodexPlan(sessionId, planId)
+                    // Acceptance wins over a failed or temporarily stale refresh.
+                    codexPlanOperations.update { it.copy(implementedPlanIds = it.implementedPlanIds + planId) }
+                } catch (cancellation: CancellationException) {
+                    throw cancellation
+                } catch (error: Exception) {
+                    val serverMessage = (error as? ApiError)?.body?.let {
+                        runCatching { HapiJson.parseToJsonElement(it).objOrNull?.get("error").stringOrNull }.getOrNull()
+                    }
+                    codexPlanOperations.update {
+                        it.copy(errors = it.errors + (planId to CodexPlanFailure(serverMessage ?: error.message)))
+                    }
+                }
+                // Another client may have consumed/withdrawn the proposal, even
+                // after a failure. Refresh without resubmitting an uncertain POST.
+                try {
+                    sessionStore.loadSessionDetail(sessionId)
+                } catch (cancellation: CancellationException) {
+                    throw cancellation
+                } catch (_: Exception) {
+                    // Keep the last state; SSE/reconnection will refresh later.
+                }
+            } finally {
+                codexPlanOperations.update { it.copy(pendingPlanId = null) }
+            }
+        }
+    }
+
+    fun continueCodexPlan(planId: String) {
+        if (!currentCodexPlanActions().forPlan(planId).canAct) return
+        codexPlanOperations.update {
+            it.copy(continuedPlanIds = it.continuedPlanIds + planId, errors = it.errors - planId)
+        }
+        composerFocusRequest.update { it + 1 }
+    }
+
     // ---------------------------------------------------------------- config --
 
-    /** `POST /permission-mode` with an optimistic detail flip; server truth on error. */
+    /**
+     * Web's terminal-control flag (SessionChat.tsx:996):
+     * `controlledByUser && !concurrentClients` — shared-clients sessions
+     * report the flag but keep remote config switching.
+     */
+    private fun terminalControlled(detail: Session?): Boolean =
+        detail?.agentState?.controlledByUser == true && detail?.metadata?.capabilities?.concurrentClients != true
+
+    /**
+     * `POST /permission-mode` with an optimistic detail flip; server truth on
+     * error. Inactive sessions stay switchable (web parity — the send path
+     * auto-resumes); only copilot sessions under local terminal control lose
+     * the switcher (web withholds the callback, SessionChat.tsx:2159-2163).
+     */
     fun setPermissionMode(mode: PermissionMode) {
+        if (currentFlavor() == "copilot" && terminalControlled(currentDetail())) return
         runConfigChange(
             optimistic = { it.copy(permissionMode = mode.wireId) },
             call = { api.setPermissionMode(sessionId, mode.wireId) },
@@ -1524,9 +1669,11 @@ class ChatViewModel(
         return SessionConfigUi(
             flavor = flavor,
             active = detail?.active ?: summary?.active ?: false,
-            controlledByUser = detail?.agentState?.controlledByUser == true,
+            controlledByUser = terminalControlled(detail),
             permissionMode = detail?.permissionMode,
-            permissionModes = PermissionModes.forFlavor(flavor),
+            permissionModes = PermissionModes.forFlavor(flavor).filter {
+                detail?.metadata?.capabilities?.concurrentClients != true || it != PermissionMode.SafeYolo
+            },
             model = model,
             modelOptions = modelOptions,
             modelOptionsLoading = modelOptionsLoading,
@@ -1648,10 +1795,12 @@ class ChatViewModel(
             ToolGroupingOptions(hasMoreMessages = window.hasMore, previousGroups = previousGroups),
         )
         previousGroups = visibleBlocks.filterIsInstance<ToolGroupBlock>()
+        inspection.update(visibleBlocks, window.epoch)
         val sources = visibleBlocks.mapNotNull { block ->
             when (block) {
                 is AgentTextBlock -> block.text
                 is AgentReasoningBlock -> block.text
+                is ToolCallBlock -> planProposalMarkdown(block.tool)
                 else -> null
             }
         }.toSet()
@@ -1670,7 +1819,9 @@ class ChatViewModel(
             header = buildHeader(inputs),
             flavor = inputs.detail?.metadata?.flavor ?: inputs.summary?.metadata?.flavor,
             basePath = inputs.detail?.metadata?.path ?: inputs.summary?.metadata?.path,
-            blocks = visibleBlocks,
+            blocks = transcriptProjection.project(visibleBlocks),
+            processSteps = visibleBlocks.filterIsInstance<ToolCallBlock>().filter(::opensToolProcess)
+                .associate { it.id to it.children.size },
             permissionOverrides = inputs.permissionOverrides,
             hasMore = window.hasMore,
             isLoadingOlder = window.isLoadingMore,

@@ -13,7 +13,8 @@ import SwiftUI
 /// - `CodexDiff` (and any input/result that parses as a unified diff) →
 ///   `DiffTextView`;
 /// - `TodoWrite`/`update_plan` → checklist rows;
-/// - Ask/RequestUserInput → questions + options, read-only;
+/// - `ExitPlanMode`/`exit_plan_mode` → complete Markdown proposal from input;
+/// - Ask/RequestUserInput → questions + selected answers, read-only;
 /// - anything else → pretty-printed JSON input, then the generic result.
 struct ToolCallBody: View {
     let tool: ChatToolCall
@@ -21,11 +22,20 @@ struct ToolCallBody: View {
     @State private var sourceExpanded = false
 
     var body: some View {
+        let questionTool = isQuestionDetailsTool(tool.name)
+        let answers = questionTool ? tool.permission?.answers : nil
         VStack(alignment: .leading, spacing: 12) {
-            SectionLabel(text: String(localized: "Input"))
-            ToolInputSection(tool: tool, basePath: basePath)
-            ToolResultSection(tool: tool)
-            if tool.input != nil || tool.result != nil {
+            if questionTool {
+                QuestionToolBody(tool: tool)
+            } else if let plan = planProposalMarkdown(tool) {
+                PlanProposalContent(markdown: plan)
+                if planProposalShowsResult(tool) { ToolResultSection(tool: tool) }
+            } else {
+                SectionLabel(text: String(localized: "Input"))
+                ToolInputSection(tool: tool, basePath: basePath)
+                ToolResultSection(tool: tool)
+            }
+            if tool.input != nil || tool.result != nil || answers != nil {
                 DisclosureGroup("Source", isExpanded: $sourceExpanded) {
                     if sourceExpanded {
                         if let input = tool.input {
@@ -36,9 +46,52 @@ struct ToolCallBody: View {
                             SectionLabel(text: String(localized: "Result"))
                             GenericJSONInput(input: result)
                         }
+                        if let answers {
+                            SectionLabel(text: String(localized: "Answers"))
+                            GenericJSONInput(input: answers)
+                        }
                     }
                 }
             }
+        }
+    }
+}
+
+/// Shared by the transcript and inspector. Unlike ordinary tool output, the
+/// proposal is a reading document: no preview budget or paged-source fallback.
+struct PlanProposalContent: View {
+    let markdown: String
+
+    var body: some View {
+        CachedMarkdownView(markdown: markdown)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct QuestionToolBody: View {
+    let tool: ChatToolCall
+    @State private var details: QuestionToolDetails?
+
+    var body: some View {
+        Group {
+            if let details {
+                SectionLabel(text: details.hasAnswers
+                    ? String(localized: "Questions & Answers") : String(localized: "Input"))
+                if details.questions.isEmpty {
+                    GenericJSONInput(input: tool.input)
+                } else {
+                    QuestionDetailsView(questions: details.questions)
+                }
+                if details.showResult { ToolResultSection(tool: tool) }
+            } else {
+                ProgressView()
+            }
+        }
+        .task(id: tool) {
+            let tool = tool
+            let next = await Task.detached(priority: .userInitiated) { questionToolDetails(tool) }.value
+            guard !Task.isCancelled else { return }
+            details = next
         }
     }
 }
@@ -95,14 +148,14 @@ private struct ToolInputSection: View {
             if !items.isEmpty {
                 VStack(alignment: .leading, spacing: 2) {
                     ForEach(Array(items.enumerated()), id: \.offset) { _, item in
-                        Text("\(item.glyph) \(item.text)")
+                        Text(verbatim: "\(item.glyph) \(item.text)")
                             .font(.footnote)
                     }
                 }
             } else {
                 GenericJSONInput(input: input)
             }
-        } else if isAskUserQuestionToolName(name) || isRequestUserInputToolName(name) || name == "request_user_input_async" {
+        } else if name == "request_user_input_async" {
             QuestionsReadOnlyView(input: input)
         } else {
             GenericJSONInput(input: input)
@@ -185,7 +238,7 @@ private struct ToolJSONContent: View {
     }
 }
 
-/// Questions + options, read-only (answer flows land in M3b).
+/// Legacy asynchronous prompts have a different input shape and no answer map.
 private struct QuestionsReadOnlyView: View {
     let input: JSONValue?
 
@@ -208,7 +261,7 @@ private struct QuestionsReadOnlyView: View {
                                 .font(.subheadline)
                         }
                         ForEach(Array(optionLabels(question).enumerated()), id: \.offset) { _, label in
-                            Text("◦ \(label)")
+                            Text(verbatim: "◦ \(label)")
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
                                 .padding(.leading, 8)
