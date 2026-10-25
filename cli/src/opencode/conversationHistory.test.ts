@@ -237,6 +237,32 @@ describe('OpencodeConversationHistory fork', () => {
 });
 
 describe('OpencodeConversationHistory guards', () => {
+    it.each([200, 404, 405])('never republishes capabilities from a late %i fork response after teardown', async (status) => {
+        let complete!: (response: Response) => void;
+        const fetchImpl: FetchLike = vi.fn(() => new Promise<Response>((resolve) => { complete = resolve; }));
+        const history = new OpencodeConversationHistory(createContext('http://127.0.0.1:48273', 'ses_1'), fetchImpl);
+        const publish = vi.fn(async () => {});
+        history.setPublishCapabilities(publish);
+        const pending = history.fork();
+        await history.disableFork();
+        complete(jsonResponse({ id: 'ses_late' }, status));
+        await expect(pending).rejects.toThrow(status === 200 ? 'teardown' : `(${status})`);
+        expect(history.getCapabilitiesForMetadata()?.conversationHistory).toBeUndefined();
+        expect(publish).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not issue a historical POST when teardown occurs during message lookup', async () => {
+        let complete!: (response: Response) => void;
+        const fetchImpl = vi.fn((_url: string, _init?: RequestInit) => new Promise<Response>((resolve) => { complete = resolve; }));
+        const history = new OpencodeConversationHistory(createContext('http://127.0.0.1:48273', 'ses_1'), fetchImpl);
+        history.rememberPromptIndex('local-one', 0);
+        const pending = history.fork('local-one');
+        await history.disableFork();
+        complete(jsonResponse([{ info: { id: 'msg_one', role: 'user' } }]));
+        await expect(pending).rejects.toThrow('teardown');
+        expect(fetchImpl).toHaveBeenCalledTimes(1);
+    });
+
     it('rejects fork while busy', async () => {
         const fetchImpl: FetchLike = vi.fn();
         const history = new OpencodeConversationHistory(createContext('http://127.0.0.1:48273', 'ses_1'), fetchImpl);

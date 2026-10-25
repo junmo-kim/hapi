@@ -43,6 +43,7 @@ export class OpencodeConversationHistory {
     private states: ConversationHistoryCapabilityStates = { ...OPENCODE_CONVERSATION_HISTORY_INITIAL };
     private readonly promptIndexByLocalId = new Map<string, number>();
     private busy = false;
+    private disabled = false;
     private publishCapabilities: (() => Promise<void>) | null = null;
 
     constructor(
@@ -68,6 +69,7 @@ export class OpencodeConversationHistory {
 
     /** Permanently hides fork affordances (e.g. after native/HAPI divergence). */
     async disableFork(): Promise<void> {
+        this.disabled = true;
         this.states = markUnsupported(markUnsupported(this.states, 'forkCurrent'), 'forkAtMessage');
         await this.publishCapabilities?.();
     }
@@ -117,6 +119,7 @@ export class OpencodeConversationHistory {
     }
 
     async probeCapabilities(signal?: AbortSignal): Promise<void> {
+        if (this.disabled) return;
         const { baseUrl, sessionId } = this.getContext();
         if (!baseUrl || !sessionId) return;
 
@@ -139,10 +142,12 @@ export class OpencodeConversationHistory {
                     break;
                 }
             }
+            if (this.disabled) return;
             this.states = forkSupported
                 ? markSupported(markSupported(this.states, 'forkCurrent'), 'forkAtMessage')
                 : markUnsupported(markUnsupported(this.states, 'forkCurrent'), 'forkAtMessage');
         } catch {
+            if (this.disabled) return;
             // Any network failure hides the capability rather than showing a broken affordance.
             this.states = markUnsupported(markUnsupported(this.states, 'forkCurrent'), 'forkAtMessage');
         }
@@ -165,6 +170,7 @@ export class OpencodeConversationHistory {
 
     async fork(messageLocalId?: string): Promise<ForkConversationRpcResult> {
         if (this.busy) throw new Error('Session is busy');
+        if (this.disabled) throw new Error('Fork is not supported after launcher teardown');
         const { baseUrl, sessionId, mode, headers } = this.getContext();
         if (!baseUrl || !sessionId) throw new Error('OpenCode session is not ready');
 
@@ -183,6 +189,7 @@ export class OpencodeConversationHistory {
         }
 
         try {
+            if (this.disabled) throw new Error('Fork is not supported after launcher teardown');
             const response = await this.fetchFn(
                 `${baseUrl}${mode === 'v2' ? '/api' : ''}/session/${encodeURIComponent(sessionId)}/fork`,
                 {
@@ -200,6 +207,7 @@ export class OpencodeConversationHistory {
             const nativeSessionId = asString(isObjectRecord(session) ? session.id : null);
             if (!nativeSessionId) throw new Error('OpenCode fork did not return a session id');
 
+            if (this.disabled) throw new Error('Fork is not supported after launcher teardown');
             this.states = markSupported(this.states, 'forkCurrent');
             this.states = markSupported(this.states, 'forkAtMessage');
             await this.publishCapabilities?.();
@@ -208,7 +216,7 @@ export class OpencodeConversationHistory {
             // Only a missing route hides the capability; transient network or
             // server errors must not permanently disable an advertised fork.
             // Both fork modes share this endpoint, so a 404/405 disables both.
-            if (isRouteMissing(error)) {
+            if (!this.disabled && isRouteMissing(error)) {
                 this.states = markUnsupported(
                     markUnsupported(this.states, 'forkCurrent'),
                     'forkAtMessage'
