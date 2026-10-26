@@ -39,12 +39,14 @@ export function createLocalHistoryPublisher(client: LocalPublicationClient, onEr
     let divergenceQueued = false;
     let reported = false;
     let stopped = false;
+    let closing = false;
+    let finishing: Promise<boolean> | null = null;
     let retryRequested = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const clearRetry = () => { if (timer) clearTimeout(timer); timer = undefined; };
-    const retry = () => { void pump(true); };
+    const retry = () => { if (!closing) void pump(true); };
     const scheduleRetry = () => {
-        if (stopped || timer || queue.length === 0) return;
+        if (stopped || closing || timer || queue.length === 0) return;
         // Match ApiSessionClient's initial Socket.IO reconnect cadence.
         timer = setTimeout(() => { timer = undefined; retry(); }, 1000);
         timer.unref();
@@ -57,7 +59,16 @@ export function createLocalHistoryPublisher(client: LocalPublicationClient, onEr
                 divergenceQueued = true;
             } catch {}
         }
-        if (!reported) { reported = true; onError(error); }
+        if (!reported) { reported = true; try { onError(error); } catch {} }
+    };
+    const materialize = async (): Promise<boolean> => {
+        // Match the SDK flush budget, including lazy offline materialization.
+        let deadline: ReturnType<typeof setTimeout> | undefined;
+        try {
+            return await Promise.race([client.materialize(), new Promise<boolean>((resolve) => {
+                deadline = setTimeout(() => resolve(false), 5_000);
+            })]);
+        } finally { if (deadline) clearTimeout(deadline); }
     };
     const drain = async () => {
         while (!stopped && queue.length > 0) {
@@ -75,7 +86,7 @@ export function createLocalHistoryPublisher(client: LocalPublicationClient, onEr
                     markUncertain(entry.sessionId, new Error('Local history correspondence is uncertain'));
                 }
                 if (uncertain && !divergenceQueued) throw new Error('Local history uncertainty could not be queued');
-                if (!await client.materialize() || !await client.flushMetadata()) {
+                if (!await materialize() || !await client.flushMetadata()) {
                     throw new Error('Local history observation could not be persisted');
                 }
                 if (uncertain && !uncertainAtStart) {
@@ -112,14 +123,18 @@ export function createLocalHistoryPublisher(client: LocalPublicationClient, onEr
         clearRetry();
         running = Promise.resolve().then(drain).finally(() => {
             running = null;
-            if (retryRequested && !stopped) { retryRequested = false; retry(); }
+            if ((retryRequested || (!timer && queue.length > 0)) && !stopped && !closing) {
+                retryRequested = false;
+                retry();
+            }
         });
         return running;
     }
+    const stop = () => { stopped = true; clearRetry(); client.off?.('connected', retry); };
     client.on?.('connected', retry);
     return {
         publish(sessionId: string | null, messageId: string | null, send: () => void): void {
-            if (stopped) return;
+            if (stopped || closing) return;
             queue.push({ sessionId, messageId, send, sent: false });
             void pump();
         },
@@ -130,13 +145,30 @@ export function createLocalHistoryPublisher(client: LocalPublicationClient, onEr
             try {
                 await Promise.race([pump(), new Promise<void>((resolve) => {
                     deadline = setTimeout(() => {
-                        if (!stopped && queue.length) markUncertain(queue[0]!.sessionId, new Error('Local history drain is still pending'));
+                        if (!stopped && !closing && queue.length) markUncertain(queue[0]!.sessionId, new Error('Local history drain is still pending'));
                         resolve();
                     }, 5_000);
                 })]);
             } finally { if (deadline) clearTimeout(deadline); }
         },
-        stop(): void { stopped = true; clearRetry(); client.off?.('connected', retry); }
+        finish(): Promise<boolean> {
+            if (!finishing) {
+                closing = true;
+                clearRetry();
+                finishing = (async () => {
+                    try {
+                        if (running) await running;
+                        // The existing attempt may have timed out during a
+                        // reconnect. Give the frozen queue a fresh drain before
+                        // closing; SDK calls retain their own timeout budgets.
+                        await pump();
+                        return queue.length === 0;
+                    } finally { stop(); }
+                })();
+            }
+            return finishing;
+        },
+        stop
     };
 }
 

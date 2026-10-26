@@ -27,6 +27,8 @@ interface KillSessionResponse {
 export interface KillSessionLifecycle {
     cleanupAndExit: () => Promise<void>;
     setArchiveReason?: (reason: string) => void;
+    /** Complete queued publications before the hub starts runner termination. */
+    beforeKill?: () => Promise<void>;
 }
 
 export function registerKillSessionHandler(
@@ -56,6 +58,10 @@ export function registerKillSessionHandler(
         // through this handler — it hits the SIGTERM signal handler — so
         // those archives now stay labelled `'Hub restart'` (the new default).
         lifecycle.setArchiveReason?.('User terminated');
+
+        // The hub follows this ACK with StopSession, whose graceful process
+        // deadline can be shorter than a healthy publication drain.
+        await lifecycle.beforeKill?.();
 
         // This will start the cleanup process
         void lifecycle.cleanupAndExit();

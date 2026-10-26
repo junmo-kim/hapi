@@ -48,6 +48,17 @@ describe('registerKillSessionHandler (tiann/hapi#914)', () => {
         expect(lifecycle.cleanupAndExit).toHaveBeenCalled()
     })
 
+    it('rejects locally without starting cleanup when the pre-kill drain rejects', async () => {
+        const registry = makeRegistry()
+        const cleanupAndExit = vi.fn(async () => {})
+        registerKillSessionHandler(registry as never, {
+            cleanupAndExit,
+            beforeKill: async () => { throw new Error('drain unavailable') }
+        })
+        await expect(registry.handlers.get(RPC_METHODS.KillSession)?.()).rejects.toThrow('drain unavailable')
+        expect(cleanupAndExit).not.toHaveBeenCalled()
+    })
+
     it('still works with the legacy `(cleanupAndExit: () => Promise<void>)` call shape', async () => {
         // Back-compat: runAgentSession.ts passes a bare closure as the second
         // argument instead of a lifecycle object. The handler should not crash

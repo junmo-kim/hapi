@@ -73,6 +73,49 @@ describe('local publication identity observations', () => {
 });
 
 describe('durable local publication journal', () => {
+    it('finishes the frozen queue after an in-flight attempt fails but the next metadata flush succeeds', async () => {
+        let metadata: Metadata = structuredClone(base);
+        let flushes = 0;
+        const client = {
+            updateMetadata(handler: (value: Metadata) => Metadata) { metadata = handler(metadata); },
+            materialize: async () => true,
+            flushMetadata: async () => ++flushes > 1,
+            flush: async () => true
+        };
+        const sent: string[] = [];
+        const publisher = createLocalHistoryPublisher(client, vi.fn());
+        publisher.publish('ses_1', 'msg_a', () => { sent.push('a'); });
+        publisher.publish('ses_1', 'msg_b', () => { sent.push('b'); });
+        await expect(publisher.finish()).resolves.toBe(true);
+        expect(sent).toEqual(['a', 'b']);
+        expect(metadata.conversationHistoryDiverged).toBe(true);
+    });
+
+    it('reports unconfirmed shutdown instead of waiting forever for offline materialization', async () => {
+        vi.useFakeTimers();
+        let metadata: Metadata = structuredClone(base);
+        const client = {
+            updateMetadata(handler: (value: Metadata) => Metadata) { metadata = handler(metadata); },
+            materialize: async () => new Promise<boolean>(() => {}),
+            flushMetadata: async () => false,
+            flush: async () => false
+        };
+        const sent: string[] = [];
+        const publisher = createLocalHistoryPublisher(client, vi.fn());
+        try {
+            publisher.publish('ses_1', 'msg_a', () => { sent.push('a'); });
+            const finishing = publisher.finish();
+            await vi.advanceTimersByTimeAsync(10000);
+            await expect(finishing).resolves.toBe(false);
+            expect(sent).toEqual([]);
+            expect(metadata.conversationHistoryDiverged).toBe(true);
+            expect(vi.getTimerCount()).toBe(0);
+        } finally {
+            publisher.stop();
+            vi.useRealTimers();
+        }
+    });
+
     it('waits for the identity guard ACK before content and retains it until content is acknowledged', async () => {
         let guardAck!: () => void;
         let contentAck!: () => void;
