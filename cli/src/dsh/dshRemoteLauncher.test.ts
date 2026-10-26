@@ -158,6 +158,37 @@ describe('DshRemoteLauncher', () => {
         }
     })
 
+    it('does not dispatch queued input when process cleanup kills the launcher', async () => {
+        harness.modelOption = { id: 'model', category: 'model', currentValue: FLASH }
+        const session = createSessionWithBatches([['first', {}]], false)
+        const launcher = new DshRemoteLauncher(session as never)
+        let release!: () => void
+        const gate = new Promise<void>(resolve => { release = resolve })
+        const done = launcher.launch()
+        try {
+            await vi.waitFor(() => expect(harness.backend).not.toBeNull())
+            harness.backend!.prompt.mockImplementationOnce(async (_id, content) => {
+                harness.prompts.push(content)
+                await gate
+            })
+            await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))
+            session.queue.push('must-not-run', { model: PRO }, 'terminal-pending')
+            session.queue.close()
+            harness.backend!.cancelPrompt.mockImplementation(async () => { release() })
+            await launcher.kill()
+            await new Promise<void>(resolve => { setImmediate(resolve) })
+            expect(harness.prompts).toHaveLength(1)
+            expect(harness.setConfigOptionCalls).toEqual([])
+            expect(session.queue.pendingLocalIds()).toEqual([])
+            session.queue.close()
+            await done
+        } finally {
+            session.queue.close()
+            release()
+            await done
+        }
+    })
+
     it('creates a fresh ACP session without MCP injection and forwards text prompts', async () => {
         const session = createSession()
         const launcher = new DshRemoteLauncher(session as never)

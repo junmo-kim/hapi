@@ -39,7 +39,7 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
 
     async kill(): Promise<void> {
         if (!this.backend) return
-        await this.handleAbort()
+        await this.handleExitFromUi()
     }
 
     protected createDisplay(context: RemoteLauncherDisplayContext): React.ReactElement {
