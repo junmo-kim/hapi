@@ -125,6 +125,14 @@ describe('RpcGateway RPC timeouts', () => {
 // target CLI is unreachable, so syncEngine.archiveSession can narrow on it
 // and treat the kill as a benign no-op.
 describe('RpcGateway no-target diagnostics (tiann/hapi#916)', () => {
+    it('rejects a KillSession error envelope instead of allowing runner force termination', async () => {
+        const io = { of: () => ({ sockets: { get: () => ({ timeout: () => ({
+            emitWithAck: async () => JSON.stringify({ error: 'publication drain failed' })
+        }) }) } }) } as unknown as Server
+        const registry = { getSocketIdForMethod: () => 'socket-1' } as unknown as RpcRegistry
+        await expect(new RpcGateway(io, registry).killSession('session-1')).rejects.toThrow('publication drain failed')
+    })
+
     it('throws RpcTargetMissingError(handler-not-registered) when no socket is registered for the method', async () => {
         const io = {
             of() {

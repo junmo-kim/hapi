@@ -36,6 +36,23 @@ export class ApiClient {
         })
     }
 
+    async prepareOpenCodeSessionStop(sessionId: string, machineId: string, pid: number, processStartMarker: string): Promise<void> {
+        try {
+            const response = await axios.post<{ status: string }>(
+                `${configuration.apiUrl}/cli/sessions/${encodeURIComponent(sessionId)}/prepare-stop`,
+                { machineId, pid, processStartMarker }, { headers: this.authHeaders(), timeout: 60_000 }
+            )
+            if (response.data.status !== 'ready' && response.data.status !== 'not_required') {
+                throw new Error('Session shutdown preparation was not confirmed')
+            }
+        } catch (error) {
+            // A removed Hub row has no transcript left to drain. Preserve the
+            // runner's existing orphan-process cleanup for that case.
+            if (axios.isAxiosError(error) && error.response?.status === 404) return
+            throw error
+        }
+    }
+
     async getOrCreateSession(opts: {
         id?: string
         /** Bind a hub-preallocated stub (requires id). */

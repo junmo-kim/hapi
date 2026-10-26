@@ -73,6 +73,36 @@ describe('local publication identity observations', () => {
 });
 
 describe('durable local publication journal', () => {
+    it('retains ownership and retries unsent rows after an unconfirmed cooperative stop', async () => {
+        let metadata: Metadata = structuredClone(base);
+        let online = false;
+        let release!: () => void;
+        let flushes = 0;
+        const guard = new Promise<void>((resolve) => { release = resolve; });
+        const sent: string[] = [];
+        const publisher = createLocalHistoryPublisher({
+            updateMetadata(handler) { metadata = handler(metadata); },
+            materialize: async () => true,
+            flushMetadata: async () => { if (++flushes === 1) await guard; return online; },
+            flush: async () => online
+        }, vi.fn());
+        try {
+            publisher.publish('ses_1', 'msg_a', () => { sent.push('a'); });
+            const preparing = publisher.prepare();
+            await vi.waitFor(() => expect(flushes).toBe(1));
+            // A local completion can arrive while a reversible preparation is
+            // waiting for metadata. It must not be deduplicated without send.
+            publisher.publish('ses_1', 'msg_b', () => { sent.push('b'); });
+            release();
+            expect(await preparing).toBe(false);
+            expect(sent).toEqual([]);
+            online = true;
+            expect(await publisher.prepare()).toBe(true);
+            expect(sent).toEqual(['a', 'b']);
+            expect(metadata.conversationHistoryDiverged).toBe(true);
+        } finally { publisher.stop(); }
+    });
+
     it('finishes the frozen queue after an in-flight attempt fails but the next metadata flush succeeds', async () => {
         let metadata: Metadata = structuredClone(base);
         let flushes = 0;

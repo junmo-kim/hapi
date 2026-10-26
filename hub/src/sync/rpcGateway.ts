@@ -189,8 +189,14 @@ export class RpcGateway {
         return await this.sessionRpc(sessionId, RPC_METHODS.SetSessionConfig, config)
     }
 
-    async killSession(sessionId: string): Promise<{ pid?: number; processStartMarker?: string }> {
-        const result = await this.sessionRpc(sessionId, RPC_METHODS.KillSession, {})
+    async killSession(sessionId: string, options: {
+        prepareOnly?: boolean; expectedPid?: number; expectedProcessStartMarker?: string
+    } = {}): Promise<{ pid?: number; processStartMarker?: string }> {
+        const result = await this.sessionRpc(sessionId, RPC_METHODS.KillSession, options)
+        if (result && typeof result === 'object' && ('error' in result || ('success' in result && result.success === false))) {
+            throw new Error(typeof (result as { error?: unknown }).error === 'string'
+                ? (result as { error: string }).error : 'Session shutdown was not confirmed')
+        }
         if (!result || typeof result !== 'object') return {}
         const pid = (result as { pid?: unknown }).pid
         const processStartMarker = (result as { processStartMarker?: unknown }).processStartMarker

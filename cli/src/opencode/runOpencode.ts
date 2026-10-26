@@ -160,7 +160,9 @@ export async function runOpencode(opts: {
     });
 
     lifecycle.registerProcessHandlers();
-    registerKillSessionHandler(session.rpcHandlerManager, { ...lifecycle, beforeKill: finishLocalHistory }, session);
+    registerKillSessionHandler(session.rpcHandlerManager, { ...lifecycle,
+        beforeKill: async () => await sessionWrapperRef.current?.localHistoryPublisher?.prepare() ?? true
+    }, session);
     registerLocalHandoffHandler(session.rpcHandlerManager, lifecycle);
 
     const syncSessionMode = () => {

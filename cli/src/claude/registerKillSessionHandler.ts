@@ -4,7 +4,10 @@ import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { getProcessStartMarker } from '@/utils/process';
 
 interface KillSessionRequest {
-    // No parameters needed
+    /** Runner owns process-tree termination after preparation is acknowledged. */
+    prepareOnly?: boolean;
+    expectedPid?: number;
+    expectedProcessStartMarker?: string;
 }
 
 interface KillSessionResponse {
@@ -28,7 +31,7 @@ export interface KillSessionLifecycle {
     cleanupAndExit: () => Promise<void>;
     setArchiveReason?: (reason: string) => void;
     /** Complete queued publications before the hub starts runner termination. */
-    beforeKill?: () => Promise<void>;
+    beforeKill?: () => Promise<boolean | void>;
 }
 
 export function registerKillSessionHandler(
@@ -49,8 +52,13 @@ export function registerKillSessionHandler(
         void lifecycle.cleanupAndExit();
     };
 
-    rpcHandlerManager.registerHandler<KillSessionRequest, KillSessionResponse>(RPC_METHODS.KillSession, async () => {
+    rpcHandlerManager.registerHandler<KillSessionRequest, KillSessionResponse>(RPC_METHODS.KillSession, async (request) => {
         logger.debug('Kill session request received');
+        const processStartMarker = getProcessStartMarker(process.pid) ?? undefined;
+        if (request?.expectedPid !== undefined && (request.expectedPid !== process.pid
+            || !request.expectedProcessStartMarker || request.expectedProcessStartMarker !== processStartMarker)) {
+            throw new Error('Session process generation does not match shutdown target');
+        }
 
         // tiann/hapi#914: stamp the archive reason from the RPC path so the
         // default in `runnerLifecycle.ts` can be reassigned away from
@@ -61,17 +69,16 @@ export function registerKillSessionHandler(
 
         // The hub follows this ACK with StopSession, whose graceful process
         // deadline can be shorter than a healthy publication drain.
-        await lifecycle.beforeKill?.();
+        if (await lifecycle.beforeKill?.() === false) throw new Error('Session shutdown preparation was not confirmed');
 
         // This will start the cleanup process
-        void lifecycle.cleanupAndExit();
+        if (request?.prepareOnly !== true) void lifecycle.cleanupAndExit();
 
         // Include pid + start marker so archive can ask the runner to verify
         // this exact process generation exited (#1910) — not a reused PID.
-        const processStartMarker = getProcessStartMarker(process.pid) ?? undefined;
         return {
             success: true,
-            message: 'Killing hapi CLI process',
+            message: request?.prepareOnly === true ? 'Session shutdown prepared' : 'Killing hapi CLI process',
             pid: process.pid,
             ...(processStartMarker ? { processStartMarker } : {}),
         };

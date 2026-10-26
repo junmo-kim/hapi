@@ -41,12 +41,14 @@ export function createLocalHistoryPublisher(client: LocalPublicationClient, onEr
     let stopped = false;
     let closing = false;
     let finishing: Promise<boolean> | null = null;
+    let preparation: Promise<boolean> | null = null;
+    let preparing = false;
     let retryRequested = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const clearRetry = () => { if (timer) clearTimeout(timer); timer = undefined; };
-    const retry = () => { if (!closing) void pump(true); };
+    const retry = () => { if (!closing && !preparing) void pump(true); };
     const scheduleRetry = () => {
-        if (stopped || closing || timer || queue.length === 0) return;
+        if (stopped || closing || preparing || timer || queue.length === 0) return;
         // Match ApiSessionClient's initial Socket.IO reconnect cadence.
         timer = setTimeout(() => { timer = undefined; retry(); }, 1000);
         timer.unref();
@@ -123,7 +125,7 @@ export function createLocalHistoryPublisher(client: LocalPublicationClient, onEr
         clearRetry();
         running = Promise.resolve().then(drain).finally(() => {
             running = null;
-            if ((retryRequested || (!timer && queue.length > 0)) && !stopped && !closing) {
+            if ((retryRequested || (!timer && queue.length > 0)) && !stopped && !closing && !preparing) {
                 retryRequested = false;
                 retry();
             }
@@ -131,6 +133,28 @@ export function createLocalHistoryPublisher(client: LocalPublicationClient, onEr
         return running;
     }
     const stop = () => { stopped = true; clearRetry(); client.off?.('connected', retry); };
+    const prepare = (): Promise<boolean> => {
+        if (stopped) return Promise.resolve(queue.length === 0);
+        if (!preparation) {
+            preparing = true;
+            clearRetry();
+            preparation = (async () => {
+                if (running) await running;
+                await pump();
+                const confirmed = queue.length === 0;
+                preparing = false;
+                if (confirmed) closing = true;
+                if (!confirmed) {
+                    // A rejected cooperative stop leaves ownership here. Keep
+                    // ordinary forwarding recoverable for the next attempt.
+                    preparation = null;
+                    scheduleRetry();
+                }
+                return confirmed;
+            })();
+        }
+        return preparation;
+    };
     client.on?.('connected', retry);
     return {
         publish(sessionId: string | null, messageId: string | null, send: () => void): void {
@@ -153,21 +177,18 @@ export function createLocalHistoryPublisher(client: LocalPublicationClient, onEr
         },
         finish(): Promise<boolean> {
             if (!finishing) {
+                // Final process teardown commits the admission cutoff. A
+                // reversible prepare keeps accepting local completions until
+                // the full queue has actually drained.
                 closing = true;
-                clearRetry();
                 finishing = (async () => {
-                    try {
-                        if (running) await running;
-                        // The existing attempt may have timed out during a
-                        // reconnect. Give the frozen queue a fresh drain before
-                        // closing; SDK calls retain their own timeout budgets.
-                        await pump();
-                        return queue.length === 0;
-                    } finally { stop(); }
+                    try { return await prepare(); }
+                    finally { stop(); }
                 })();
             }
             return finishing;
         },
+        prepare,
         stop
     };
 }

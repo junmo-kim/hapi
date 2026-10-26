@@ -48,6 +48,29 @@ describe('registerKillSessionHandler (tiann/hapi#914)', () => {
         expect(lifecycle.cleanupAndExit).toHaveBeenCalled()
     })
 
+    it('keeps the process alive after prepare-only ACK so the runner can collect and terminate its tree', async () => {
+        const registry = makeRegistry()
+        const beforeKill = vi.fn(async () => {})
+        const cleanupAndExit = vi.fn(async () => {})
+        registerKillSessionHandler(registry as never, { beforeKill, cleanupAndExit })
+        const result = await registry.handlers.get(RPC_METHODS.KillSession)?.({ prepareOnly: true }) as { success: boolean }
+        expect(result.success).toBe(true)
+        expect(beforeKill).toHaveBeenCalledOnce()
+        expect(cleanupAndExit).not.toHaveBeenCalled()
+    })
+
+    it('rejects unconfirmed drains and mismatched process targets before cleanup', async () => {
+        const registry = makeRegistry()
+        const cleanupAndExit = vi.fn(async () => {})
+        const beforeKill = vi.fn(async () => false)
+        registerKillSessionHandler(registry as never, { beforeKill, cleanupAndExit })
+        const handler = registry.handlers.get(RPC_METHODS.KillSession)!
+        await expect(handler({ prepareOnly: true, expectedPid: process.pid + 1, expectedProcessStartMarker: 'other' })).rejects.toThrow('generation')
+        expect(beforeKill).not.toHaveBeenCalled()
+        await expect(handler({ prepareOnly: true })).rejects.toThrow('not confirmed')
+        expect(cleanupAndExit).not.toHaveBeenCalled()
+    })
+
     it('rejects locally without starting cleanup when the pre-kill drain rejects', async () => {
         const registry = makeRegistry()
         const cleanupAndExit = vi.fn(async () => {})

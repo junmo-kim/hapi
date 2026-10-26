@@ -1113,6 +1113,22 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       );
     }
 
+    const prepareSessionStop = async (sessionId: string, pid: number, expectedMarker?: string): Promise<boolean> => {
+      if (!isProcessAlive(pid)) return true;
+      const flavor = pidToTrackedSession.get(pid)?.happySessionMetadataFromLocalWebhook?.flavor;
+      if (flavor && flavor !== 'opencode') return true;
+      const marker = expectedMarker ?? getProcessStartMarker(pid);
+      if (!marker) return false;
+      try {
+        const client = await ApiClient.create();
+        await client.prepareOpenCodeSessionStop(sessionId, machineId, pid, marker);
+        return !isProcessAlive(pid) || getProcessStartMarker(pid) === marker;
+      } catch (error) {
+        logger.debug(`[RUNNER RUN] Session ${sessionId} shutdown preparation unconfirmed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        return false;
+      }
+    };
+
     // Stop a session by sessionId or PID fallback
     const stopSession = async (
       sessionId: string,
@@ -1187,6 +1203,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           sessionId
         );
         const orphanStatus = await reapRunnerSpawnedOrphans(sessionId, {
+          prepare: (target) => target.needsPublicationDrain === false ? Promise.resolve(true)
+            : prepareSessionStop(sessionId, target.pid, target.startMarker ?? undefined),
           findTargets: (id) => findStopSessionOrphanTargets(
             id,
             (sid, pid) => shouldSkipOrphanPid(liveRuntimes, protectedTrackedPids, sid, pid)
@@ -1278,6 +1296,16 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             );
             return await finishWithOrphanSweep('stopped');
           }
+          const tracked = pidToTrackedSession.get(pid);
+          const logicalId = tracked?.happySessionId ?? pidToConfirmedSessionId.get(pid)
+            ?? persistedResumeProcesses.get(pid)?.confirmedSessionId ?? pidToRequestedSessionId.get(pid);
+          const flavor = tracked?.happySessionMetadataFromLocalWebhook?.flavor;
+          if (logicalId && (!flavor || flavor === 'opencode')
+            && !await prepareSessionStop(logicalId, pid, opts?.processStartMarker)) return 'still_alive';
+          // Preparation can outlive the target generation. Recheck after that
+          // await before signalling a raw PID that the OS may have reused.
+          if (!isProcessAlive(pid)) return await finishWithOrphanSweep('already_gone');
+          if (getProcessStartMarker(pid) !== opts?.processStartMarker) return 'unknown';
           if (!(await killProcessTreeByPid(pid))) return 'still_alive';
           rememberVerifiedExit(sessionId);
           return await finishWithOrphanSweep('stopped');
@@ -1375,6 +1403,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
               }
             }
             try {
+              if (!await prepareSessionStop(sessionId, pid, persistedResumeProcesses.get(pid)?.processStartMarker)) return 'still_alive';
               const treeStopped = session.childProcess
                 ? await killProcessByChildProcess(session.childProcess)
                 : await killProcessTreeByPid(pid);
@@ -1390,6 +1419,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           } else {
             // For externally started sessions, try to kill by PID
             try {
+              if (!await prepareSessionStop(sessionId, pid)) return 'still_alive';
               if (!(await killProcess(pid))) return 'still_alive';
               logger.debug(`[RUNNER RUN] Requested termination for external session PID ${pid}`);
             } catch (error) {
@@ -1469,6 +1499,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             );
             return decision;
           }
+          if (!await prepareSessionStop(sessionId, pid, persisted.processStartMarker)) return 'still_alive';
           if (!(await killProcessTreeByPid(pid))) return 'still_alive';
           if (requestedSessionId) rememberVerifiedExit(requestedSessionId);
           if (confirmedSessionId) rememberVerifiedExit(confirmedSessionId);
@@ -1501,6 +1532,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           sessionId
         );
         const orphanStatus = await reapRunnerSpawnedOrphans(sessionId, {
+          prepare: (target) => target.needsPublicationDrain === false ? Promise.resolve(true)
+            : prepareSessionStop(sessionId, target.pid, target.startMarker ?? undefined),
           findTargets: (id) => findStopSessionOrphanTargets(
             id,
             (sid, pid) => shouldSkipOrphanPid(liveRuntimes, protectedTrackedPids, sid, pid)

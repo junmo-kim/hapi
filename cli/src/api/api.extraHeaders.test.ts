@@ -6,7 +6,8 @@ const ioMock = vi.hoisted(() => vi.fn())
 
 vi.mock('axios', () => ({
     default: {
-        post: axiosPostMock
+        post: axiosPostMock,
+        isAxiosError: (error: unknown) => Boolean((error as { isAxiosError?: boolean } | null)?.isAxiosError)
     }
 }))
 
@@ -50,6 +51,32 @@ describe('API extra headers integration', () => {
         configuration._setExtraHeaders({})
         axiosPostMock.mockReset()
         ioMock.mockReset()
+    })
+
+    it('waits for confirmed shutdown preparation using CLI authentication and extra headers', async () => {
+        configuration._setExtraHeaders({ Cookie: 'fixture' })
+        let release!: () => void
+        axiosPostMock.mockReturnValue(new Promise((resolve) => { release = () => resolve({ data: { status: 'ready' } }) }))
+        const client = await ApiClient.create()
+        let done = false
+        const request = client.prepareOpenCodeSessionStop('session/1', 'machine-1', 123, 'gen-a').then(() => { done = true })
+        await Promise.resolve()
+        expect(done).toBe(false)
+        expect(axiosPostMock).toHaveBeenCalledWith('https://hapi.example.com/cli/sessions/session%2F1/prepare-stop',
+            { machineId: 'machine-1', pid: 123, processStartMarker: 'gen-a' }, expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer cli-token', Cookie: 'fixture' }) }))
+        release()
+        await request
+        expect(done).toBe(true)
+    })
+
+    it('propagates unconfirmed preparation but permits cleanup of a removed Hub row', async () => {
+        const client = await ApiClient.create()
+        axiosPostMock.mockResolvedValueOnce({ data: { error: 'drain failed' } })
+        await expect(client.prepareOpenCodeSessionStop('session-1', 'machine-1', 123, 'gen-a')).rejects.toThrow('not confirmed')
+        axiosPostMock.mockRejectedValueOnce({ isAxiosError: true, response: { status: 503 } })
+        await expect(client.prepareOpenCodeSessionStop('session-1', 'machine-1', 123, 'gen-a')).rejects.toMatchObject({ response: { status: 503 } })
+        axiosPostMock.mockRejectedValueOnce({ isAxiosError: true, response: { status: 404 } })
+        await expect(client.prepareOpenCodeSessionStop('session-1', 'machine-1', 123, 'gen-a')).resolves.toBeUndefined()
     })
 
     it('adds extra headers to REST requests', async () => {

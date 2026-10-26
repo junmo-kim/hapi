@@ -1809,6 +1809,20 @@ export class SyncEngine {
         }
     }
 
+    async prepareOpenCodeSessionStop(sessionId: string, pid: number, processStartMarker: string): Promise<'ready' | 'not_required'> {
+        const metadata = this.sessionCache.getSession(sessionId)?.metadata
+        if (metadata?.flavor !== 'opencode') return 'not_required'
+        // Only request the session RPC here. Calling archiveSession would
+        // recurse into the runner's StopSession handler that is awaiting us.
+        const result = await this.rpcGateway.killSession(sessionId, {
+            prepareOnly: true, expectedPid: pid, expectedProcessStartMarker: processStartMarker
+        })
+        if (result.pid !== pid || result.processStartMarker !== processStartMarker) {
+            throw new Error('Session shutdown preparation did not confirm the target generation')
+        }
+        return 'ready'
+    }
+
     async archiveSession(sessionId: string): Promise<void> {
         // tiann/hapi#916 / #1910: KillSession is a session-socket RPC. A missing
         // target does not prove the runner child is dead (stale registration,

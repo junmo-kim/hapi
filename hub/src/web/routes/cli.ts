@@ -186,6 +186,24 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
         return c.json({ target: result.target })
     })
 
+    app.post('/sessions/:id/prepare-stop', async (c) => {
+        const engine = getSyncEngine()
+        if (!engine) return c.json({ error: 'Not ready' }, 503)
+        const access = resolveSessionForNamespace(engine, c.req.param('id'), c.get('namespace'))
+        if (!access.ok) return c.json({ error: access.error }, access.status)
+        const body = z.object({ machineId: z.string().min(1), pid: z.number().int().positive(),
+            processStartMarker: z.string().min(1) }).safeParse(await c.req.json().catch(() => null))
+        if (!body.success) return c.json({ error: 'Invalid body' }, 400)
+        if (access.session.metadata?.machineId !== body.data.machineId) {
+            return c.json({ error: 'Session machine does not match runner' }, 403)
+        }
+        try {
+            return c.json({ status: await engine.prepareOpenCodeSessionStop(access.sessionId, body.data.pid, body.data.processStartMarker) })
+        } catch {
+            return c.json({ error: 'Session shutdown preparation was not confirmed' }, 503)
+        }
+    })
+
     app.post('/sessions/:id/handoff-local', async (c) => {
         const engine = getSyncEngine()
         if (!engine) {
