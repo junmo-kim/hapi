@@ -1570,6 +1570,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
 
     // A reused PID invalidates a binding, not every runtime for that session.
     const discardStaleProcess = (pid: number) => {
+      pidToErrorAwaiter.get(pid)?.(`Session process PID ${pid} generation changed before startup was confirmed`);
       pidToTrackedSession.delete(pid);
       pidToAwaiter.delete(pid);
       pidToErrorAwaiter.delete(pid);

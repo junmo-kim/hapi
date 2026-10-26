@@ -231,15 +231,18 @@ describe.skipIf(!await isServerHealthy())('Runner Integration Tests', { timeout:
     return tid!;
   }
 
-  function processProbeFixture(pid: number): { modeFile: string; env: NodeJS.ProcessEnv } {
+  function processProbeFixture(pid: number | { pidFile: string }): { modeFile: string; env: NodeJS.ProcessEnv } {
     const binDir = join(configuration.happyHomeDir, `generation-probe-${randomUUID()}`);
     mkdirSync(binDir);
     const modeFile = join(binDir, 'mode');
     const quotedModeFile = `'${modeFile.replace(/'/g, `'\\''`)}'`;
+    const expectedPid = typeof pid === 'number'
+      ? `'${pid}'`
+      : `"$(cat '${pid.pidFile.replace(/'/g, `'\\''`)}' 2>/dev/null)"`;
     // Only this test-owned PID's lstart probe is changed. All identity,
     // process-tree, and orphan scans use the real system ps unchanged.
     writeFileSync(join(binDir, 'ps'), `#!/bin/sh
-if [ "$1" = '-p' ] && [ "$2" = '${pid}' ] && [ "$3" = '-o' ] && [ "$4" = 'lstart=' ] && [ -f ${quotedModeFile} ]; then
+if [ "$1" = '-p' ] && [ "$2" = ${expectedPid} ] && [ "$3" = '-o' ] && [ "$4" = 'lstart=' ] && [ -f ${quotedModeFile} ]; then
   case "$(cat ${quotedModeFile})" in
     block) exit 1 ;;
     replace) printf '%s\\n' 'different-generation'; exit 0 ;;
@@ -418,6 +421,62 @@ exec /bin/ps "$@"
     await waitFor(async () => (await readRunnerState())?.lastHeartbeat !== heartbeat);
     expect(isProcessAlive(pid)).toBe(true);
     expect(readResumeRecords()).toContainEqual(record);
+  });
+
+  it.skipIf(process.platform !== 'linux')('settles an unconfirmed startup on generation mismatch and cancels its old kill deadline', async () => {
+    const fixtureDir = join(configuration.happyHomeDir, `unconfirmed-generation-${randomUUID()}`);
+    mkdirSync(fixtureDir);
+    const pidFile = join(fixtureDir, 'pid');
+    const preload = join(fixtureDir, 'preload.ts');
+    // Bun runs this before the CLI entrypoint. Park only the test session;
+    // runner launchers and the runner itself still execute their real code.
+    writeFileSync(preload, `import { writeFileSync } from 'node:fs';
+if (process.argv[2] === 'claude') {
+  writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+  setInterval(() => {}, 1000);
+  await new Promise(() => {});
+}
+`);
+    const fixture = processProbeFixture({ pidFile });
+    const webhookTimeoutMs = 3000;
+    await restartWithResumeRecords([], {
+      ...fixture.env,
+      BUN_OPTIONS: `--preload=${preload}`,
+      HAPI_RUNNER_WEBHOOK_TIMEOUT_MS: String(webhookTimeoutMs),
+    });
+    const state = await readRunnerState();
+    const sessionId = randomUUID();
+    const spawnRequest = fetch(`http://127.0.0.1:${state!.httpPort}/spawn-session`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ directory: '/tmp', sessionId }),
+    }).then(async response => ({ status: response.status, body: await response.json() as { error?: string } }));
+    // Teardown may stop the runner while a deliberately failing Red assertion
+    // leaves this request pending. Observe its rejection in that case too.
+    void spawnRequest.catch(() => {});
+    await waitFor(async () => existsSync(pidFile));
+    const pid = Number(readFileSync(pidFile, 'utf8'));
+    trackRunnerPid(pid, 'unconfirmed-generation-session');
+    await waitFor(async () => readResumeRecords().some(record => record.pid === pid));
+    const startupObservedAt = Date.now();
+    expect(isProcessAlive(pid)).toBe(true);
+
+    writeFileSync(fixture.modeFile, 'replace');
+    await waitFor(async () => !readResumeRecords().some(record => record.pid === pid));
+    const result = await Promise.race([
+      spawnRequest,
+      new Promise<null>(resolve => setTimeout(() => resolve(null), 1000)),
+    ]);
+    expect(result, 'generation invalidation must settle startup before its old timeout').not.toBeNull();
+    expect(result!.status).toBe(500);
+    expect(result!.body.error).toMatch(/generation changed before startup was confirmed/);
+    expectNoExitTombstone(sessionId, pid);
+
+    // Cross the original deadline: its timer must have been cancelled instead
+    // of signalling the now-untrusted PID after the binding was discarded.
+    await waitFor(async () => Date.now() > startupObservedAt + webhookTimeoutMs + 300, webhookTimeoutMs + 1000);
+    expect(isProcessAlive(pid)).toBe(true);
+    expectNoExitTombstone(sessionId, pid);
   });
 
   it.skipIf(process.platform !== 'linux')('persists the boot ID of a newly spawned session across runner restart', async () => {
