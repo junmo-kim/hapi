@@ -295,6 +295,9 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
     }
 
     private async handleExitFromUi(): Promise<void> {
-        await this.requestExit('exit', () => this.handleAbort(true))
+        await this.requestExit('exit', () => {
+            this.abortController.abort()
+            return this.handleAbort(true)
+        })
     }
 }

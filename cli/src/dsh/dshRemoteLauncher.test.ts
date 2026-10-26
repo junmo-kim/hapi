@@ -189,6 +189,35 @@ describe('DshRemoteLauncher', () => {
         }
     })
 
+    it('does not consume input arriving while idle process cleanup is pending', async () => {
+        harness.modelOption = { id: 'model', category: 'model', currentValue: FLASH }
+        const session = createSessionWithBatches([], false)
+        const waitForBatch = vi.spyOn(session.queue, 'waitForMessagesAndGetAsString')
+        const launcher = new DshRemoteLauncher(session as never)
+        let release!: () => void
+        const gate = new Promise<void>(resolve => { release = resolve })
+        const done = launcher.launch()
+        let killed: Promise<void> | undefined
+        try {
+            await vi.waitFor(() => expect(waitForBatch).toHaveBeenCalledTimes(1))
+            harness.backend!.cancelPrompt.mockImplementation(async () => { await gate })
+            killed = launcher.kill()
+            await vi.waitFor(() => expect(harness.backend!.cancelPrompt).toHaveBeenCalledTimes(1))
+            session.queue.push('must-not-run', { model: PRO }, 'arrived-during-exit')
+            await new Promise<void>(resolve => { setImmediate(resolve) })
+            expect(harness.prompts).toEqual([])
+            expect(harness.setConfigOptionCalls).toEqual([])
+            expect(session.queue.pendingLocalIds()).toEqual(['arrived-during-exit'])
+            release()
+            await killed
+            expect(session.queue.pendingLocalIds()).toEqual([])
+        } finally {
+            release()
+            session.queue.close()
+            await Promise.allSettled([done, killed])
+        }
+    })
+
     it('creates a fresh ACP session without MCP injection and forwards text prompts', async () => {
         const session = createSession()
         const launcher = new DshRemoteLauncher(session as never)
