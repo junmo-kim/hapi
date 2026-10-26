@@ -156,7 +156,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     /** Subscription to the agent's own server event stream; null until the ACP session id is known, closed in cleanup(). */
     private eventStream: OpencodeEventSubscription | null = null;
     private stallErrorReportedForPrompt = false;
-    private promptHistoryUnverified = false;
+    private nativeHistoryUnverified = false;
     /** Cancels the detached capability probe when remote mode is left. */
     private readonly historyProbeAbortController = new AbortController();
     private readonly conversationHistory = new OpencodeConversationHistory(() => ({
@@ -396,14 +396,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                         path: metadata?.path ?? session.path,
                         host: metadata?.host ?? 'unknown',
                         capabilities,
-                        conversationHistoryPoints: this.conversationHistory.isDiverged() ? undefined : {
-                            ...metadata?.conversationHistoryPoints,
-                            ...this.conversationHistory.getHistoryPoints()
-                        },
-                        conversationHistoryIndexes: this.conversationHistory.isDiverged() ? undefined : {
-                            ...metadata?.conversationHistoryIndexes,
-                            ...this.conversationHistory.getHistoryIndexes()
-                        },
+                        conversationHistoryPoints: this.conversationHistory.isDiverged() ? undefined : this.conversationHistory.getHistoryPoints(),
+                        conversationHistoryIndexes: this.conversationHistory.isDiverged() ? undefined : this.conversationHistory.getHistoryIndexes(),
                         opencodeHistoryCheckpoint: this.conversationHistory.getCheckpoint(),
                         conversationHistoryDiverged: metadata?.conversationHistoryDiverged || this.conversationHistory.isDiverged() || undefined
                     };
@@ -878,23 +872,27 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                             acpSessionId,
                             compactAbortController,
                             compactLocalId,
-                            () => { nativeHistoryMayHaveChanged = true; }
+                            () => {
+                                nativeHistoryMayHaveChanged = true;
+                                this.nativeHistoryUnverified = true;
+                            }
                         );
                         if (!nativeHistoryMayHaveChanged) continue;
-                        // Compaction can reindex native history: old absolute
-                        // indexes and their locators are invalid afterwards.
+                        // Compaction starts a new identity epoch. Discard old
+                        // positions, then persist the new baseline before any
+                        // fork or handoff can trust the compacted history.
                         this.conversationHistory.clearPromptIndexes();
                         try {
-                            session.client.updateMetadata((metadata) => ({
-                                ...metadata,
-                                conversationHistoryPoints: undefined,
-                                conversationHistoryIndexes: undefined,
-                                opencodeHistoryCheckpoint: undefined
-                            }));
+                            await this.conversationHistory.reconcileHistory();
+                            await this.conversationHistory.publish();
+                            this.nativeHistoryUnverified = false;
                         } catch {
-                            // best-effort; transient hub disconnects must not crash the loop
+                            if (!this.conversationHistory.isDiverged()) {
+                                await this.conversationHistory.invalidateHistory();
+                            }
                         }
                     } finally {
+                        this.nativeHistoryUnverified = false;
                         session.onThinkingChange(false);
                         if (session.queue.size() === 0 && !this.shouldExit) {
                             sendReady();
@@ -938,7 +936,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 logger.debug(`[opencode-remote] history point: localId=${batch.items[0]?.localId} index=${nativeUserCount} items=${batch.items.length}`);
                 // Publish a locator only after completion and verification;
                 // failed/cancelled requests may leave partial native history.
-                this.promptHistoryUnverified = true;
+                this.nativeHistoryUnverified = true;
                 await backend.prompt(acpSessionId, promptContent, (message: AgentMessage) => {
                     this.handleAgentMessage(message);
                 });
@@ -953,7 +951,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                         this.conversationHistory.rememberPromptIndex(batch.items[0]?.localId, nativeUserCount);
                     }
                     await this.conversationHistory.publish();
-                    this.promptHistoryUnverified = false;
+                    this.nativeHistoryUnverified = false;
                 } catch {
                     // Never expose newly accepted rows without a verified
                     // native identity checkpoint for a future handoff.
@@ -963,13 +961,13 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 }
                 void backend.refreshSessionInfo(acpSessionId, session.path);
                 } catch (error) {
-                    if (this.promptHistoryUnverified && !this.conversationHistory.isDiverged()) {
+                    if (this.nativeHistoryUnverified && !this.conversationHistory.isDiverged()) {
                         await this.conversationHistory.invalidateHistory();
                     }
                     logger.warn('[opencode-remote] prompt failed', error);
                     this.reportPromptFailure(error);
                 } finally {
-                    this.promptHistoryUnverified = false;
+                    this.nativeHistoryUnverified = false;
                     session.onThinkingChange(false);
                     await this.permissionHandler?.cancelAll('Prompt finished');
                     if (session.queue.size() === 0 && !this.shouldExit) {
@@ -1003,7 +1001,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         // subsequent local mode: the loopback server is going away, so forks
         // can no longer be served (same lifecycle as /compact above).
         this.conversationHistory.setBusy(true);
-        void (this.promptHistoryUnverified
+        void (this.nativeHistoryUnverified
             ? this.conversationHistory.invalidateHistory()
             : this.conversationHistory.disableFork()).catch(() => {});
     }

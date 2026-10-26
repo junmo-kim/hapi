@@ -615,6 +615,43 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         expect(harness.promptCount).toBe(0);
     });
 
+    it('keeps a post-compaction identity baseline across local undo and remote current fork', async () => {
+        let ids = ['msg_user'];
+        harness.clientMetadata = { path: '/tmp/hapi-opencode-test', host: 'fixture',
+            opencodeHistoryCheckpoint: { sessionId: 'acp-session-1', messageIds: ids.slice(), userMessageIds: ['msg_user'] } };
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        compactHarness.triggerImpl = async () => {
+            ids = ['msg_user', 'msg_compaction_summary'];
+            return { ok: true };
+        };
+        const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => new Response(JSON.stringify(
+            init?.method === 'POST' ? { id: 'ses_wrong_child' }
+                : String(input).endsWith('/message') ? ids.map((id, i) => ({ info: { id, role: i === 0 ? 'user' : 'assistant' } }))
+                    : { paths: { '/session/{sessionID}/fork': { post: {} } } }
+        )));
+        try {
+            const first = createSessionStub([{ message: '', mode: createCompactMode('ollama/x') }]);
+            first.session.sessionId = 'acp-session-1';
+            await opencodeRemoteLauncher(first.session as never);
+            expect(harness.clientMetadata?.opencodeHistoryCheckpoint).toMatchObject({ messageIds: ['msg_user', 'msg_compaction_summary'] });
+            ids = ['msg_user', 'msg_replacement_summary'];
+            const second = createSessionStub([], { keepOpen: true });
+            second.session.sessionId = 'acp-session-1';
+            const pending = opencodeRemoteLauncher(second.session as never);
+            try {
+                await vi.waitFor(() => expect(second.rpcHandlers.has('fork-conversation')).toBe(true));
+                await expect(second.rpcHandlers.get('fork-conversation')!({})).rejects.toThrow(/diverg|not supported/i);
+                expect(harness.clientMetadata?.conversationHistoryDiverged).toBe(true);
+                expect(fetchSpy.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+            } finally {
+                second.session.queue.close();
+                await pending;
+            }
+        } finally {
+            fetchSpy.mockRestore();
+        }
+    });
+
     it('waits for checkpoint persistence before completing a prompt batch', async () => {
         let persist!: () => void;
         const persistence = new Promise<void>((resolve) => { persist = resolve; });
