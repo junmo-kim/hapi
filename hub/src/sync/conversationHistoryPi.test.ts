@@ -160,7 +160,7 @@ describe('Pi conversation-history hub integration', () => {
             store.messages.addMessage(source.id, { role: 'user', content: 'one' }, 'local1')
             store.messages.markMessagesInvoked(source.id, ['local1'], Date.now())
 
-            const checkpoint = { sessionId: 'oc-clone-native', messageIds: ['child-user'], userMessageIds: ['child-user'] }
+            const checkpoint = { sessionId: 'oc-clone-native', messageIds: ['child-user'], userMessageIds: ['child-user'], localMessageIds: [] }
             ;(engine as any).rpcGateway.forkConversation = async () => ({ nativeSessionId: 'oc-clone-native', opencodeHistoryCheckpoint: validCheckpoint ? checkpoint : undefined })
             let spawnCalls = 0
             ;(engine as any).rpcGateway.spawnSession = async (...args: unknown[]) => {
@@ -170,6 +170,7 @@ describe('Pi conversation-history hub integration', () => {
             ;(engine as any).rpcGateway.stopSession = async () => true
             const exactBinds: unknown[][] = []
             ;(engine as any).waitForExactNativeForkBound = async (...args: unknown[]) => {
+                expect(engine.getSession(String(args[0]))?.metadata?.opencodeForkPending).toBe(true)
                 exactBinds.push(args)
                 return true
             }
@@ -183,6 +184,25 @@ describe('Pi conversation-history hub integration', () => {
             if (result.type !== 'success') throw new Error(result.message)
             expect(exactBinds).toEqual([[result.sessionId, 'oc-clone-native', 'opencodeSessionId', true]])
             expect((store.sessions.getSession(result.sessionId)?.metadata as { opencodeHistoryCheckpoint?: unknown })?.opencodeHistoryCheckpoint).toEqual(checkpoint)
+            expect(engine.getSession(result.sessionId)?.metadata?.opencodeForkPending).toBeUndefined()
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it.each(['matching', 'mismatch', 'pending-publication'])('commits OpenCode child readiness even after requester loss only for verified identities (%s)', (state) => {
+        const matches = state === 'matching'
+        const { engine } = createEngine()
+        try {
+            const child = engine.getOrCreateSession('recovered-oc-child', {
+                path: '/tmp/project', host: 'fixture', flavor: 'opencode', opencodeForkPending: true,
+                opencodeSessionId: 'native-child',
+                opencodeHistoryCheckpoint: { sessionId: state === 'mismatch' ? 'wrong-native' : 'native-child', messageIds: [], userMessageIds: [], localMessageIds: [],
+                    ...(state === 'pending-publication' ? { localPublicationPending: true as const } : {}) }
+            }, null, 'default')
+            engine.handleSessionReady({ sid: child.id, time: Date.now() })
+            expect((engine as any).sessionReadyIds.has(child.id)).toBe(matches)
+            expect(engine.getSession(child.id)?.metadata?.opencodeForkPending).toBe(matches ? undefined : true)
         } finally {
             engine.stop()
         }

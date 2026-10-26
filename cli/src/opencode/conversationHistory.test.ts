@@ -18,6 +18,7 @@ describe('OpenCode v2 history transport', () => {
                 expect(JSON.parse(init.body as string)).toEqual({});
                 return jsonResponse({ data: { id: 'ses_child' } });
             }
+            if (url.includes('/message?')) return jsonResponse({ data: [], cursor: {} });
             return jsonResponse({ paths: { '/api/session/{sessionID}/fork': { post: {} } } });
         });
         const history = new OpencodeConversationHistory(context, fetchImpl);
@@ -45,6 +46,7 @@ describe('OpenCode v2 history transport', () => {
             return jsonResponse({ data: [{ id: 'msg_first', type: 'user', text: 'first' }], cursor: { next: 'page-2' } });
         });
         const history = new OpencodeConversationHistory(context, fetchImpl);
+        await history.reconcileHistory(undefined, { allowUnobservedAppend: true });
         await expect(history.getNativeUserMessageCount()).resolves.toBe(2);
         history.rememberPromptIndex('local-second', 1);
         await expect(history.fork('local-second')).resolves.toEqual({ nativeSessionId: 'ses_child' });
@@ -152,6 +154,7 @@ describe('OpencodeConversationHistory.getNativeUserMessageCount', () => {
         });
 
         const history = new OpencodeConversationHistory(createContext('http://127.0.0.1:48273', 'ses_1'), fetchImpl);
+        await history.reconcileHistory(undefined, { allowUnobservedAppend: true });
         await expect(history.getNativeUserMessageCount()).resolves.toBe(2);
     });
 
@@ -166,6 +169,7 @@ describe('OpencodeConversationHistory.getNativeUserMessageCount', () => {
 describe('OpencodeConversationHistory fork', () => {
     it('forks the current session with an empty body and returns the native id', async () => {
         const fetchImpl: FetchLike = vi.fn(async (url: string, init?: RequestInit) => {
+            if (init?.method === 'GET') return jsonResponse([]);
             expect(url).toBe('http://127.0.0.1:48273/session/ses_1/fork');
             expect(init?.method).toBe('POST');
             expect(JSON.parse(init?.body as string)).toEqual({});
@@ -207,7 +211,7 @@ describe('OpencodeConversationHistory fork', () => {
         });
 
         const history = new OpencodeConversationHistory(createContext('http://127.0.0.1:48273', 'ses_1'), fetchImpl);
-        await history.getNativeUserMessageCount();
+        await history.reconcileHistory(undefined, { allowUnobservedAppend: true });
         history.rememberPromptIndex('local-second', 1);
 
         const result = await history.fork('local-second');
@@ -247,22 +251,22 @@ describe('OpencodeConversationHistory guards', () => {
         const history = new OpencodeConversationHistory(createContext('http://127.0.0.1:48273', 'ses_1'), fetchImpl);
         history.restorePromptIndexes({ 'local-second': 1 });
         history.restoreCheckpoint({ sessionId: 'ses_1', messageIds: ['msg_first', 'msg_old_assistant', 'msg_second'],
-            userMessageIds: ['msg_first', 'msg_second'] });
+            userMessageIds: ['msg_first', 'msg_second'], localMessageIds: [] });
         await expect(history.fork(localId)).rejects.toThrow('diverged');
         expect(history.isDiverged()).toBe(true);
         expect(history.getHistoryPoints()).toEqual({});
         expect(fetchImpl.mock.calls.every(([, init]) => init?.method === 'GET')).toBe(true);
     });
 
-    it('accepts append-only local turns and automatic compaction while preserving old identities', async () => {
+    it('reconciles expected remote prompt growth including automatic compaction', async () => {
         const history = new OpencodeConversationHistory(createContext('http://127.0.0.1:48273', 'ses_1'),
             async () => jsonResponse([
                 { info: { id: 'msg_first', role: 'user' } }, { info: { id: 'msg_answer', role: 'assistant' } },
                 { info: { id: 'msg_marker', role: 'user' } }, { info: { id: 'msg_continue', role: 'user' } }
             ]));
         history.restorePromptIndexes({ 'local-first': 0 });
-        history.restoreCheckpoint({ sessionId: 'ses_1', messageIds: ['msg_first', 'msg_answer'], userMessageIds: ['msg_first'] });
-        await expect(history.reconcileHistory()).resolves.toBe(3);
+        history.restoreCheckpoint({ sessionId: 'ses_1', messageIds: ['msg_first', 'msg_answer'], userMessageIds: ['msg_first'], localMessageIds: [] });
+        await expect(history.reconcileHistory(undefined, { allowUnobservedAppend: true })).resolves.toBe(3);
         expect(history.isDiverged()).toBe(false);
         expect(history.getHistoryPoints()).toEqual({ 'local-first': true });
         expect(history.getCheckpoint()?.messageIds).toEqual(['msg_first', 'msg_answer', 'msg_marker', 'msg_continue']);
@@ -278,11 +282,13 @@ describe('OpencodeConversationHistory guards', () => {
 
     it.each([200, 404, 405])('never republishes capabilities from a late %i fork response after teardown', async (status) => {
         let complete!: (response: Response) => void;
-        const fetchImpl: FetchLike = vi.fn(() => new Promise<Response>((resolve) => { complete = resolve; }));
+        const fetchImpl: FetchLike = vi.fn(async (_url, init) => init?.method === 'GET'
+            ? jsonResponse([]) : await new Promise<Response>((resolve) => { complete = resolve; }));
         const history = new OpencodeConversationHistory(createContext('http://127.0.0.1:48273', 'ses_1'), fetchImpl);
         const publish = vi.fn(async () => {});
         history.setPublishCapabilities(publish);
         const pending = history.fork();
+        await vi.waitFor(() => expect(complete).toBeTypeOf('function'));
         await history.disableFork();
         complete(jsonResponse({ id: 'ses_late' }, status));
         await expect(pending).rejects.toThrow(status === 200 ? 'teardown' : `(${status})`);

@@ -245,12 +245,16 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
 
         await backend.initialize();
 
-        // Handoffs reuse the same client; restore only after the previous
-        // launcher's checkpoint/divergence writes have reached the hub.
+        // Forks can trust restored metadata only after the previous launcher's
+        // writes reached the hub. Ordinary ACP resumes can run without forks.
+        let historyMetadataDurable = true;
         if (typeof session.client.flushMetadata === 'function'
-            && !(typeof session.client.isPending === 'function' && session.client.isPending())
-            && !await session.client.flushMetadata()) {
-            throw new Error('OpenCode history metadata did not become durable before remote entry');
+            && !(typeof session.client.isPending === 'function' && session.client.isPending())) {
+            try {
+                historyMetadataDurable = await session.client.flushMetadata();
+            } catch {
+                historyMetadataDurable = false;
+            }
         }
 
         const resumeSessionId = session.sessionId;
@@ -261,6 +265,12 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             ? session.client.getMetadata()
             : undefined;
         const strictForkResume = currentMetadata?.forkedFrom != null;
+        // Fork provenance persists; strict history availability is needed only
+        // until the hub commits the child's first validated readiness.
+        const strictHistoryVerification = currentMetadata?.opencodeForkPending === true;
+        if (strictHistoryVerification && !historyMetadataDurable) {
+            throw new Error('OpenCode history metadata did not become durable before remote entry');
+        }
         // A resume that fell back to a blank native session invalidates every
         // persisted history locator: old local ids would resolve to unrelated
         // native turns. History stays disabled for such sessions.
@@ -391,15 +401,17 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     if (conversationHistory) {
                         capabilities.conversationHistory = conversationHistory;
                     }
+                    const diverged = this.conversationHistory.isDiverged();
+                    const publishSnapshot = !this.conversationHistory.isDisabled();
                     return {
                         ...metadata,
                         path: metadata?.path ?? session.path,
                         host: metadata?.host ?? 'unknown',
                         capabilities,
-                        conversationHistoryPoints: this.conversationHistory.isDiverged() ? undefined : this.conversationHistory.getHistoryPoints(),
-                        conversationHistoryIndexes: this.conversationHistory.isDiverged() ? undefined : this.conversationHistory.getHistoryIndexes(),
-                        opencodeHistoryCheckpoint: this.conversationHistory.getCheckpoint(),
-                        conversationHistoryDiverged: metadata?.conversationHistoryDiverged || this.conversationHistory.isDiverged() || undefined
+                        conversationHistoryPoints: diverged ? undefined : publishSnapshot ? this.conversationHistory.getHistoryPoints() : metadata.conversationHistoryPoints,
+                        conversationHistoryIndexes: diverged ? undefined : publishSnapshot ? this.conversationHistory.getHistoryIndexes() : metadata.conversationHistoryIndexes,
+                        opencodeHistoryCheckpoint: diverged ? undefined : publishSnapshot ? this.conversationHistory.getCheckpoint() : metadata.opencodeHistoryCheckpoint,
+                        conversationHistoryDiverged: metadata?.conversationHistoryDiverged || diverged || undefined
                     };
                 });
                 if (typeof session.client.flushMetadata === 'function'
@@ -446,14 +458,15 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     : undefined
             );
             this.conversationHistory.restoreCheckpoint(currentMetadata?.opencodeHistoryCheckpoint);
-            if (currentMetadata?.opencodeHistoryCheckpoint
-                || Object.keys(currentMetadata?.conversationHistoryIndexes ?? {}).length > 0) {
+            if (!historyMetadataDurable) {
+                await this.conversationHistory.disableFork().catch((error) => logger.warn('[opencode-remote] Forks disabled while metadata is unavailable', error));
+            } else {
                 try {
                     await this.conversationHistory.reconcileHistory();
                     await this.conversationHistory.publish();
                 } catch (error) {
-                    await this.conversationHistory.disableFork();
-                    if (strictForkResume || !this.conversationHistory.isDiverged()) throw error;
+                    await this.conversationHistory.disableFork().catch((writeError) => logger.warn('[opencode-remote] Forks disabled while history is unavailable', writeError));
+                    if (strictHistoryVerification) throw error;
                 }
             }
         }
@@ -883,12 +896,12 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                         // fork or handoff can trust the compacted history.
                         this.conversationHistory.clearPromptIndexes();
                         try {
-                            await this.conversationHistory.reconcileHistory();
+                            await this.conversationHistory.reconcileHistory(undefined, { allowUnobservedAppend: true });
                             await this.conversationHistory.publish();
                             this.nativeHistoryUnverified = false;
                         } catch {
                             if (!this.conversationHistory.isDiverged()) {
-                                await this.conversationHistory.invalidateHistory();
+                                await this.conversationHistory.invalidateHistory().catch((error) => logger.warn('[opencode-remote] History divergence persistence deferred', error));
                             }
                         }
                     } finally {
@@ -943,7 +956,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 // A merged batch is one native prompt, so only its first item
                 // is a native fork boundary (same merge semantics as grok).
                 try {
-                    await this.conversationHistory.reconcileHistory();
+                    await this.conversationHistory.reconcileHistory(undefined, { allowUnobservedAppend: true });
                     if (nativeUserCount !== null) {
                         if (!this.conversationHistory.getCheckpoint()?.userMessageIds[nativeUserCount]) {
                             throw new Error('OpenCode did not persist the accepted prompt');
@@ -955,14 +968,14 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 } catch {
                     // Never expose newly accepted rows without a verified
                     // native identity checkpoint for a future handoff.
-                    if (!this.conversationHistory.isDisabled()) {
-                        await this.conversationHistory.invalidateHistory();
+                    if (!this.conversationHistory.isDiverged()) {
+                        await this.conversationHistory.invalidateHistory().catch((error) => logger.warn('[opencode-remote] History divergence persistence deferred', error));
                     }
                 }
                 void backend.refreshSessionInfo(acpSessionId, session.path);
                 } catch (error) {
                     if (this.nativeHistoryUnverified && !this.conversationHistory.isDiverged()) {
-                        await this.conversationHistory.invalidateHistory();
+                        await this.conversationHistory.invalidateHistory().catch((writeError) => logger.warn('[opencode-remote] History divergence persistence deferred', writeError));
                     }
                     logger.warn('[opencode-remote] prompt failed', error);
                     this.reportPromptFailure(error);
