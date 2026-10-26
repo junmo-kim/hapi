@@ -55,7 +55,7 @@ describe('setPeerPermissionMode', () => {
 
         expect(error).toBeInstanceOf(PingPeerError)
         expect((error as PingPeerError).code).toBe('bad_args')
-        expect((error as PingPeerError).message).toContain('allowed: default, read-only, safe-yolo, yolo')
+        expect((error as PingPeerError).message).toContain('allowed: default, read-only, safe-yolo, autoReview, yolo')
         expect(http.post).toHaveBeenCalledTimes(1)
     })
 
@@ -63,7 +63,7 @@ describe('setPeerPermissionMode', () => {
         const http = createHttpMock({ flavor: 'codex', active: false, shared: true })
 
         await expect(setPeerPermissionMode({ ...base, sessionIdPrefix: sessionId, mode: 'safe-yolo', http: http as never }))
-            .rejects.toMatchObject({ code: 'bad_args', message: "invalid mode 'safe-yolo' for codex; allowed: default, read-only, yolo" })
+            .rejects.toMatchObject({ code: 'bad_args', message: "invalid mode 'safe-yolo' for codex; allowed: default, read-only, autoReview, yolo" })
         expect(http.post).toHaveBeenCalledTimes(1)
     })
 
