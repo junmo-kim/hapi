@@ -156,6 +156,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     /** Subscription to the agent's own server event stream; null until the ACP session id is known, closed in cleanup(). */
     private eventStream: OpencodeEventSubscription | null = null;
     private stallErrorReportedForPrompt = false;
+    private promptHistoryUnverified = false;
     /** Cancels the detached capability probe when remote mode is left. */
     private readonly historyProbeAbortController = new AbortController();
     private readonly conversationHistory = new OpencodeConversationHistory(() => ({
@@ -244,6 +245,14 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
 
         await backend.initialize();
 
+        // Handoffs reuse the same client; restore only after the previous
+        // launcher's checkpoint/divergence writes have reached the hub.
+        if (typeof session.client.flushMetadata === 'function'
+            && !(typeof session.client.isPending === 'function' && session.client.isPending())
+            && !await session.client.flushMetadata()) {
+            throw new Error('OpenCode history metadata did not become durable before remote entry');
+        }
+
         const resumeSessionId = session.sessionId;
         // A fork child's transcript already lives on the hub; silently
         // falling back to a blank native session would show inherited
@@ -298,9 +307,6 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             throw new Error('OpenCode fork loaded a different native session');
         }
         session.onSessionFound(acpSessionId);
-        if ((resumeSessionId || strictForkResume) && typeof session.client.emitSessionReady === 'function') {
-            session.client.emitSessionReady();
-        }
         this.activeAcpSessionId = acpSessionId;
 
         // v2: the internal HTTP API port is bound randomly after spawn and
@@ -390,18 +396,26 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                         path: metadata?.path ?? session.path,
                         host: metadata?.host ?? 'unknown',
                         capabilities,
-                        conversationHistoryPoints: {
+                        conversationHistoryPoints: this.conversationHistory.isDiverged() ? undefined : {
                             ...metadata?.conversationHistoryPoints,
                             ...this.conversationHistory.getHistoryPoints()
                         },
-                        conversationHistoryIndexes: {
+                        conversationHistoryIndexes: this.conversationHistory.isDiverged() ? undefined : {
                             ...metadata?.conversationHistoryIndexes,
                             ...this.conversationHistory.getHistoryIndexes()
-                        }
+                        },
+                        opencodeHistoryCheckpoint: this.conversationHistory.getCheckpoint(),
+                        conversationHistoryDiverged: metadata?.conversationHistoryDiverged || this.conversationHistory.isDiverged() || undefined
                     };
                 });
-            } catch {
-                // best-effort; transient hub disconnects must not crash the loop
+                if (typeof session.client.flushMetadata === 'function'
+                    && !(typeof session.client.isPending === 'function' && session.client.isPending())
+                    && !await session.client.flushMetadata()) {
+                    throw new Error('OpenCode history checkpoint could not be persisted');
+                }
+            } catch (error) {
+                logger.warn('[opencode-remote] History metadata persistence failed', error);
+                throw error;
             }
         });
         // A persisted divergence flag must survive later launches too — the
@@ -424,6 +438,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                         capabilities,
                         conversationHistoryPoints: undefined,
                         conversationHistoryIndexes: undefined,
+                        opencodeHistoryCheckpoint: undefined,
                         conversationHistoryDiverged: true
                     };
                 });
@@ -436,16 +451,31 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     ? session.client.getMetadata()?.conversationHistoryIndexes
                     : undefined
             );
+            this.conversationHistory.restoreCheckpoint(currentMetadata?.opencodeHistoryCheckpoint);
+            if (currentMetadata?.opencodeHistoryCheckpoint
+                || Object.keys(currentMetadata?.conversationHistoryIndexes ?? {}).length > 0) {
+                try {
+                    await this.conversationHistory.reconcileHistory();
+                    await this.conversationHistory.publish();
+                } catch (error) {
+                    await this.conversationHistory.disableFork();
+                    if (strictForkResume || !this.conversationHistory.isDiverged()) throw error;
+                }
+            }
         }
         session.client.rpcHandlerManager.registerHandler(RPC_METHODS.ForkConversation, async (payload: unknown) => {
             const messageLocalId = payload !== null && typeof payload === 'object' && !Array.isArray(payload)
                 && typeof (payload as Record<string, unknown>).messageLocalId === 'string'
                 ? (payload as Record<string, unknown>).messageLocalId as string
                 : undefined;
-            return await this.conversationHistory.fork(messageLocalId);
+            const result = await this.conversationHistory.fork(messageLocalId);
+            return { ...result, opencodeHistoryCheckpoint: await this.conversationHistory.checkpointForkedSession(result.nativeSessionId) };
         });
         if (!historyDiverged) {
             void this.conversationHistory.probeCapabilities(this.historyProbeAbortController.signal).catch(() => {});
+        }
+        if ((resumeSessionId || strictForkResume) && typeof session.client.emitSessionReady === 'function') {
+            session.client.emitSessionReady();
         }
 
         // Seed currentBackendModel from the ACP session metadata so the first
@@ -858,7 +888,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                             session.client.updateMetadata((metadata) => ({
                                 ...metadata,
                                 conversationHistoryPoints: undefined,
-                                conversationHistoryIndexes: undefined
+                                conversationHistoryIndexes: undefined,
+                                opencodeHistoryCheckpoint: undefined
                             }));
                         } catch {
                             // best-effort; transient hub disconnects must not crash the loop
@@ -894,9 +925,9 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 // Native automatic compaction can append both a user-role
                 // compaction marker and a synthetic continuation. Re-read the
                 // native count before each prompt instead of assuming that the
-                // previous HAPI batch added exactly one user message. This is
-                // one bounded native-history read per batch; a failed read must
-                // omit this point, never reuse a potentially stale position.
+                // previous HAPI batch added exactly one user message. A failed
+                // read must omit this point, never reuse a stale position. A
+                // second snapshot below verifies the completed native history.
                 const nativeUserCount = await this.conversationHistory.getNativeUserMessageCount(waitSignal);
                 if (waitSignal.aborted || this.shouldExit) {
                     continue;
@@ -905,25 +936,40 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     logger.warn('[opencode-remote] Native history unavailable; skipping fork point');
                 }
                 logger.debug(`[opencode-remote] history point: localId=${batch.items[0]?.localId} index=${nativeUserCount} items=${batch.items.length}`);
-                // Record the locator only after OpenCode
-                // accepted the prompt — a rejected turn persists no user message,
-                // so committing earlier would leave a forkable locator at an
-                // index that belongs to no prompt.
+                // Publish a locator only after completion and verification;
+                // failed/cancelled requests may leave partial native history.
+                this.promptHistoryUnverified = true;
                 await backend.prompt(acpSessionId, promptContent, (message: AgentMessage) => {
                     this.handleAgentMessage(message);
                 });
-                if (nativeUserCount !== null) {
-                    // Multi-message batches are joined into one native prompt, so
-                    // only the first item's localId becomes a fork point (same
-                    // merge semantics as grok).
-                    this.conversationHistory.rememberPromptIndex(batch.items[0]?.localId, nativeUserCount);
-                    void this.conversationHistory.publish().catch(() => {});
+                // A merged batch is one native prompt, so only its first item
+                // is a native fork boundary (same merge semantics as grok).
+                try {
+                    await this.conversationHistory.reconcileHistory();
+                    if (nativeUserCount !== null) {
+                        if (!this.conversationHistory.getCheckpoint()?.userMessageIds[nativeUserCount]) {
+                            throw new Error('OpenCode did not persist the accepted prompt');
+                        }
+                        this.conversationHistory.rememberPromptIndex(batch.items[0]?.localId, nativeUserCount);
+                    }
+                    await this.conversationHistory.publish();
+                    this.promptHistoryUnverified = false;
+                } catch {
+                    // Never expose newly accepted rows without a verified
+                    // native identity checkpoint for a future handoff.
+                    if (!this.conversationHistory.isDisabled()) {
+                        await this.conversationHistory.invalidateHistory();
+                    }
                 }
                 void backend.refreshSessionInfo(acpSessionId, session.path);
                 } catch (error) {
+                    if (this.promptHistoryUnverified && !this.conversationHistory.isDiverged()) {
+                        await this.conversationHistory.invalidateHistory();
+                    }
                     logger.warn('[opencode-remote] prompt failed', error);
                     this.reportPromptFailure(error);
                 } finally {
+                    this.promptHistoryUnverified = false;
                     session.onThinkingChange(false);
                     await this.permissionHandler?.cancelAll('Prompt finished');
                     if (session.queue.size() === 0 && !this.shouldExit) {
@@ -957,7 +1003,9 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         // subsequent local mode: the loopback server is going away, so forks
         // can no longer be served (same lifecycle as /compact above).
         this.conversationHistory.setBusy(true);
-        void this.conversationHistory.disableFork().catch(() => {});
+        void (this.promptHistoryUnverified
+            ? this.conversationHistory.invalidateHistory()
+            : this.conversationHistory.disableFork()).catch(() => {});
     }
 
     protected async cleanup(): Promise<void> {
@@ -1269,6 +1317,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                         | { ok: false; error: string }
                         | { ok: true; cancelled: false; result: CompactionResult }
                     > => {
+                        onMutationIssued?.();
                         const admitted = await triggerOpencodeCompactV2({
                             baseUrl,
                             sessionId: acpSessionId,

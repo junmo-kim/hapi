@@ -23,6 +23,7 @@ type HistoryContext = {
     mode?: 'v1' | 'v2';
     headers?: Record<string, string>;
 };
+type HistoryCheckpoint = NonNullable<ForkConversationRpcResult['opencodeHistoryCheckpoint']>;
 
 function isRouteMissing(error: unknown): boolean {
     const message = error instanceof Error ? error.message : String(error);
@@ -44,6 +45,8 @@ export class OpencodeConversationHistory {
     private readonly promptIndexByLocalId = new Map<string, number>();
     private busy = false;
     private disabled = false;
+    private checkpoint: HistoryCheckpoint | undefined;
+    private diverged = false;
     private publishCapabilities: (() => Promise<void>) | null = null;
 
     constructor(
@@ -77,6 +80,7 @@ export class OpencodeConversationHistory {
     /** Drops all persisted locators (e.g. compaction reindexes native history). */
     clearPromptIndexes(): void {
         this.promptIndexByLocalId.clear();
+        this.checkpoint = undefined;
     }
 
     setBusy(busy: boolean): void {
@@ -116,6 +120,57 @@ export class OpencodeConversationHistory {
             if (!Number.isInteger(promptIndex) || promptIndex < 0) continue;
             this.promptIndexByLocalId.set(localId, promptIndex);
         }
+    }
+
+    restoreCheckpoint(checkpoint: HistoryCheckpoint | undefined): void {
+        this.checkpoint = checkpoint;
+    }
+
+    getCheckpoint(): HistoryCheckpoint | undefined {
+        return this.checkpoint;
+    }
+
+    isDiverged(): boolean {
+        return this.diverged;
+    }
+
+    isDisabled(): boolean {
+        return this.disabled;
+    }
+
+    async invalidateHistory(): Promise<void> {
+        this.diverged = true;
+        this.clearPromptIndexes();
+        await this.disableFork();
+    }
+
+    private async markDiverged(): Promise<never> {
+        await this.invalidateHistory();
+        throw new Error('OpenCode history diverged from the HAPI transcript');
+    }
+
+    async reconcileHistory(signal?: AbortSignal): Promise<number> {
+        const { baseUrl, sessionId } = this.getContext();
+        if (!baseUrl || !sessionId) throw new Error('OpenCode session is not ready');
+        const snapshot = await this.readSnapshot(baseUrl, sessionId,
+            AbortSignal.any([AbortSignal.timeout(5_000), ...(signal ? [signal] : [])]));
+        if (this.disabled) throw new Error('Fork is not supported after launcher teardown');
+        if ((!this.checkpoint && this.promptIndexByLocalId.size > 0)
+            || (this.checkpoint && (this.checkpoint.sessionId !== sessionId
+                || this.checkpoint.messageIds.some((id, index) => snapshot.messageIds[index] !== id)
+                || [...this.promptIndexByLocalId.values()].some((index) => index >= this.checkpoint!.userMessageIds.length)))) {
+            return await this.markDiverged();
+        }
+        this.checkpoint = snapshot;
+        return snapshot.userMessageIds.length;
+    }
+
+    async checkpointForkedSession(sessionId: string): Promise<HistoryCheckpoint> {
+        const { baseUrl } = this.getContext();
+        if (!baseUrl || this.disabled) throw new Error('OpenCode session is not ready');
+        const snapshot = await this.readSnapshot(baseUrl, sessionId, AbortSignal.timeout(5_000));
+        if (this.disabled) throw new Error('Fork is not supported after launcher teardown');
+        return snapshot;
     }
 
     async probeCapabilities(signal?: AbortSignal): Promise<void> {
@@ -174,6 +229,13 @@ export class OpencodeConversationHistory {
         const { baseUrl, sessionId, mode, headers } = this.getContext();
         if (!baseUrl || !sessionId) throw new Error('OpenCode session is not ready');
 
+        // A cached numeric position is meaningful only in the native history
+        // whose identities were observed. Revalidate before any native mutation.
+        if (messageLocalId && this.states.forkAtMessage === 'unsupported') {
+            throw new Error('Historical fork is not supported');
+        }
+        if (this.checkpoint || this.promptIndexByLocalId.size > 0) await this.reconcileHistory();
+
         let messageID: string | undefined;
         if (messageLocalId) {
             if (this.states.forkAtMessage === 'unsupported') {
@@ -183,7 +245,8 @@ export class OpencodeConversationHistory {
             if (targetPromptIndex == null) {
                 throw new Error(`No native history point for message ${messageLocalId}`);
             }
-            messageID = await this.resolveUserMessageID(baseUrl, sessionId, targetPromptIndex);
+            messageID = this.checkpoint?.userMessageIds[targetPromptIndex]
+                ?? await this.resolveUserMessageID(baseUrl, sessionId, targetPromptIndex);
         } else if (this.states.forkCurrent === 'unsupported') {
             throw new Error('Fork current is not supported');
         }
@@ -229,7 +292,8 @@ export class OpencodeConversationHistory {
 
     private async resolveUserMessageID(baseUrl: string, sessionId: string, targetPromptIndex: number): Promise<string> {
         if (this.getContext().mode === 'v2') {
-            const messages = await this.fetchV2UserMessages(baseUrl, sessionId, AbortSignal.timeout(10_000));
+            const messages = (await this.fetchV2Messages(baseUrl, sessionId, AbortSignal.timeout(10_000)))
+                .filter((message) => message.type === 'user');
             const id = asString(messages[targetPromptIndex]?.id);
             if (!id) throw new Error(`OpenCode has no user message at index ${targetPromptIndex}`);
             return id;
@@ -254,40 +318,40 @@ export class OpencodeConversationHistory {
         throw new Error(`OpenCode has no user message at index ${targetPromptIndex}`);
     }
 
+    private async readSnapshot(baseUrl: string, sessionId: string, signal: AbortSignal): Promise<HistoryCheckpoint> {
+        if (this.getContext().mode === 'v2') {
+            const messages = await this.fetchV2Messages(baseUrl, sessionId, signal);
+            return { sessionId, messageIds: messages.map((message) => message.id as string),
+                userMessageIds: messages.filter((message) => message.type === 'user').map((message) => message.id as string) };
+        }
+        const response = await this.fetchFn(`${baseUrl}/session/${encodeURIComponent(sessionId)}/message`, { method: 'GET', signal });
+        if (!response.ok) throw new Error(`OpenCode message lookup failed (${response.status})`);
+        const messages: unknown = await response.json();
+        if (!Array.isArray(messages)) throw new Error('OpenCode message list is not available');
+        const entries = messages as OpencodeMessageEntry[];
+        const messageIds = entries.map((message) => {
+            const id = asString(message.info?.id);
+            if (!id) throw new Error('OpenCode returned an invalid message');
+            return id;
+        });
+        return { sessionId, messageIds, userMessageIds: entries.flatMap((message, i) => message.info?.role === 'user' ? [messageIds[i]!] : []) };
+    }
+
     /** Number of user messages already in the native session, or null when unknown. */
     async getNativeUserMessageCount(signal?: AbortSignal): Promise<number | null> {
-        const { baseUrl, sessionId } = this.getContext();
-        if (!baseUrl || !sessionId) return null;
         try {
-            if (this.getContext().mode === 'v2') {
-                const combined = AbortSignal.any([AbortSignal.timeout(5_000), ...(signal ? [signal] : [])]);
-                return (await this.fetchV2UserMessages(baseUrl, sessionId, combined)).length;
-            }
-            const response = await this.fetchFn(
-                `${baseUrl}/session/${encodeURIComponent(sessionId)}/message`,
-                // Bounded wait: this lookup runs before every first prompt, so a
-                // stalled loopback endpoint must not block the turn forever.
-                { method: 'GET', signal: AbortSignal.any([AbortSignal.timeout(5_000), ...(signal ? [signal] : [])]) }
-            );
-            if (!response.ok) return null;
-            const data: unknown = await response.json().catch(() => null);
-            if (!Array.isArray(data)) return null;
-            let count = 0;
-            for (const entry of data as OpencodeMessageEntry[]) {
-                if (entry?.info?.role === 'user') count++;
-            }
-            return count;
+            return await this.reconcileHistory(signal);
         } catch {
             return null;
         }
     }
 
-    private async fetchV2UserMessages(baseUrl: string, sessionId: string, signal: AbortSignal): Promise<Record<string, unknown>[]> {
+    private async fetchV2Messages(baseUrl: string, sessionId: string, signal: AbortSignal): Promise<Record<string, unknown>[]> {
         const messages: Record<string, unknown>[] = [];
         const seen = new Set<string>();
         let cursor: string | null = null;
         do {
-            const query = new URLSearchParams({ type: 'user', limit: '200' });
+            const query = new URLSearchParams({ limit: '200' });
             if (cursor) query.set('cursor', cursor);
             else query.set('order', 'asc');
             const response = await this.fetchFn(
@@ -298,8 +362,8 @@ export class OpencodeConversationHistory {
             const data: unknown = await response.json();
             if (!isObjectRecord(data) || !Array.isArray(data.data)) throw new Error('OpenCode message list is not available');
             for (const entry of data.data) {
-                if (!isObjectRecord(entry) || entry.type !== 'user' || !asString(entry.id)) {
-                    throw new Error('OpenCode returned an invalid user message');
+                if (!isObjectRecord(entry) || !asString(entry.type) || !asString(entry.id)) {
+                    throw new Error('OpenCode returned an invalid message');
                 }
                 messages.push(entry);
             }

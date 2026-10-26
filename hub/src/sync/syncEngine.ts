@@ -1496,6 +1496,10 @@ export class SyncEngine {
         source = refreshedSource
 
         const flavor = this.resolveFlavor(source)
+        if (flavor === 'opencode'
+            && rpcResult.opencodeHistoryCheckpoint?.sessionId !== rpcResult.nativeSessionId) {
+            return { type: 'error', message: 'OpenCode fork did not return a verified child history checkpoint' }
+        }
         const childId = randomUUID()
         let prefix
         try {
@@ -1535,6 +1539,8 @@ export class SyncEngine {
         }
         if (flavor === 'codex') {
             childMetadata.codexSessionId = rpcResult.nativeSessionId
+        } else if (flavor === 'opencode') {
+            childMetadata.opencodeHistoryCheckpoint = rpcResult.opencodeHistoryCheckpoint
         } else if (flavor === 'grok') {
             childMetadata.grokSessionId = rpcResult.nativeSessionId
         } else if (flavor === 'pi') {

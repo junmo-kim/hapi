@@ -35,7 +35,7 @@ describe('OpenCode v2 history transport', () => {
             }
             const parsed = new URL(url);
             expect(parsed.pathname).toBe('/api/session/ses_v2/message');
-            expect(parsed.searchParams.get('type')).toBe('user');
+            expect(parsed.searchParams.has('type')).toBe(false);
             if (parsed.searchParams.has('cursor')) {
                 expect(parsed.searchParams.get('cursor')).toBe('page-2');
                 expect(parsed.searchParams.has('order')).toBe(false);
@@ -207,6 +207,7 @@ describe('OpencodeConversationHistory fork', () => {
         });
 
         const history = new OpencodeConversationHistory(createContext('http://127.0.0.1:48273', 'ses_1'), fetchImpl);
+        await history.getNativeUserMessageCount();
         history.rememberPromptIndex('local-second', 1);
 
         const result = await history.fork('local-second');
@@ -237,6 +238,44 @@ describe('OpencodeConversationHistory fork', () => {
 });
 
 describe('OpencodeConversationHistory guards', () => {
+    it.each([undefined, 'local-second'])('rejects current and historical forks after native identity replacement (%s)', async (localId) => {
+        const fetchImpl = vi.fn(async (_url: string, _init?: RequestInit) => jsonResponse([
+            { info: { id: 'msg_first', role: 'user' } },
+            { info: { id: 'msg_new_assistant', role: 'assistant' } },
+            { info: { id: 'msg_second', role: 'user' } }
+        ]));
+        const history = new OpencodeConversationHistory(createContext('http://127.0.0.1:48273', 'ses_1'), fetchImpl);
+        history.restorePromptIndexes({ 'local-second': 1 });
+        history.restoreCheckpoint({ sessionId: 'ses_1', messageIds: ['msg_first', 'msg_old_assistant', 'msg_second'],
+            userMessageIds: ['msg_first', 'msg_second'] });
+        await expect(history.fork(localId)).rejects.toThrow('diverged');
+        expect(history.isDiverged()).toBe(true);
+        expect(history.getHistoryPoints()).toEqual({});
+        expect(fetchImpl.mock.calls.every(([, init]) => init?.method === 'GET')).toBe(true);
+    });
+
+    it('accepts append-only local turns and automatic compaction while preserving old identities', async () => {
+        const history = new OpencodeConversationHistory(createContext('http://127.0.0.1:48273', 'ses_1'),
+            async () => jsonResponse([
+                { info: { id: 'msg_first', role: 'user' } }, { info: { id: 'msg_answer', role: 'assistant' } },
+                { info: { id: 'msg_marker', role: 'user' } }, { info: { id: 'msg_continue', role: 'user' } }
+            ]));
+        history.restorePromptIndexes({ 'local-first': 0 });
+        history.restoreCheckpoint({ sessionId: 'ses_1', messageIds: ['msg_first', 'msg_answer'], userMessageIds: ['msg_first'] });
+        await expect(history.reconcileHistory()).resolves.toBe(3);
+        expect(history.isDiverged()).toBe(false);
+        expect(history.getHistoryPoints()).toEqual({ 'local-first': true });
+        expect(history.getCheckpoint()?.messageIds).toEqual(['msg_first', 'msg_answer', 'msg_marker', 'msg_continue']);
+    });
+
+    it('does not trust legacy numeric locators without an identity checkpoint', async () => {
+        const history = new OpencodeConversationHistory(createContext('http://127.0.0.1:48273', 'ses_1'),
+            async () => jsonResponse([{ info: { id: 'msg_unknown', role: 'user' } }]));
+        history.restorePromptIndexes({ 'local-old': 0 });
+        await expect(history.reconcileHistory()).rejects.toThrow('diverged');
+        expect(history.isDiverged()).toBe(true);
+    });
+
     it.each([200, 404, 405])('never republishes capabilities from a late %i fork response after teardown', async (status) => {
         let complete!: (response: Response) => void;
         const fetchImpl: FetchLike = vi.fn(() => new Promise<Response>((resolve) => { complete = resolve; }));

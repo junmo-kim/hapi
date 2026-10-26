@@ -344,6 +344,11 @@ vi.mock('@/ui/logger', () => ({
 
 import { opencodeRemoteLauncher, selectAbortStatusMessage } from './opencodeRemoteLauncher';
 
+afterEach(() => {
+    harness.clientMetadata = undefined;
+    harness.metadataUpdates.length = 0;
+});
+
 function createMode(model?: string): OpencodeMode {
     return {
         permissionMode: 'default' as PermissionMode,
@@ -573,6 +578,73 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         (backendModule.createOpencodeBackend as unknown as ReturnType<typeof vi.fn>).mockClear();
     });
 
+    it('persists divergence after local undo replaces native messages at restored indexes', async () => {
+        harness.clientMetadata = {
+            path: '/tmp/hapi-opencode-test', host: 'fixture',
+            conversationHistoryPoints: { 'local-original': true },
+            conversationHistoryIndexes: { 'local-original': 0 },
+            opencodeHistoryCheckpoint: { sessionId: 'acp-session-1', messageIds: ['msg_original'], userMessageIds: ['msg_original'] }
+        };
+        const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => new Response(JSON.stringify(
+            init?.method === 'POST' ? { id: 'ses_wrong_child' }
+                : String(input).endsWith('/message') ? [{ info: { id: 'msg_replacement', role: 'user' } }]
+                    : { paths: { '/session/{sessionID}/fork': { post: {} } } }
+        )));
+        const { session, rpcHandlers } = createSessionStub([], { keepOpen: true });
+        session.sessionId = 'acp-session-1';
+        const pending = opencodeRemoteLauncher(session as never);
+        try {
+            await vi.waitFor(() => expect(rpcHandlers.has('fork-conversation')).toBe(true));
+            await expect(rpcHandlers.get('fork-conversation')!({ messageLocalId: 'local-original' }))
+                .rejects.toThrow(/diverg|not supported/i);
+            expect(harness.clientMetadata?.conversationHistoryDiverged).toBe(true);
+            expect(harness.clientMetadata?.conversationHistoryIndexes).toBeUndefined();
+            expect(fetchSpy.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+        } finally {
+            session.queue.close();
+            await pending;
+            fetchSpy.mockRestore();
+        }
+    });
+
+    it('refuses remote entry until previous checkpoint writes are durable', async () => {
+        const { session, rpcHandlers } = createSessionStub([]);
+        Object.assign(session.client, { flushMetadata: vi.fn(async () => false) });
+        await expect(opencodeRemoteLauncher(session as never)).rejects.toThrow('durable before remote entry');
+        expect(rpcHandlers.has('fork-conversation')).toBe(false);
+        expect(harness.promptCount).toBe(0);
+    });
+
+    it('waits for checkpoint persistence before completing a prompt batch', async () => {
+        let persist!: () => void;
+        const persistence = new Promise<void>((resolve) => { persist = resolve; });
+        const { session } = createSessionStub([{ message: 'hello', localId: 'local-hello', mode: createMode() }]);
+        let waitingForPersistence = false;
+        Object.assign(session.client, { flushMetadata: vi.fn(async () => {
+            if (harness.clientMetadata?.opencodeHistoryCheckpoint && harness.promptCount > 0) {
+                waitingForPersistence = true;
+                await persistence;
+            }
+            return true;
+        }) });
+        const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => new Response(JSON.stringify(
+            String(input).endsWith('/message')
+                ? (harness.promptCount ? [{ info: { id: 'msg_hello', role: 'user' } }] : [])
+                : { paths: { '/session/{sessionID}/fork': { post: {} } } }
+        )));
+        let finished = false;
+        const pending = opencodeRemoteLauncher(session as never).then(() => { finished = true; });
+        try {
+            await vi.waitFor(() => expect(waitingForPersistence).toBe(true));
+            await new Promise<void>((resolve) => setImmediate(resolve));
+            expect(finished).toBe(false);
+        } finally {
+            persist();
+            await pending;
+            fetchSpy.mockRestore();
+        }
+    });
+
     it('forks the actual next prompt after v1 automatic compaction adds internal user messages', async () => {
         const messages: Array<{ info: { id: string; role: string }; parts?: unknown[] }> = [];
         let forkBody: unknown;
@@ -581,6 +653,10 @@ describe('opencodeRemoteLauncher inline model switch', () => {
             if (init?.method === 'POST') {
                 forkBody = JSON.parse(init.body as string);
                 return new Response(JSON.stringify({ id: 'ses_compacted_fork' }));
+            }
+            if (url.includes('/ses_compacted_fork/message')) {
+                return new Response(JSON.stringify(messages.filter((entry) => entry.info.role === 'user').slice(0, 3)
+                    .map((entry) => ({ info: { ...entry.info, id: 'forked_' + entry.info.id } }))));
             }
             return new Response(JSON.stringify(url.endsWith('/message')
                 ? messages
@@ -608,7 +684,10 @@ describe('opencodeRemoteLauncher inline model switch', () => {
             await vi.waitFor(() => expect(harness.clientMetadata?.conversationHistoryPoints).toMatchObject({ 'local-second': true }));
             await new Promise<void>((resolve) => setImmediate(resolve));
             await expect(rpcHandlers.get('fork-conversation')!({ messageLocalId: 'local-second' }))
-                .resolves.toEqual({ nativeSessionId: 'ses_compacted_fork' });
+                .resolves.toEqual({ nativeSessionId: 'ses_compacted_fork', opencodeHistoryCheckpoint: {
+                    sessionId: 'ses_compacted_fork', messageIds: ['forked_msg_first', 'forked_msg_compaction', 'forked_msg_continue'],
+                    userMessageIds: ['forked_msg_first', 'forked_msg_compaction', 'forked_msg_continue']
+                } });
             expect(forkBody).toEqual({ messageID: 'msg_second' });
             expect(harness.clientMetadata?.conversationHistoryIndexes).toMatchObject({ 'local-first': 0, 'local-second': 3 });
         } finally {
@@ -642,6 +721,11 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         const countSpy = vi.spyOn(OpencodeConversationHistory.prototype, 'getNativeUserMessageCount')
             .mockResolvedValueOnce(null).mockResolvedValueOnce(3);
         const rememberSpy = vi.spyOn(OpencodeConversationHistory.prototype, 'rememberPromptIndex');
+        const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => new Response(JSON.stringify(
+            String(input).endsWith('/message')
+                ? Array.from({ length: harness.promptCount === 1 ? 1 : 4 }, (_, i) => ({ info: { id: `msg_${i}`, role: 'user' } }))
+                : { paths: { '/session/{sessionID}/fork': { post: {} } } }
+        )));
         try {
             const { session } = createSessionStub([
                 { message: 'unavailable', localId: 'local-unavailable', mode: createMode() },
@@ -653,6 +737,7 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         } finally {
             countSpy.mockRestore();
             rememberSpy.mockRestore();
+            fetchSpy.mockRestore();
         }
     });
 

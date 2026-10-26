@@ -146,7 +146,7 @@ describe('Pi conversation-history hub integration', () => {
         }
     })
 
-    it('requires exact native binding before an opencode fork reports success', async () => {
+    it.each([true, false])('requires a child checkpoint and exact native binding for opencode (checkpoint=%s)', async (validCheckpoint) => {
         const { store, engine } = createEngine()
         try {
             const source = engine.getOrCreateSession('oc-source', {
@@ -160,8 +160,13 @@ describe('Pi conversation-history hub integration', () => {
             store.messages.addMessage(source.id, { role: 'user', content: 'one' }, 'local1')
             store.messages.markMessagesInvoked(source.id, ['local1'], Date.now())
 
-            ;(engine as any).rpcGateway.forkConversation = async () => ({ nativeSessionId: 'oc-clone-native' })
-            ;(engine as any).rpcGateway.spawnSession = async (...args: unknown[]) => ({ type: 'success', sessionId: args[12] })
+            const checkpoint = { sessionId: 'oc-clone-native', messageIds: ['child-user'], userMessageIds: ['child-user'] }
+            ;(engine as any).rpcGateway.forkConversation = async () => ({ nativeSessionId: 'oc-clone-native', opencodeHistoryCheckpoint: validCheckpoint ? checkpoint : undefined })
+            let spawnCalls = 0
+            ;(engine as any).rpcGateway.spawnSession = async (...args: unknown[]) => {
+                spawnCalls++
+                return { type: 'success', sessionId: args[12] }
+            }
             ;(engine as any).rpcGateway.stopSession = async () => true
             const exactBinds: unknown[][] = []
             ;(engine as any).waitForExactNativeForkBound = async (...args: unknown[]) => {
@@ -170,8 +175,14 @@ describe('Pi conversation-history hub integration', () => {
             }
 
             const result = await engine.forkConversation(source.id, 'default')
+            if (!validCheckpoint) {
+                expect(result).toEqual({ type: 'error', message: 'OpenCode fork did not return a verified child history checkpoint' })
+                expect(spawnCalls).toBe(0)
+                return
+            }
             if (result.type !== 'success') throw new Error(result.message)
             expect(exactBinds).toEqual([[result.sessionId, 'oc-clone-native', 'opencodeSessionId', true]])
+            expect((store.sessions.getSession(result.sessionId)?.metadata as { opencodeHistoryCheckpoint?: unknown })?.opencodeHistoryCheckpoint).toEqual(checkpoint)
         } finally {
             engine.stop()
         }
