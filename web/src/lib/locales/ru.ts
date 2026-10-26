@@ -50,6 +50,8 @@ export default {
   'login.error.loginUnavailable': 'Вход недоступен.',
   'login.error.bindFailed': 'Не удалось привязать',
   'login.error.authFailed': 'Ошибка аутентификации',
+  'login.error.redirected': 'Запрос был перенаправлен',
+  'login.redirect.open': 'Открыть {host}',
   'login.help': 'Нужна помощь?',
   'login.server.default': '(По умолчанию)',
   'login.server.custom': '(Свой)',
@@ -464,6 +466,10 @@ export default {
   'terminal.paste.fallbackTitle': 'Вставить ввод',
   'terminal.paste.fallbackDescription': 'Чтение из буфера обмена недоступно. Вставьте текст ниже.',
   'terminal.paste.placeholder': 'Вставьте ввод терминала сюда…',
+  'terminal.toAgent.buffer': 'Агенту',
+  'terminal.toAgent.selection': 'Выделение агенту',
+  'terminal.toAgent.fueTitle': 'Отправить терминал агенту',
+  'terminal.toAgent.fueBody': 'Откройте терминал сессии и нажмите «Агенту», чтобы положить весь scrollback в поле ввода — или сначала выделите текст, и кнопка станет «Выделение агенту». При желании добавьте заметку и отправьте.',
 
   // Блок кода
   'code.copy': 'Копировать',
@@ -881,6 +887,8 @@ export default {
   'settings.display.activeSessionsOnly.desc': 'Скрыть неактивные сессии в боковой панели. Открытая сессия остаётся видимой.',
   'settings.display.pinInProgressSessions': 'Закреплять сессии в работе',
   'settings.display.pinInProgressSessions.desc': 'Перемещать незакреплённые подключённые сессии в разделы над папками проекта: сначала выполняющиеся и ожидающие, затем спокойные активные сессии (выполнение завершено, подключение есть). Глобальные закрепления остаются выше них. Выключено — всё остаётся в группах по каталогам.',
+  'settings.display.fixedSessionOrder': 'Фиксированный порядок сессий',
+  'settings.display.fixedSessionOrder.desc': 'Список сессий больше не «прыгает»: сессии и рабочие каталоги не меняют порядок при обновлениях и смене статуса; первыми идут недавно созданные. Закрепления остаются наверху; «Закреплять сессии в работе» при этом не действует.',
   'settings.display.appBadge': 'Значок непрочитанного на панели задач',
   'settings.display.appBadge.desc': 'Показывать число сессий с новой активностью в установленной PWA Edge или Chrome. Внешний вид определяет браузер хоста; в обычной вкладке браузера это не действует.',
   'settings.display.sessionListStatus': 'Подсказки статуса в списке сессий',
