@@ -1,7 +1,8 @@
-import { cleanup, render, screen } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { act, cleanup, render, screen } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SessionSummary } from '@/types/api'
 import { I18nProvider } from '@/lib/i18n-context'
+import { markCodexSessionsImported } from '@/lib/codexImportedSessions'
 import { SessionRowSummary } from './SessionRowSummary'
 
 afterEach(() => cleanup())
@@ -160,5 +161,45 @@ describe('SessionRowSummary background status', () => {
         )
 
         expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('New activity')
+    })
+})
+
+describe('SessionRowSummary time label', () => {
+    beforeEach(() => {
+        localStorage.clear()
+    })
+
+    afterEach(() => {
+        vi.useRealTimers()
+    })
+
+    it('advances the relative time without a parent render', () => {
+        vi.useFakeTimers()
+        vi.setSystemTime(1_800_000_000_000)
+        render(
+            <I18nProvider>
+                <SessionRowSummary session={makeSummary({ updatedAt: 1_800_000_000_000, backgroundTaskCount: 0 })} />
+            </I18nProvider>
+        )
+        expect(screen.getByText('just now')).toBeInTheDocument()
+
+        act(() => { vi.advanceTimersByTime(2 * 60_000) })
+        expect(screen.getByText('2m ago')).toBeInTheDocument()
+    })
+
+    it('shows a Codex import marker set after the first render', () => {
+        render(
+            <I18nProvider>
+                <SessionRowSummary session={makeSummary({
+                    updatedAt: Date.now() - 3 * 60 * 60_000,
+                    backgroundTaskCount: 0,
+                    metadata: { path: '/demo', name: 'Imported', flavor: 'codex', agentSessionId: 'codex-thread' },
+                })} />
+            </I18nProvider>
+        )
+        expect(screen.queryByText('just imported from Codex')).toBeNull()
+
+        act(() => { markCodexSessionsImported(['codex-thread']) })
+        expect(screen.getByText('just imported from Codex')).toBeInTheDocument()
     })
 })
