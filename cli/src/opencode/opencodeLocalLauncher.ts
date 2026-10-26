@@ -241,7 +241,7 @@ export async function opencodeLocalLauncher(
     const sentToolResults = new Set<string>();
     const textBuffers = new Map<string, string>();
     const toolExecutionQueues = new Map<string, string[]>();
-    const historyPublisher = createLocalHistoryPublisher(session.client,
+    const historyPublisher = session.localHistoryPublisher ??= createLocalHistoryPublisher(session.client,
         (error) => logger.warn('[opencode-local] History publication paused after synchronization failure', error));
     const sendLocalUserMessage = (text: string, messageId: string | null) => {
         historyPublisher.publish(session.sessionId, messageId, () => session.sendUserMessage(text));

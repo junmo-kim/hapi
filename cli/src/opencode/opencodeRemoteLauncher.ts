@@ -401,7 +401,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     if (conversationHistory) {
                         capabilities.conversationHistory = conversationHistory;
                     }
-                    const diverged = this.conversationHistory.isDiverged();
+                    const diverged = Boolean(metadata.conversationHistoryDiverged || this.conversationHistory.isDiverged());
+                    if (diverged) delete capabilities.conversationHistory;
                     const publishSnapshot = !this.conversationHistory.isDisabled();
                     return {
                         ...metadata,

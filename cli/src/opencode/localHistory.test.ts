@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
 import type { Metadata } from '@/api/types';
 import { observeLocalHistory, createLocalHistoryPublisher } from './localHistory';
 import { OpencodeConversationHistory } from './conversationHistory';
@@ -111,27 +112,135 @@ describe('durable local publication journal', () => {
         await expect(historyFor(metadata, ['msg_c', 'msg_a']).reconcileHistory()).resolves.toBe(2);
     });
 
-    it.each(['metadata', 'content'])('stops further forwarding and leaves restart verifiably unsafe on %s failure', async (failure) => {
+    it.each(['metadata', 'content'])('recovers queued and future forwarding after reconnect without restoring fork trust (%s timeout)', async (failure) => {
         let metadata: Metadata = structuredClone(base);
+        let connected = failure === 'content';
+        let disconnectOnSend = failure === 'content';
+        const events = new EventEmitter();
         const changes: Array<(value: Metadata) => Metadata> = [];
         const client = {
             updateMetadata(handler: (value: Metadata) => Metadata) { changes.push(handler); },
             materialize: async () => true,
             flushMetadata: async () => {
-                if (failure === 'metadata') return false;
+                if (!connected) return false;
                 for (const handler of changes.splice(0)) metadata = handler(metadata);
                 return true;
             },
-            flush: async () => failure !== 'content'
+            flush: async () => connected,
+            on: events.on.bind(events), off: events.off.bind(events)
         };
         const errors = vi.fn();
         const publisher = createLocalHistoryPublisher(client, errors);
         const sent: string[] = [];
-        publisher.publish('ses_1', 'msg_a', () => { sent.push('a'); });
+        publisher.publish('ses_1', 'msg_a', () => {
+            sent.push('a');
+            if (disconnectOnSend) { connected = false; disconnectOnSend = false; }
+        });
         publisher.publish('ses_1', 'msg_b', () => { sent.push('b'); });
-        await publisher.flush();
-        expect(sent).toEqual(failure === 'metadata' ? [] : ['a']);
-        expect(errors).toHaveBeenCalledTimes(1);
-        await expect(historyFor(metadata, ['msg_c', 'msg_a']).reconcileHistory()).rejects.toThrow('diverged');
+        try {
+            await publisher.flush();
+            expect(sent).toEqual(failure === 'metadata' ? [] : ['a']);
+            expect(errors).toHaveBeenCalledTimes(1);
+            await expect(historyFor(metadata, ['msg_c', 'msg_a']).reconcileHistory()).rejects.toThrow('diverged');
+            connected = true;
+            events.emit('connected');
+            await vi.waitFor(() => expect(sent).toEqual(['a', 'b']));
+            await publisher.flush();
+            expect(metadata.conversationHistoryDiverged).toBe(true);
+            publisher.publish('ses_1', 'msg_d', () => { sent.push('d'); });
+            await publisher.flush();
+            expect(sent).toEqual(['a', 'b', 'd']);
+            expect(metadata.conversationHistoryDiverged).toBe(true);
+        } finally {
+            publisher.stop();
+            expect(events.listenerCount('connected')).toBe(0);
+            events.removeAllListeners();
+        }
+    });
+
+    it('retries an isolated timeout without requiring another publication or connect event', async () => {
+        vi.useFakeTimers();
+        let metadata: Metadata = structuredClone(base);
+        let online = false;
+        const client = {
+            updateMetadata(handler: (value: Metadata) => Metadata) { metadata = handler(metadata); },
+            materialize: async () => true,
+            flushMetadata: async () => online,
+            flush: async () => online
+        };
+        const sent: string[] = [];
+        const publisher = createLocalHistoryPublisher(client, vi.fn());
+        try {
+            publisher.publish('ses_1', 'msg_a', () => { sent.push('a'); });
+            await publisher.flush();
+            expect(sent).toEqual([]);
+            online = true;
+            await vi.advanceTimersByTimeAsync(1000);
+            expect(sent).toEqual(['a']);
+            expect(metadata.conversationHistoryDiverged).toBe(true);
+        } finally {
+            publisher.stop();
+            expect(vi.getTimerCount()).toBe(0);
+            vi.useRealTimers();
+        }
+    });
+
+    it('does not lose a reconnect that arrives while the old guard attempt is timing out', async () => {
+        let finish!: (value: boolean) => void;
+        const oldGuard = new Promise<boolean>((resolve) => { finish = resolve; });
+        const events = new EventEmitter();
+        let metadata: Metadata = structuredClone(base);
+        let calls = 0;
+        const client = {
+            updateMetadata(handler: (value: Metadata) => Metadata) { metadata = handler(metadata); },
+            materialize: async () => true,
+            flushMetadata: vi.fn(async () => ++calls === 1 ? await oldGuard : true),
+            flush: async () => true,
+            on: events.on.bind(events), off: events.off.bind(events)
+        };
+        const sent: string[] = [];
+        const publisher = createLocalHistoryPublisher(client, vi.fn());
+        try {
+            publisher.publish('ses_1', 'msg_a', () => { sent.push('a'); });
+            await vi.waitFor(() => expect(client.flushMetadata).toHaveBeenCalledTimes(1));
+            events.emit('connected');
+            finish(false);
+            await vi.waitFor(() => expect(sent).toEqual(['a']));
+            expect(metadata.conversationHistoryDiverged).toBe(true);
+        } finally {
+            finish(false);
+            publisher.stop();
+        }
+    });
+
+    it('bounds mode handoff while lazy materialization is offline and retains the pending publication', async () => {
+        vi.useFakeTimers();
+        let materialized!: (value: boolean) => void;
+        const materialization = new Promise<boolean>((resolve) => { materialized = resolve; });
+        let metadata: Metadata = structuredClone(base);
+        const client = {
+            updateMetadata(handler: (value: Metadata) => Metadata) { metadata = handler(metadata); },
+            materialize: async () => materialization,
+            flushMetadata: async () => true,
+            flush: async () => true
+        };
+        const sent: string[] = [];
+        const publisher = createLocalHistoryPublisher(client, vi.fn());
+        try {
+            publisher.publish('ses_1', 'msg_a', () => { sent.push('a'); });
+            const handoff = publisher.flush();
+            await vi.advanceTimersByTimeAsync(5000);
+            await handoff;
+            expect(sent).toEqual([]);
+            expect(metadata.conversationHistoryDiverged).toBe(true);
+            materialized(true);
+            await publisher.flush();
+            expect(sent).toEqual(['a']);
+            expect(metadata.conversationHistoryDiverged).toBe(true);
+        } finally {
+            materialized(true);
+            publisher.stop();
+            vi.useRealTimers();
+        }
     });
 });

@@ -147,6 +147,7 @@ export async function runOpencode(opts: {
         session,
         logTag: 'opencode',
         stopKeepAlive: () => sessionWrapperRef.current?.stopKeepAlive(),
+        onBeforeClose: () => sessionWrapperRef.current?.localHistoryPublisher?.stop(),
         onAfterClose: () => {
             hookServer.stop();
         }
