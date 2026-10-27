@@ -1,6 +1,6 @@
 import { RpcHandlerManager } from "@/api/rpc/RpcHandlerManager";
 import { logger } from "@/lib";
-import { DEFAULT_RPC_TIMEOUT_MS, RPC_METHODS, type SessionStopPreparationLease } from '@hapi/protocol/rpcMethods';
+import { DEFAULT_RPC_TIMEOUT_MS, getSessionStopPreparationMethod, RPC_METHODS, type SessionStopPreparationLease } from '@hapi/protocol/rpcMethods';
 import { getProcessStartMarker } from '@/utils/process';
 import { monotonicTimeMs } from '@/utils/time';
 
@@ -9,6 +9,7 @@ interface KillSessionRequest {
     prepareOnly?: boolean;
     expectedPid?: number;
     expectedProcessStartMarker?: string;
+    expectedMachineId?: string;
     preparationLease?: SessionStopPreparationLease;
 }
 
@@ -20,6 +21,7 @@ interface KillSessionResponse {
     /** Generation marker for `pid`; required before the runner will tree-kill it. */
     processStartMarker?: string;
     preparationLease?: SessionStopPreparationLease;
+    machineId?: string;
 }
 
 /**
@@ -35,6 +37,8 @@ export interface KillSessionLifecycle {
     setArchiveReason?: (reason: string) => void;
     /** Complete queued publications before the hub starts runner termination. */
     beforeKill?: (lease?: SessionStopPreparationLease) => Promise<boolean | void>;
+    /** Immutable bootstrap identity, independent of later session metadata. */
+    machineId?: string;
 }
 
 export function registerKillSessionHandler(
@@ -48,6 +52,7 @@ export function registerKillSessionHandler(
     const lifecycle: KillSessionLifecycle = typeof lifecycleOrCleanup === 'function'
         ? { cleanupAndExit: lifecycleOrCleanup }
         : lifecycleOrCleanup;
+    const machineId = lifecycle.machineId;
 
     const exitFromHubArchive = () => {
         logger.debug('Hub-archived metadata received; exiting CLI');
@@ -55,8 +60,11 @@ export function registerKillSessionHandler(
         void lifecycle.cleanupAndExit();
     };
 
-    rpcHandlerManager.registerHandler<KillSessionRequest, KillSessionResponse>(RPC_METHODS.KillSession, async (request) => {
+    const killSession = async (request: KillSessionRequest): Promise<KillSessionResponse> => {
         logger.debug('Kill session request received');
+        if (request?.expectedMachineId !== undefined && request.expectedMachineId !== machineId) {
+            throw new Error('Session machine does not match shutdown target');
+        }
         const processStartMarker = getProcessStartMarker(process.pid) ?? undefined;
         if (request?.expectedPid !== undefined && (request.expectedPid !== process.pid
             || !request.expectedProcessStartMarker || request.expectedProcessStartMarker !== processStartMarker)) {
@@ -92,8 +100,20 @@ export function registerKillSessionHandler(
             pid: process.pid,
             ...(processStartMarker ? { processStartMarker } : {}),
             ...(lease ? { preparationLease: lease } : {}),
+            ...(machineId ? { machineId } : {}),
         };
-    });
+    };
+    rpcHandlerManager.registerHandler<KillSessionRequest, KillSessionResponse>(RPC_METHODS.KillSession, killSession);
+    if (machineId && lifecycle.beforeKill) {
+        rpcHandlerManager.registerHandler<KillSessionRequest, KillSessionResponse>(
+            getSessionStopPreparationMethod(machineId, process.pid), async (request) => {
+                if (request?.prepareOnly !== true || request.expectedMachineId !== machineId || request.expectedPid !== process.pid) {
+                    throw new Error('Process-scoped shutdown requires the exact preparation target');
+                }
+                return killSession(request);
+            }
+        );
+    }
 
     // #1910: when archive lands as hub metadata (KillSession unreachable),
     // still exit instead of reconnecting forever.

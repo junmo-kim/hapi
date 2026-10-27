@@ -1,5 +1,5 @@
 import type { AgentFlavor, CodexCollaborationMode, CopilotAgentMode, PermissionMode } from '@hapi/protocol/types'
-import { DEFAULT_RPC_TIMEOUT_MS, PERMISSION_REQUEST_NOT_FOUND_MESSAGE, RPC_METHODS, type SessionStopPreparationLease } from '@hapi/protocol/rpcMethods'
+import { DEFAULT_RPC_TIMEOUT_MS, getSessionStopPreparationMethod, PERMISSION_REQUEST_NOT_FOUND_MESSAGE, RPC_METHODS, type SessionStopPreparationLease } from '@hapi/protocol/rpcMethods'
 import {
     ArchiveCodexSessionRpcResponseSchema,
     AgentAvailabilityResponseSchema,
@@ -189,9 +189,16 @@ export class RpcGateway {
     }
 
     async killSession(sessionId: string, options: {
-        prepareOnly?: boolean; expectedPid?: number; expectedProcessStartMarker?: string; preparationLease?: SessionStopPreparationLease
-    } = {}): Promise<{ pid?: number; processStartMarker?: string; preparationLease?: SessionStopPreparationLease }> {
-        const result = await this.sessionRpc(sessionId, RPC_METHODS.KillSession, options)
+        prepareOnly?: boolean; expectedMachineId?: string; expectedPid?: number; expectedProcessStartMarker?: string; preparationLease?: SessionStopPreparationLease
+    } = {}): Promise<{ pid?: number; machineId?: string; processStartMarker?: string; preparationLease?: SessionStopPreparationLease }> {
+        let method: string = RPC_METHODS.KillSession
+        if (options.prepareOnly) {
+            if (!options.expectedMachineId || !options.expectedPid || !options.expectedProcessStartMarker) {
+                throw new Error('Process shutdown preparation requires machine and process generation')
+            }
+            method = getSessionStopPreparationMethod(options.expectedMachineId, options.expectedPid)
+        }
+        const result = await this.sessionRpc(sessionId, method, options)
         if (result && typeof result === 'object' && ('error' in result || ('success' in result && result.success === false))) {
             throw new Error(typeof (result as { error?: unknown }).error === 'string'
                 ? (result as { error: string }).error : 'Session shutdown was not confirmed')
@@ -200,10 +207,12 @@ export class RpcGateway {
         const pid = (result as { pid?: unknown }).pid
         const processStartMarker = (result as { processStartMarker?: unknown }).processStartMarker
         const preparationLease = (result as { preparationLease?: SessionStopPreparationLease }).preparationLease
+        const machineId = (result as { machineId?: unknown }).machineId
         return {
             ...(typeof pid === 'number' ? { pid } : {}),
             ...(typeof processStartMarker === 'string' ? { processStartMarker } : {}),
             ...(preparationLease ? { preparationLease } : {}),
+            ...(typeof machineId === 'string' ? { machineId } : {}),
         }
     }
 

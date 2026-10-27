@@ -1,10 +1,13 @@
 import { describe, expect, it, vi } from 'vitest'
-import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
+import { getSessionStopPreparationMethod, RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import { registerKillSessionHandler } from './registerKillSessionHandler'
 import { monotonicTimeMs } from '@/utils/time'
 
 vi.mock('@/utils/time', async (original) => ({
     ...await original<typeof import('@/utils/time')>(), monotonicTimeMs: () => Date.now()
+}))
+vi.mock('@/utils/process', async (original) => ({
+    ...await original<typeof import('@/utils/process')>(), getProcessStartMarker: () => 'generation'
 }))
 
 // tiann/hapi#914: the KillSession RPC is the authoritative "user-terminated"
@@ -63,6 +66,27 @@ describe('registerKillSessionHandler (tiann/hapi#914)', () => {
         expect(result.success).toBe(true)
         expect(beforeKill).toHaveBeenCalledOnce()
         expect(cleanupAndExit).not.toHaveBeenCalled()
+    })
+
+    it('registers an immutable machine/PID preparation alias with generation validation', async () => {
+        const registry = makeRegistry()
+        const beforeKill = vi.fn(async () => true)
+        const cleanupAndExit = vi.fn(async () => {})
+        const lifecycle = { machineId: 'machine/one', beforeKill, cleanupAndExit }
+        registerKillSessionHandler(registry as never, lifecycle)
+        lifecycle.machineId = 'changed-metadata-machine'
+        const handler = registry.handlers.get(getSessionStopPreparationMethod('machine/one', process.pid))!
+        expect(handler).toBeDefined()
+        const request = { prepareOnly: true, expectedMachineId: 'machine/one', expectedPid: process.pid,
+            expectedProcessStartMarker: 'generation', preparationLease: { id: 'fixture', expiresAt: monotonicTimeMs() + 30000 } }
+        const response = await handler(request) as { success: boolean; machineId: string; pid: number }
+        expect(response).toMatchObject({ success: true, machineId: 'machine/one', pid: process.pid })
+        expect(beforeKill).toHaveBeenCalledOnce()
+        expect(cleanupAndExit).not.toHaveBeenCalled()
+        await expect(handler({ ...request, expectedProcessStartMarker: 'other-generation' })).rejects.toThrow('generation')
+        await expect(handler({ ...request, expectedMachineId: 'other-machine' })).rejects.toThrow('exact preparation target')
+        await expect(handler({ ...request, prepareOnly: false })).rejects.toThrow('exact preparation target')
+        expect(beforeKill).toHaveBeenCalledOnce()
     })
 
     it('rejects unconfirmed drains and mismatched process targets before cleanup', async () => {

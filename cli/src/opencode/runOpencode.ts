@@ -160,7 +160,7 @@ export async function runOpencode(opts: {
     });
 
     lifecycle.registerProcessHandlers();
-    registerKillSessionHandler(session.rpcHandlerManager, { ...lifecycle,
+    registerKillSessionHandler(session.rpcHandlerManager, { ...lifecycle, machineId: bootstrap.machineId,
         beforeKill: async (lease) => await sessionWrapperRef.current?.localHistoryPublisher?.prepare(lease) ?? true
     }, session);
     registerLocalHandoffHandler(session.rpcHandlerManager, lifecycle);

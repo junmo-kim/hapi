@@ -199,7 +199,7 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
             return c.json({ error: 'Session machine does not match runner' }, 403)
         }
         try {
-            const status = await engine.prepareOpenCodeSessionStop(access.sessionId, body.data.pid, body.data.processStartMarker, body.data.preparationLease)
+            const status = await engine.prepareOpenCodeSessionStop(access.sessionId, body.data.pid, body.data.processStartMarker, body.data.preparationLease, body.data.machineId)
             return c.json({ status, ...(status === 'ready' ? { preparationLease: body.data.preparationLease } : {}) })
         } catch {
             return c.json({ error: 'Session shutdown preparation was not confirmed' }, 503)

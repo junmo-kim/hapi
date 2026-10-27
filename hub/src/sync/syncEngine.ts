@@ -1811,15 +1811,16 @@ export class SyncEngine {
     }
 
     async prepareOpenCodeSessionStop(sessionId: string, pid: number, processStartMarker: string,
-        preparationLease: SessionStopPreparationLease): Promise<'ready' | 'not_required'> {
+        preparationLease: SessionStopPreparationLease, machineId: string): Promise<'ready' | 'not_required'> {
         const metadata = this.sessionCache.getSession(sessionId)?.metadata
+        if (metadata?.machineId !== machineId) throw new Error('Session machine does not match runner')
         if (metadata?.flavor !== 'opencode') return 'not_required'
         // Only request the session RPC here. Calling archiveSession would
         // recurse into the runner's StopSession handler that is awaiting us.
         const result = await this.rpcGateway.killSession(sessionId, {
-            prepareOnly: true, expectedPid: pid, expectedProcessStartMarker: processStartMarker, preparationLease
+            prepareOnly: true, expectedMachineId: machineId, expectedPid: pid, expectedProcessStartMarker: processStartMarker, preparationLease
         })
-        if (result.pid !== pid || result.processStartMarker !== processStartMarker) {
+        if (result.pid !== pid || result.processStartMarker !== processStartMarker || result.machineId !== machineId) {
             throw new Error('Session shutdown preparation did not confirm the target generation')
         }
         if (result.preparationLease?.id !== preparationLease.id || result.preparationLease.expiresAt !== preparationLease.expiresAt) {

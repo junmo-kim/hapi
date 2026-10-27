@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildCliArgs } from '@/runner/run';
 import { parseRemoteAgentCommandOptions } from '@/commands/agentCommandOptions';
 import { OPENCODE_PERMISSION_MODES } from '@hapi/protocol/modes';
+import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { createLocalHistoryPublisher, type LocalHistoryPublisher } from './localHistory';
 import type { Metadata } from '@/api/types';
 
@@ -61,14 +62,16 @@ vi.mock('@/agent/sessionFactory', () => ({
         harness.bootstrapArgs.push(options);
         return {
             api: { clearOpenCodeSession: harness.clearOpenCodeSession, reserveOpenCodeClearSession: harness.reserveOpenCodeClearSession, confirmOpenCodeClearCleanup: harness.confirmOpenCodeClearCleanup, abortOpenCodeClearSession: harness.abortOpenCodeClearSession },
-            session: harness.session
+            session: harness.session,
+            machineId: 'machine-1'
         };
     }),
     bootstrapExistingSession: vi.fn(async (options: Record<string, unknown>) => {
         harness.bootstrapExistingArgs.push(options);
         return {
             api: { clearOpenCodeSession: harness.clearOpenCodeSession, reserveOpenCodeClearSession: harness.reserveOpenCodeClearSession, confirmOpenCodeClearCleanup: harness.confirmOpenCodeClearCleanup, abortOpenCodeClearSession: harness.abortOpenCodeClearSession },
-            session: harness.session
+            session: harness.session,
+            machineId: 'machine-1'
         };
     })
 }));
@@ -240,7 +243,10 @@ describe('runOpencode set-session-config handler', () => {
         let acknowledged = false;
         const { registerKillSessionHandler } = await vi.importActual<typeof import('@/claude/registerKillSessionHandler')>('@/claude/registerKillSessionHandler');
         let kill!: () => Promise<unknown>;
-        registerKillSessionHandler({ registerHandler: (_method: string, handler: typeof kill) => { kill = handler; } } as never, {
+        expect(harness.killLifecycle?.machineId).toBe('machine-1');
+        registerKillSessionHandler({ registerHandler: (method: string, handler: typeof kill) => {
+            if (method === RPC_METHODS.KillSession) kill = handler;
+        } } as never, {
             ...harness.killLifecycle,
             cleanupAndExit: () => lifecycle.cleanup()
         });
