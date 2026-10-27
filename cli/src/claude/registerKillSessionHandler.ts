@@ -1,13 +1,15 @@
 import { RpcHandlerManager } from "@/api/rpc/RpcHandlerManager";
 import { logger } from "@/lib";
-import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
+import { DEFAULT_RPC_TIMEOUT_MS, RPC_METHODS, type SessionStopPreparationLease } from '@hapi/protocol/rpcMethods';
 import { getProcessStartMarker } from '@/utils/process';
+import { monotonicTimeMs } from '@/utils/time';
 
 interface KillSessionRequest {
     /** Runner owns process-tree termination after preparation is acknowledged. */
     prepareOnly?: boolean;
     expectedPid?: number;
     expectedProcessStartMarker?: string;
+    preparationLease?: SessionStopPreparationLease;
 }
 
 interface KillSessionResponse {
@@ -17,6 +19,7 @@ interface KillSessionResponse {
     pid: number;
     /** Generation marker for `pid`; required before the runner will tree-kill it. */
     processStartMarker?: string;
+    preparationLease?: SessionStopPreparationLease;
 }
 
 /**
@@ -31,7 +34,7 @@ export interface KillSessionLifecycle {
     cleanupAndExit: () => Promise<void>;
     setArchiveReason?: (reason: string) => void;
     /** Complete queued publications before the hub starts runner termination. */
-    beforeKill?: () => Promise<boolean | void>;
+    beforeKill?: (lease?: SessionStopPreparationLease) => Promise<boolean | void>;
 }
 
 export function registerKillSessionHandler(
@@ -59,6 +62,11 @@ export function registerKillSessionHandler(
             || !request.expectedProcessStartMarker || request.expectedProcessStartMarker !== processStartMarker)) {
             throw new Error('Session process generation does not match shutdown target');
         }
+        const lease = request?.prepareOnly === true ? request.preparationLease : undefined;
+        if (request?.prepareOnly === true && (!lease?.id || !Number.isFinite(lease.expiresAt)
+            || lease.expiresAt <= monotonicTimeMs() || lease.expiresAt > monotonicTimeMs() + DEFAULT_RPC_TIMEOUT_MS)) {
+            throw new Error('Session shutdown preparation lease is invalid or expired');
+        }
 
         // tiann/hapi#914: stamp the archive reason from the RPC path so the
         // default in `runnerLifecycle.ts` can be reassigned away from
@@ -69,7 +77,9 @@ export function registerKillSessionHandler(
 
         // The hub follows this ACK with StopSession, whose graceful process
         // deadline can be shorter than a healthy publication drain.
-        if (await lifecycle.beforeKill?.() === false) throw new Error('Session shutdown preparation was not confirmed');
+        if (await lifecycle.beforeKill?.(lease) === false || (lease && lease.expiresAt <= monotonicTimeMs())) {
+            throw new Error('Session shutdown preparation was not confirmed');
+        }
 
         // This will start the cleanup process
         if (request?.prepareOnly !== true) void lifecycle.cleanupAndExit();
@@ -81,6 +91,7 @@ export function registerKillSessionHandler(
             message: request?.prepareOnly === true ? 'Session shutdown prepared' : 'Killing hapi CLI process',
             pid: process.pid,
             ...(processStartMarker ? { processStartMarker } : {}),
+            ...(lease ? { preparationLease: lease } : {}),
         };
     });
 

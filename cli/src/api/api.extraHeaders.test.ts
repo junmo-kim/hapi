@@ -4,6 +4,10 @@ import { configuration } from '@/configuration'
 const axiosPostMock = vi.hoisted(() => vi.fn())
 const ioMock = vi.hoisted(() => vi.fn())
 
+vi.mock('@/utils/time', async (original) => ({
+    ...await original<typeof import('@/utils/time')>(), monotonicTimeMs: () => Date.now()
+}))
+
 vi.mock('axios', () => ({
     default: {
         post: axiosPostMock,
@@ -56,14 +60,18 @@ describe('API extra headers integration', () => {
     it('waits for confirmed shutdown preparation using CLI authentication and extra headers', async () => {
         configuration._setExtraHeaders({ Cookie: 'fixture' })
         let release!: () => void
-        axiosPostMock.mockReturnValue(new Promise((resolve) => { release = () => resolve({ data: { status: 'ready' } }) }))
+        axiosPostMock.mockImplementation((_url, body) => new Promise((resolve) => {
+            release = () => resolve({ data: { status: 'ready', preparationLease: body.preparationLease } })
+        }))
         const client = await ApiClient.create()
         let done = false
         const request = client.prepareOpenCodeSessionStop('session/1', 'machine-1', 123, 'gen-a').then(() => { done = true })
         await Promise.resolve()
         expect(done).toBe(false)
         expect(axiosPostMock).toHaveBeenCalledWith('https://hapi.example.com/cli/sessions/session%2F1/prepare-stop',
-            { machineId: 'machine-1', pid: 123, processStartMarker: 'gen-a' }, expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer cli-token', Cookie: 'fixture' }) }))
+            expect.objectContaining({ machineId: 'machine-1', pid: 123, processStartMarker: 'gen-a',
+                preparationLease: expect.objectContaining({ id: expect.any(String), expiresAt: expect.any(Number) }) }),
+            expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer cli-token', Cookie: 'fixture' }) }))
         release()
         await request
         expect(done).toBe(true)
@@ -77,6 +85,18 @@ describe('API extra headers integration', () => {
         await expect(client.prepareOpenCodeSessionStop('session-1', 'machine-1', 123, 'gen-a')).rejects.toMatchObject({ response: { status: 503 } })
         axiosPostMock.mockRejectedValueOnce({ isAxiosError: true, response: { status: 404 } })
         await expect(client.prepareOpenCodeSessionStop('session-1', 'machine-1', 123, 'gen-a')).resolves.toBeUndefined()
+    })
+
+    it('rejects a ready response received after its caller lease expired', async () => {
+        vi.useFakeTimers()
+        try {
+            const client = await ApiClient.create()
+            axiosPostMock.mockImplementation(async (_url, body) => {
+                vi.advanceTimersByTime(30000)
+                return { data: { status: 'ready', preparationLease: body.preparationLease } }
+            })
+            await expect(client.prepareOpenCodeSessionStop('session-1', 'machine-1', 123, 'gen-a')).rejects.toThrow('lease was not confirmed')
+        } finally { vi.useRealTimers() }
     })
 
     it('adds extra headers to REST requests', async () => {

@@ -1,4 +1,6 @@
 import type { Metadata } from '@/api/types';
+import type { SessionStopPreparationLease } from '@hapi/protocol/rpcMethods';
+import { monotonicTimeMs } from '@/utils/time';
 
 type LocalPublicationClient = {
     updateMetadata(handler: (metadata: Metadata) => Metadata): void;
@@ -43,6 +45,10 @@ export function createLocalHistoryPublisher(client: LocalPublicationClient, onEr
     let finishing: Promise<boolean> | null = null;
     let preparation: Promise<boolean> | null = null;
     let preparing = false;
+    let finalizing = false;
+    let preparationLease: SessionStopPreparationLease | undefined;
+    let leaseTimer: ReturnType<typeof setTimeout> | undefined;
+    const held: typeof queue = [];
     let retryRequested = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const clearRetry = () => { if (timer) clearTimeout(timer); timer = undefined; };
@@ -132,22 +138,49 @@ export function createLocalHistoryPublisher(client: LocalPublicationClient, onEr
         });
         return running;
     }
-    const stop = () => { stopped = true; clearRetry(); client.off?.('connected', retry); };
-    const prepare = (): Promise<boolean> => {
+    const clearLeaseTimer = () => { if (leaseTimer) clearTimeout(leaseTimer); leaseTimer = undefined; };
+    const stop = () => { stopped = true; clearRetry(); clearLeaseTimer(); held.length = 0; client.off?.('connected', retry); };
+    const releaseLease = (id: string) => {
+        if (preparationLease?.id !== id) return;
+        preparationLease = undefined;
+        clearLeaseTimer();
+        if (!stopped && !finalizing) {
+            closing = false;
+            queue.push(...held.splice(0));
+            if (!preparing) { preparation = null; void pump(); }
+        }
+    };
+    const drainQueue = async (): Promise<boolean> => {
+        if (running) await running;
+        await pump();
+        return queue.length === 0;
+    };
+    const prepare = (lease?: SessionStopPreparationLease): Promise<boolean> => {
         if (stopped) return Promise.resolve(queue.length === 0);
+        if (finalizing || (lease && lease.expiresAt <= monotonicTimeMs())) return Promise.resolve(false);
+        if (preparation && (preparationLease?.id !== lease?.id || preparationLease?.expiresAt !== lease?.expiresAt)) {
+            return Promise.resolve(false);
+        }
         if (!preparation) {
             preparing = true;
             clearRetry();
+            preparationLease = lease ? { ...lease } : undefined;
+            if (lease) {
+                leaseTimer = setTimeout(() => releaseLease(lease.id), Math.max(0, lease.expiresAt - monotonicTimeMs()));
+                leaseTimer.unref();
+            }
             preparation = (async () => {
-                if (running) await running;
-                await pump();
-                const confirmed = queue.length === 0;
+                const drained = await drainQueue();
+                const confirmed = drained && !finalizing && (!lease || (
+                    preparationLease?.id === lease.id && lease.expiresAt > monotonicTimeMs()
+                ));
                 preparing = false;
                 if (confirmed) closing = true;
                 if (!confirmed) {
                     // A rejected cooperative stop leaves ownership here. Keep
                     // ordinary forwarding recoverable for the next attempt.
                     preparation = null;
+                    if (lease) releaseLease(lease.id);
                     scheduleRetry();
                 }
                 return confirmed;
@@ -158,7 +191,15 @@ export function createLocalHistoryPublisher(client: LocalPublicationClient, onEr
     client.on?.('connected', retry);
     return {
         publish(sessionId: string | null, messageId: string | null, send: () => void): void {
-            if (stopped || closing) return;
+            if (stopped) return;
+            if (preparationLease && monotonicTimeMs() >= preparationLease.expiresAt) releaseLease(preparationLease.id);
+            if (closing) {
+                if (preparationLease && !finalizing) {
+                    held.push({ sessionId, messageId, send, sent: false });
+                    markUncertain(sessionId, new Error('Local publication is pending a shutdown preparation lease'));
+                }
+                return;
+            }
             queue.push({ sessionId, messageId, send, sent: false });
             void pump();
         },
@@ -181,8 +222,15 @@ export function createLocalHistoryPublisher(client: LocalPublicationClient, onEr
                 // reversible prepare keeps accepting local completions until
                 // the full queue has actually drained.
                 closing = true;
+                finalizing = true;
+                clearLeaseTimer();
+                preparationLease = undefined;
+                held.length = 0;
                 finishing = (async () => {
-                    try { return await prepare(); }
+                    try {
+                        if (preparation) await preparation;
+                        return await drainQueue();
+                    }
                     finally { stop(); }
                 })();
             }

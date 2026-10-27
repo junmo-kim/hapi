@@ -34,7 +34,8 @@ describe('cli shutdown preparation', () => {
         } as never)
         const request = (runner: string, token = 'test-token') => app.request('/cli/sessions/session-1/prepare-stop', {
             method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-            body: JSON.stringify({ machineId: runner, pid: 123, processStartMarker: 'gen-a' })
+            body: JSON.stringify({ machineId: runner, pid: 123, processStartMarker: 'gen-a',
+                preparationLease: { id: 'fixture', expiresAt: 123456 } })
         })
         return { request, calls: () => calls, offline: () => { fail = true } }
     }
@@ -46,7 +47,7 @@ describe('cli shutdown preparation', () => {
         expect(f.calls()).toBe(0)
         const response = await f.request('machine-1')
         expect(response.status).toBe(200)
-        expect(await response.json()).toEqual({ status: 'ready' })
+        expect(await response.json()).toEqual({ status: 'ready', preparationLease: { id: 'fixture', expiresAt: 123456 } })
         expect(f.calls()).toBe(1)
     })
 

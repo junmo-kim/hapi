@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import { registerKillSessionHandler } from './registerKillSessionHandler'
+import { monotonicTimeMs } from '@/utils/time'
+
+vi.mock('@/utils/time', async (original) => ({
+    ...await original<typeof import('@/utils/time')>(), monotonicTimeMs: () => Date.now()
+}))
 
 // tiann/hapi#914: the KillSession RPC is the authoritative "user-terminated"
 // signal because the hub only sends it when the operator clicks Archive in
@@ -53,7 +58,8 @@ describe('registerKillSessionHandler (tiann/hapi#914)', () => {
         const beforeKill = vi.fn(async () => {})
         const cleanupAndExit = vi.fn(async () => {})
         registerKillSessionHandler(registry as never, { beforeKill, cleanupAndExit })
-        const result = await registry.handlers.get(RPC_METHODS.KillSession)?.({ prepareOnly: true }) as { success: boolean }
+        const result = await registry.handlers.get(RPC_METHODS.KillSession)?.({ prepareOnly: true,
+            preparationLease: { id: 'fixture', expiresAt: monotonicTimeMs() + 30000 } }) as { success: boolean }
         expect(result.success).toBe(true)
         expect(beforeKill).toHaveBeenCalledOnce()
         expect(cleanupAndExit).not.toHaveBeenCalled()
@@ -67,7 +73,7 @@ describe('registerKillSessionHandler (tiann/hapi#914)', () => {
         const handler = registry.handlers.get(RPC_METHODS.KillSession)!
         await expect(handler({ prepareOnly: true, expectedPid: process.pid + 1, expectedProcessStartMarker: 'other' })).rejects.toThrow('generation')
         expect(beforeKill).not.toHaveBeenCalled()
-        await expect(handler({ prepareOnly: true })).rejects.toThrow('not confirmed')
+        await expect(handler({ prepareOnly: true, preparationLease: { id: 'fixture', expiresAt: monotonicTimeMs() + 30000 } })).rejects.toThrow('not confirmed')
         expect(cleanupAndExit).not.toHaveBeenCalled()
     })
 

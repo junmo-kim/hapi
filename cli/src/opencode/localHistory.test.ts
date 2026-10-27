@@ -3,6 +3,11 @@ import { EventEmitter } from 'node:events';
 import type { Metadata } from '@/api/types';
 import { observeLocalHistory, createLocalHistoryPublisher } from './localHistory';
 import { OpencodeConversationHistory } from './conversationHistory';
+import { monotonicTimeMs } from '@/utils/time';
+
+vi.mock('@/utils/time', async (original) => ({
+    ...await original<typeof import('@/utils/time')>(), monotonicTimeMs: () => Date.now()
+}));
 
 const base: Metadata = { path: '/tmp/project', host: 'fixture',
     capabilities: { conversationHistory: { forkCurrent: true } },
@@ -73,6 +78,50 @@ describe('local publication identity observations', () => {
 });
 
 describe('durable local publication journal', () => {
+    it('does not close admission when a healthy prepare finishes after its caller lease expired', async () => {
+        vi.useFakeTimers()
+        let release!: () => void;
+        let metadata: Metadata = structuredClone(base);
+        const guard = new Promise<void>((resolve) => { release = resolve; });
+        const sent: string[] = [];
+        const publisher = createLocalHistoryPublisher({
+            updateMetadata(handler) { metadata = handler(metadata); }, materialize: async () => true,
+            flushMetadata: async () => { await guard; return true; }, flush: async () => true
+        }, vi.fn());
+        try {
+            publisher.publish('ses_1', 'a', () => { sent.push('a'); });
+            const preparing = publisher.prepare({ id: 'first', expiresAt: monotonicTimeMs() + 30000 });
+            await vi.advanceTimersByTimeAsync(31000);
+            release();
+            expect(await preparing).toBe(false);
+            publisher.publish('ses_1', 'b', () => { sent.push('b'); });
+            await publisher.flush();
+            expect(sent).toEqual(['a', 'b']);
+        } finally { publisher.stop(); vi.useRealTimers(); }
+    });
+
+    it('restores publications held after a prepared reply when no caller commits termination', async () => {
+        vi.useFakeTimers();
+        let metadata: Metadata = structuredClone(base);
+        const sent: string[] = [];
+        const publisher = createLocalHistoryPublisher({
+            updateMetadata(handler) { metadata = handler(metadata); }, materialize: async () => true,
+            flushMetadata: async () => true, flush: async () => true
+        }, vi.fn());
+        try {
+            publisher.publish('ses_1', 'a', () => { sent.push('a'); });
+            expect(await publisher.prepare({ id: 'first', expiresAt: monotonicTimeMs() + 30000 })).toBe(true);
+            publisher.publish('ses_1', 'b', () => { sent.push('b'); });
+            expect(sent).toEqual(['a']);
+            expect(await publisher.prepare({ id: 'other', expiresAt: monotonicTimeMs() + 30000 })).toBe(false);
+            await vi.advanceTimersByTimeAsync(30001);
+            publisher.publish('ses_1', 'c', () => { sent.push('c'); });
+            await publisher.flush();
+            expect(sent).toEqual(['a', 'b', 'c']);
+            expect(metadata.conversationHistoryDiverged).toBe(true);
+        } finally { publisher.stop(); vi.useRealTimers(); }
+    });
+
     it('retains ownership and retries unsent rows after an unconfirmed cooperative stop', async () => {
         let metadata: Metadata = structuredClone(base);
         let online = false;

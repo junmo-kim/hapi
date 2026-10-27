@@ -1,5 +1,5 @@
 import type { AgentFlavor, CodexCollaborationMode, CopilotAgentMode, PermissionMode } from '@hapi/protocol/types'
-import { PERMISSION_REQUEST_NOT_FOUND_MESSAGE, RPC_METHODS } from '@hapi/protocol/rpcMethods'
+import { DEFAULT_RPC_TIMEOUT_MS, PERMISSION_REQUEST_NOT_FOUND_MESSAGE, RPC_METHODS, type SessionStopPreparationLease } from '@hapi/protocol/rpcMethods'
 import {
     ArchiveCodexSessionRpcResponseSchema,
     AgentAvailabilityResponseSchema,
@@ -43,7 +43,6 @@ import type {
 import type { Server } from 'socket.io'
 import type { RpcRegistry } from '../socket/rpcRegistry'
 
-const DEFAULT_RPC_TIMEOUT_MS = 30_000
 const MODEL_LIST_RPC_TIMEOUT_MS = 120_000
 // Codex can spend 30s awaiting startup after preflight and process creation.
 const CODEX_SPAWN_RPC_TIMEOUT_MS = 60_000
@@ -190,8 +189,8 @@ export class RpcGateway {
     }
 
     async killSession(sessionId: string, options: {
-        prepareOnly?: boolean; expectedPid?: number; expectedProcessStartMarker?: string
-    } = {}): Promise<{ pid?: number; processStartMarker?: string }> {
+        prepareOnly?: boolean; expectedPid?: number; expectedProcessStartMarker?: string; preparationLease?: SessionStopPreparationLease
+    } = {}): Promise<{ pid?: number; processStartMarker?: string; preparationLease?: SessionStopPreparationLease }> {
         const result = await this.sessionRpc(sessionId, RPC_METHODS.KillSession, options)
         if (result && typeof result === 'object' && ('error' in result || ('success' in result && result.success === false))) {
             throw new Error(typeof (result as { error?: unknown }).error === 'string'
@@ -200,9 +199,11 @@ export class RpcGateway {
         if (!result || typeof result !== 'object') return {}
         const pid = (result as { pid?: unknown }).pid
         const processStartMarker = (result as { processStartMarker?: unknown }).processStartMarker
+        const preparationLease = (result as { preparationLease?: SessionStopPreparationLease }).preparationLease
         return {
             ...(typeof pid === 'number' ? { pid } : {}),
             ...(typeof processStartMarker === 'string' ? { processStartMarker } : {}),
+            ...(preparationLease ? { preparationLease } : {}),
         }
     }
 

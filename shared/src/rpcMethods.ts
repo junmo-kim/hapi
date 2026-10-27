@@ -1,3 +1,8 @@
+export const DEFAULT_RPC_TIMEOUT_MS = 30_000
+
+/** expiresAt uses the Runner/target machine's monotonic milliseconds, not wall time. */
+export type SessionStopPreparationLease = { id: string; expiresAt: number }
+
 export const RPC_METHODS = {
     Permission: 'permission',
     Abort: 'abort',

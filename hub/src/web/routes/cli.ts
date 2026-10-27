@@ -192,13 +192,15 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
         const access = resolveSessionForNamespace(engine, c.req.param('id'), c.get('namespace'))
         if (!access.ok) return c.json({ error: access.error }, access.status)
         const body = z.object({ machineId: z.string().min(1), pid: z.number().int().positive(),
-            processStartMarker: z.string().min(1) }).safeParse(await c.req.json().catch(() => null))
+            processStartMarker: z.string().min(1), preparationLease: z.object({ id: z.string().min(1),
+                expiresAt: z.number().int().positive() }) }).safeParse(await c.req.json().catch(() => null))
         if (!body.success) return c.json({ error: 'Invalid body' }, 400)
         if (access.session.metadata?.machineId !== body.data.machineId) {
             return c.json({ error: 'Session machine does not match runner' }, 403)
         }
         try {
-            return c.json({ status: await engine.prepareOpenCodeSessionStop(access.sessionId, body.data.pid, body.data.processStartMarker) })
+            const status = await engine.prepareOpenCodeSessionStop(access.sessionId, body.data.pid, body.data.processStartMarker, body.data.preparationLease)
+            return c.json({ status, ...(status === 'ready' ? { preparationLease: body.data.preparationLease } : {}) })
         } catch {
             return c.json({ error: 'Session shutdown preparation was not confirmed' }, 503)
         }

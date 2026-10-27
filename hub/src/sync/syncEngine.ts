@@ -14,6 +14,7 @@ import {
 } from '@hapi/protocol/runnerCapabilities'
 import type { CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, MessageDeliveryMode, MessagesResponse, QueuedStateResponse, RewindConversationErrorCode, SlashCommandsResponse } from '@hapi/protocol/apiTypes'
 import type { SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
+import type { SessionStopPreparationLease } from '@hapi/protocol/rpcMethods'
 import type { ImplementCodexPlanResult } from '@hapi/protocol/apiTypes'
 import type { AgentFlavor, CodexCollaborationMode, CopilotAgentMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
 import { hasConversationMessageContent, unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
@@ -1809,16 +1810,20 @@ export class SyncEngine {
         }
     }
 
-    async prepareOpenCodeSessionStop(sessionId: string, pid: number, processStartMarker: string): Promise<'ready' | 'not_required'> {
+    async prepareOpenCodeSessionStop(sessionId: string, pid: number, processStartMarker: string,
+        preparationLease: SessionStopPreparationLease): Promise<'ready' | 'not_required'> {
         const metadata = this.sessionCache.getSession(sessionId)?.metadata
         if (metadata?.flavor !== 'opencode') return 'not_required'
         // Only request the session RPC here. Calling archiveSession would
         // recurse into the runner's StopSession handler that is awaiting us.
         const result = await this.rpcGateway.killSession(sessionId, {
-            prepareOnly: true, expectedPid: pid, expectedProcessStartMarker: processStartMarker
+            prepareOnly: true, expectedPid: pid, expectedProcessStartMarker: processStartMarker, preparationLease
         })
         if (result.pid !== pid || result.processStartMarker !== processStartMarker) {
             throw new Error('Session shutdown preparation did not confirm the target generation')
+        }
+        if (result.preparationLease?.id !== preparationLease.id || result.preparationLease.expiresAt !== preparationLease.expiresAt) {
+            throw new Error('Session shutdown preparation did not confirm the lease')
         }
         return 'ready'
     }

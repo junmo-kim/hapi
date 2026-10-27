@@ -12,6 +12,7 @@ import type { SessionCache } from './sessionCache'
  * when the runner reports the process still alive (or unknown).
  */
 describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
+    const preparationLease = { id: 'fixture', expiresAt: 123456 }
     let store: Store
     let engine: SyncEngine
     const NAMESPACE = 'default'
@@ -70,12 +71,12 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         let release!: () => void
         let runnerCalls = 0
         ;(engine as unknown as { rpcGateway: { killSession: unknown } }).rpcGateway.killSession = (_id: string, options: unknown) => {
-            expect(options).toEqual({ prepareOnly: true, expectedPid: 123, expectedProcessStartMarker: 'gen-a' })
-            return new Promise((resolve) => { release = () => resolve({ pid: 123, processStartMarker: 'gen-a' }) })
+            expect(options).toEqual({ prepareOnly: true, expectedPid: 123, expectedProcessStartMarker: 'gen-a', preparationLease })
+            return new Promise((resolve) => { release = () => resolve({ pid: 123, processStartMarker: 'gen-a', preparationLease }) })
         }
         ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession = () => { runnerCalls++; throw new Error('recursive stop') }
         let ready = false
-        const preparation = engine.prepareOpenCodeSessionStop(id, 123, 'gen-a').then((status) => { ready = true; return status })
+        const preparation = engine.prepareOpenCodeSessionStop(id, 123, 'gen-a', preparationLease).then((status) => { ready = true; return status })
         await Promise.resolve()
         expect(ready).toBe(false)
         release()
@@ -86,24 +87,24 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
     it('keeps direct OpenCode shutdown unconfirmed when its RPC is unreachable', async () => {
         const id = insertActiveSession('opencode-offline', 'machine-x', 123, { flavor: 'opencode' })
         setKillSessionMissingTarget()
-        await expect(engine.prepareOpenCodeSessionStop(id, 123, 'gen-a')).rejects.toBeInstanceOf(RpcTargetMissingError)
+        await expect(engine.prepareOpenCodeSessionStop(id, 123, 'gen-a', preparationLease)).rejects.toBeInstanceOf(RpcTargetMissingError)
         expect(cache().getSession(id)?.active).toBe(true)
     })
 
     it('skips other flavors but does not trust archived metadata as preparation for a live OpenCode process', async () => {
         setKillSessionMissingTarget()
         const claude = insertActiveSession('claude-stop', 'machine-x')
-        expect(await engine.prepareOpenCodeSessionStop(claude, 123, 'gen-a')).toBe('not_required')
+        expect(await engine.prepareOpenCodeSessionStop(claude, 123, 'gen-a', preparationLease)).toBe('not_required')
         const archived = cache().getOrCreateSession('archived-opencode', {
             path: '/tmp/proj', host: 'localhost', flavor: 'opencode', lifecycleState: 'archived'
         }, null, NAMESPACE)
-        await expect(engine.prepareOpenCodeSessionStop(archived.id, 123, 'gen-a')).rejects.toBeInstanceOf(RpcTargetMissingError)
+        await expect(engine.prepareOpenCodeSessionStop(archived.id, 123, 'gen-a', preparationLease)).rejects.toBeInstanceOf(RpcTargetMissingError)
     })
 
     it('rejects preparation acknowledged by a different wrapper generation', async () => {
         const id = insertActiveSession('opencode-other-generation', 'machine-x', 123, { flavor: 'opencode' })
         setKillSessionOk({ pid: 456, processStartMarker: 'gen-b' })
-        await expect(engine.prepareOpenCodeSessionStop(id, 123, 'gen-a')).rejects.toThrow('target generation')
+        await expect(engine.prepareOpenCodeSessionStop(id, 123, 'gen-a', preparationLease)).rejects.toThrow('target generation')
     })
 
     it('does not archive when the runner confirms still_alive after KillSession miss', async () => {
