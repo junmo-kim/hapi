@@ -114,7 +114,8 @@ describe.skipIf(!await isServerHealthy())('Runner Integration Tests', { timeout:
     // before reaching its happy-path teardown.
     trackChildProcess(runnerLauncher, 'runner-launcher');
     
-    // Wait for runner to write its state file (it needs to auth, setup, and start server)
+    // The state file proves local control is available, not that the Hub has
+    // received this runner's RPC registrations yet.
     // Also require the PID to actually be alive: a SIGKILLed runner (or a
     // crashed one) can leave a stale runner.state.json behind, and reading it
     // as "started" would make every control call in the test body fail.
@@ -129,6 +130,25 @@ describe.skipIf(!await isServerHealthy())('Runner Integration Tests', { timeout:
     }
     runnerPid = runnerState.pid;
     trackRunnerPid(runnerPid, 'runner');
+
+    const machineId = runnerState.startedWithMachineId;
+    if (!machineId) throw new Error('Runner state is missing its machine ID');
+    // ApiMachineClient emits its RPC registrations before the running-state
+    // update on the same socket. Match the PID so the previous runner's state
+    // cannot satisfy this barrier during a restart.
+    await waitFor(async () => {
+      const response = await fetch(`${configuration.apiUrl}/cli/machines/${machineId}`, {
+        headers: { Authorization: `Bearer ${configuration.cliApiToken}` },
+        signal: AbortSignal.timeout(1000),
+      });
+      if (!response.ok) return false;
+      const { machine } = await response.json() as {
+        machine?: { active: boolean; runnerState: { status: string; pid?: number } | null };
+      };
+      return machine?.active === true
+        && machine.runnerState?.status === 'running'
+        && machine.runnerState.pid === runnerPid;
+    }, 10_000);
 
     console.log(`[TEST] Runner started for test: PID=${runnerPid}`);
     console.log(`[TEST] Runner log file: ${runnerState?.runnerLogPath}`);
@@ -512,12 +532,29 @@ if (process.argv[2] === 'claude') {
     });
     trackSession(session.id, 'resumed-generation-session');
     expect(session.active).toBe(false);
+    const registrationMarker = join(configuration.happyHomeDir, `rpc-registration-${randomUUID()}`);
+    const registrationPreload = `${registrationMarker}.ts`;
+    // Exercise the state-file/Hub-registration gap without delaying RPC or
+    // resume requests after registration. Preserve register-before-running.
+    writeFileSync(registrationPreload, `import { writeFileSync } from 'node:fs';
+if (process.argv[2] === 'runner' && process.argv[3] === 'start-sync') {
+  const { RpcHandlerManager } = await import(${JSON.stringify(join(process.cwd(), 'src/api/rpc/RpcHandlerManager.ts'))});
+  const onSocketConnect = RpcHandlerManager.prototype.onSocketConnect;
+  RpcHandlerManager.prototype.onSocketConnect = function(socket) {
+    writeFileSync(${JSON.stringify(registrationMarker)}, String(process.pid));
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1500);
+    return onSocketConnect.call(this, socket);
+  };
+}
+`);
     await restartWithResumeRecords([{
       requestedSessionId: session.id,
       confirmedSessionId: session.id,
       pid: tid,
       processStartMarker: 'Sun Oct 25 04:46:27 2026',
-    }]);
+    }], { BUN_OPTIONS: `--preload=${registrationPreload}` });
+    await waitFor(async () => existsSync(registrationMarker));
+    expect(readFileSync(registrationMarker, 'utf8')).toBe(String(runnerPid));
 
     const auth = await fetch(`${configuration.apiUrl}/api/auth`, {
       method: 'POST',
