@@ -16,6 +16,7 @@ import { readAgyConversationTitle } from '../utils/agySessionTitle';
 import { resolveAgyTurnModels } from '../utils/agyConversationModel';
 import { killProcessByChildProcess } from '@/utils/process';
 import { AGY_MODEL_LABELS } from '@hapi/protocol';
+import { getAgentLaunchCommand } from '@/agent/agentLaunchCommand';
 
 const AGY_PRINT_TIMEOUT = '30m';
 
@@ -117,7 +118,7 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
         super(process.env.DEBUG ? opts.session.logPath : undefined);
         this.session = opts.session;
         this.spawnAgy = opts.spawnAgy ?? ((args, cwd) => {
-            const child = spawn('agy', args, {
+            const child = spawn(getAgentLaunchCommand('agy'), args, {
                 cwd,
                 stdio: ['pipe', 'pipe', 'pipe'],
                 env: buildAgySpawnEnv(),
@@ -627,7 +628,11 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
                                 // A FAILURE envelope proves the prompt ran but the
                                 // turn failed; surface it (exit code may still be 0).
                                 if (event.status !== 'SUCCESS') {
-                                    resultFailure = event.response?.trim()
+                                    // The reason lives in `error`; `response` is the
+                                    // answer field and stays filled on a failed turn,
+                                    // so reading it here repeated the whole answer in
+                                    // the chat as if it were the failure text.
+                                    resultFailure = event.error?.trim()
                                         || `agy turn failed: ${event.status}`;
                                 } else if (event.response?.trim()) {
                                     const response = event.response.trim();

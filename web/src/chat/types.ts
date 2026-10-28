@@ -22,6 +22,8 @@ export type RoundModelUsage = {
 }
 
 export type RoundSummary = {
+    provider?: 'codex'
+    turnId?: string
     usage?: UsageData
     modelUsage: Record<string, RoundModelUsage>
     totalCostUsd?: number
@@ -38,8 +40,9 @@ export type AgentEvent =
     | { type: 'limit-warning'; /** 0–1 ratio (e.g. 0.9 = 90%), integer-precision via CLI pipe format */ utilization: number; endsAt: number; limitType: string }
     | { type: 'ready' }
     | { type: 'api-error'; retryAttempt: number; maxRetries: number; error: unknown }
-    | { type: 'turn-duration'; durationMs: number; targetMessageId?: string }
+    | { type: 'turn-duration'; durationMs: number; targetMessageId?: string; provider?: 'codex'; turnId?: string }
     | { type: 'turn-summary'; summary: RoundSummary }
+    | { type: 'token-count'; info: unknown; provider?: 'codex'; turnId?: string; model?: string | null }
     | { type: 'microcompact'; trigger: string; preTokens: number; tokensSaved: number }
     | { type: 'compact'; trigger: string; preTokens: number }
     // Structured result of Pi's compact RPC; rendered as a dedicated chat block.
@@ -176,7 +179,7 @@ export type NormalizedMessage = ({
 
 export type ToolPermission = {
     id: string
-    status: 'pending' | 'approved' | 'denied' | 'canceled'
+    status: 'pending' | 'approved' | 'denied' | 'canceled' | 'resolved'
     reason?: string
     mode?: string
     allowedTools?: string[]

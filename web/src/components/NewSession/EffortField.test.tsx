@@ -54,6 +54,19 @@ describe('EffortField', () => {
         expect(values).toContain('high')
     })
 
+    it('renders the Claude levels the selected model accepts when provided', () => {
+        const { container } = render(
+            <EffortField
+                {...baseProps}
+                agent="claude"
+                claudeOptions={[{ value: 'auto', label: 'Auto' }, { value: 'low', label: 'Low' }]}
+            />
+        )
+        const select = container.querySelector('select') as HTMLSelectElement
+
+        expect(Array.from(select.options).map((option) => option.value)).toEqual(['auto', 'low'])
+    })
+
     it('renders Pi thinking levels and forwards the selection', () => {
         const onChange = vi.fn()
         const { container } = render(
@@ -110,5 +123,32 @@ describe('EffortField', () => {
             <EffortField {...baseProps} agent="agy" />
         )
         expect(container.querySelector('select')).toBeNull()
+    })
+
+    it('renders OpenCode dynamic variants with a default entry', () => {
+        const { container } = render(
+            <EffortField {...baseProps} agent="opencode" opencodeVariantOptions={['low', 'high', 'max']} />
+        )
+        const select = container.querySelector('select') as HTMLSelectElement
+        expect(Array.from(select.options).map((option) => option.value)).toEqual([
+            'default', 'low', 'high', 'max'
+        ])
+    })
+
+    it('hides the OpenCode effort field when variants are an empty array', () => {
+        const { container } = render(
+            <EffortField {...baseProps} agent="opencode" opencodeVariantOptions={[]} />
+        )
+        expect(container.querySelector('select')).toBeNull()
+    })
+
+    it('falls back to static OpenCode presets when variants are not provided', () => {
+        const { container } = render(
+            <EffortField {...baseProps} agent="opencode" opencodeVariantOptions={null} />
+        )
+        const select = container.querySelector('select') as HTMLSelectElement
+        expect(Array.from(select.options).map((option) => option.value)).toEqual([
+            'default', 'low', 'medium', 'high', 'max'
+        ])
     })
 })

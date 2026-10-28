@@ -28,7 +28,7 @@ import app.hapi.companion.di.HubGraph
 import app.hapi.companion.di.LocalAppGraph
 import app.hapi.companion.di.viewModelFactory
 import app.hapi.companion.feature.chat.ChatMedia
-import app.hapi.companion.feature.chat.ChatScreen
+import app.hapi.companion.feature.chat.ChatHost
 import app.hapi.companion.feature.chat.ChatViewModel
 import app.hapi.companion.feature.chat.composer.DictationController
 import app.hapi.companion.feature.chat.composer.HapiDictationApi
@@ -57,7 +57,8 @@ import app.hapi.companion.feature.scratchlist.ScratchlistMedia
 import app.hapi.companion.feature.scratchlist.ScratchlistScreen
 import app.hapi.companion.feature.scratchlist.ScratchlistViewModel
 import app.hapi.companion.feature.sessions.SessionListViewModel
-import app.hapi.companion.feature.settings.SettingsScreen
+import app.hapi.companion.feature.settings.SettingsGeneralScreen
+import app.hapi.companion.feature.settings.SettingsHubScreen
 import app.hapi.companion.feature.settings.SettingsViewModel
 import app.hapi.companion.feature.settings.StorageScreen
 import app.hapi.companion.feature.settings.StorageViewModel
@@ -132,8 +133,13 @@ object Routes {
     const val PAIRING_SCAN = "pairing/scan"
     const val PAIRING_MANUAL = "pairing/manual"
 
-    /** Settings scaffold + owner-only dashboards (B-M4e). */
+    /**
+     * Settings hub (category directory) + flat subpage routes (B-M4e → P2
+     * hub IA). Usage/Storage are owner-only dashboards reached straight from
+     * the hub rows; General holds the uncategorized items.
+     */
     const val SETTINGS = "settings"
+    const val SETTINGS_GENERAL = "settings/general"
     const val SETTINGS_USAGE = "settings/usage"
     const val SETTINGS_STORAGE = "settings/storage"
 }
@@ -225,11 +231,11 @@ fun HapiNavigation() {
             val hubGraph = activeHubGraph ?: return@composable
             val scope = rememberCoroutineScope()
             val holder = viewModel<SessionListViewModelHolder>(
-                key = "sessions:${hubGraph.hubUrl}",
-                factory = viewModelFactory { SessionListViewModelHolder(hubGraph) },
+                key = "sessions",
+                factory = viewModelFactory { SessionListViewModelHolder() },
             )
             HomeScreen(
-                viewModel = holder.viewModel,
+                viewModel = holder.forHub(hubGraph),
                 activeHubUrl = activeHubUrl,
                 pairedHubs = registryState.hubs,
                 onSwitchHub = { hub -> scope.launch { graph.hubRegistry.setActiveHub(hub) } },
@@ -245,12 +251,23 @@ fun HapiNavigation() {
             val hubGraph = activeHubGraph ?: return@composable
             val holder = viewModel<SettingsViewModelHolder>(
                 key = "settings:${hubGraph.hubUrl}",
+                factory = viewModelFactory { SettingsViewModelHolder(graph, hubGraph, probeHealth = false) },
+            )
+            SettingsHubScreen(
+                viewModel = holder.viewModel,
+                onOpenCategory = { route -> navController.navigate(route) },
+                onBack = { navController.popBackStack() },
+            )
+        }
+
+        composable(Routes.SETTINGS_GENERAL) {
+            val hubGraph = activeHubGraph ?: return@composable
+            val holder = viewModel<SettingsViewModelHolder>(
+                key = "settingsGeneral:${hubGraph.hubUrl}",
                 factory = viewModelFactory { SettingsViewModelHolder(graph, hubGraph) },
             )
-            SettingsScreen(
+            SettingsGeneralScreen(
                 viewModel = holder.viewModel,
-                onOpenUsage = { navController.navigate(Routes.SETTINGS_USAGE) },
-                onOpenStorage = { navController.navigate(Routes.SETTINGS_STORAGE) },
                 onBack = { navController.popBackStack() },
             )
         }
@@ -303,7 +320,7 @@ fun HapiNavigation() {
                 key = "chat:${hubGraph.hubUrl}:$sessionId",
                 factory = viewModelFactory { ChatViewModelHolder(hubGraph, sessionId, appContext) },
             )
-            ChatScreen(
+            ChatHost(
                 viewModel = holder.viewModel,
                 media = remember(hubGraph, sessionId) {
                     ChatMedia(hubGraph.imageLoader) { imageId ->
@@ -546,24 +563,34 @@ fun HapiNavigation() {
 
 /**
  * Androidx-lifecycle shell around the plain [SessionListViewModel]: survives
- * config changes with the nav entry, owns the combine scope, and tears the
- * global SSE pipe down when the entry clears. Keyed per hub so a hub switch
- * builds a fresh one against the new [HubGraph].
+ * config changes with the nav entry. Retain only the current graph: returning
+ * to the same URL creates a new HubGraph and must not revive a closed store
+ * or its old filter. The global SSE pipe still belongs to HubGraph.
  */
-private class SessionListViewModelHolder(hubGraph: HubGraph) : ViewModel() {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+private class SessionListViewModelHolder : ViewModel() {
+    private var graph: HubGraph? = null
+    private var scope: CoroutineScope? = null
+    private var model: SessionListViewModel? = null
 
-    val viewModel = SessionListViewModel(
-        sessionStore = hubGraph.sessionStore,
-        machineStore = hubGraph.machineStore,
-        lastSeenStore = hubGraph.lastSeenStore,
-        scope = scope,
-        hubKey = hubGraph.hubUrl,
-    )
+    fun forHub(hubGraph: HubGraph): SessionListViewModel {
+        model?.takeIf { graph === hubGraph }?.let { return it }
+        model?.stop()
+        scope?.cancel()
+        val nextScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        graph = hubGraph
+        scope = nextScope
+        return SessionListViewModel(
+            sessionStore = hubGraph.sessionStore,
+            machineStore = hubGraph.machineStore,
+            lastSeenStore = hubGraph.lastSeenStore,
+            scope = nextScope,
+            hubKey = hubGraph.hubUrl,
+        ).also { model = it }
+    }
 
     override fun onCleared() {
-        viewModel.stop()
-        scope.cancel()
+        model?.stop()
+        scope?.cancel()
     }
 }
 
@@ -662,7 +689,12 @@ private class FileViewerViewModelHolder(
  * Shells for the settings graph (B-M4e). Settings/usage/storage are hub-scoped
  * (keys include the hub origin): a hub switch swaps in fresh state.
  */
-private class SettingsViewModelHolder(graph: AppGraph, hubGraph: HubGraph) : ViewModel() {
+private class SettingsViewModelHolder(
+    graph: AppGraph,
+    hubGraph: HubGraph,
+    /** The hub directory needs only the owner gate; skip its About `/health` probe. */
+    probeHealth: Boolean = true,
+) : ViewModel() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     val viewModel = SettingsViewModel(
@@ -678,6 +710,7 @@ private class SettingsViewModelHolder(graph: AppGraph, hubGraph: HubGraph) : Vie
         },
         fetchHealth = { hubGraph.session.api.health() },
         scope = scope,
+        probeHealth = probeHealth,
     )
 
     override fun onCleared() {
@@ -830,4 +863,11 @@ private fun newSessionStrings(context: Context) = NewSessionStrings(
     codexModelsFailed = context.getString(R.string.new_session_error_codex_models),
     modelsFailedDetail = context.getString(R.string.new_session_error_models_detail),
     worktreeNameInvalid = context.getString(R.string.new_session_error_worktree_name),
+    directoryOutsideWorkspaceRoots = context.getString(R.string.new_session_error_directory_outside_workspace_roots),
+    directoryLookupFailed = context.getString(R.string.directory_browser_error),
+    agentAvailabilityFailed = context.getString(R.string.new_session_error_agent_availability),
+    runnerUpgradeRequired = context.getString(R.string.new_session_error_runner_upgrade_required),
+    noAvailableAgents = context.getString(R.string.new_session_error_no_available_agents),
+    selectedAgentUnavailable = context.getString(R.string.new_session_error_selected_agent_unavailable),
+    grokAutoUnavailable = context.getString(R.string.new_session_grok_auto_unavailable),
 )
