@@ -162,6 +162,31 @@ describe('MessageQueue2', () => {
         expect(queue.pendingLocalIds()).toEqual(['id1', 'id2']);
     });
 
+    it.each(['pending', 'awakened'] as const)('preserves internal control identity across an aborted %s drain', async (state) => {
+        const queue = new MessageQueue2<string>(mode => mode);
+        const consumed: string[][] = [];
+        queue.onBatchConsumed = ids => { consumed.push([...ids]); };
+        const controller = new AbortController();
+        const waiting = state === 'awakened'
+            ? queue.waitForMessagesAndGetAsString(controller.signal)
+            : undefined;
+        queue.pushIsolated('/auto on', 'remote', undefined, { internal: true });
+        queue.push('follow-up', 'remote', 'original-user');
+        controller.abort();
+
+        expect(await (waiting ?? queue.waitForMessagesAndGetAsString(controller.signal))).toBeNull();
+        expect(queue.size()).toBe(2);
+        expect(consumed).toEqual([]);
+        const control = await queue.waitForMessagesAndGetAsString(new AbortController().signal);
+        expect(control?.items).toEqual([{ message: '/auto on', localId: undefined, internal: true }]);
+        expect(control?.isolate).toBe(true);
+        expect(consumed).toEqual([]);
+        const user = await queue.waitForMessagesAndGetAsString();
+        expect(user?.items).toEqual([{ message: 'follow-up', localId: 'original-user', internal: undefined }]);
+        expect(consumed).toEqual([['original-user']]);
+        expect(queue.size()).toBe(0);
+    });
+
     it('does not collect an idle-waited message that arrives while the signal is aborted; a fresh signal collects it exactly once', async () => {
         const queue = new MessageQueue2<string>(mode => mode);
         const consumed: string[][] = [];
