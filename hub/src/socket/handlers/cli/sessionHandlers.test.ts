@@ -438,7 +438,7 @@ describe('cli session handlers', () => {
         expect(uuids).toEqual(['msg-1', 'msg-2'])
     })
 
-    it.each(['supersededBySessionId', 'opencodeClearOperation', 'opencodeForkPending'] as const)(
+    it.each(['supersededBySessionId', 'opencodeClearOperation', 'opencodeForkPending', 'titleSuggestionAutoAttemptedAt', 'titleSuggestionTurn'] as const)(
         'ignores a forged hub-owned %s addition from CLI metadata',
         (field) => {
             const store = new Store(':memory:')
@@ -456,7 +456,10 @@ describe('cli session handlers', () => {
                     path: '/tmp/project',
                     [field]: field === 'supersededBySessionId'
                         ? 'foreign-session'
-                        : field === 'opencodeForkPending' ? true : { replacementSessionId: 'foreign-session', state: 'reserved', updatedAt: Date.now() }
+                        : field === 'opencodeClearOperation'
+                            ? { replacementSessionId: 'foreign-session', state: 'reserved', updatedAt: Date.now() }
+                            : field === 'opencodeForkPending' ? true
+                                : field === 'titleSuggestionTurn' ? { first: false, completed: true } : 1234
                 }
             }, () => {})
             expect(store.sessions.getSessionByNamespace(session.id, 'default')?.metadata).not.toHaveProperty(field)
@@ -486,6 +489,32 @@ describe('cli session handlers', () => {
         }, () => {})
         expect(store.sessions.getSessionByNamespace(session.id, 'default')?.metadata).toMatchObject({
             supersededBySessionId: 'owned-target', opencodeClearOperation: operation, lifecycleState: 'archived', opencodeForkPending: true
+        })
+    })
+
+    it('preserves the automatic title attempt marker across CLI metadata updates', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('preserve-auto-title-marker', {
+            path: '/tmp/project',
+            titleSuggestionAutoAttemptedAt: 1234,
+            titleSuggestionTurn: { first: true, completed: false }
+        }, null, 'default')
+        const socket = new FakeSocket()
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store,
+            resolveSessionAccess: () => ({ ok: true, value: session as StoredSession }),
+            emitAccessError: () => { throw new Error('unexpected access error') }
+        })
+
+        socket.trigger('update-metadata', {
+            sid: session.id,
+            expectedVersion: session.metadataVersion,
+            metadata: { path: '/tmp/project', titleSuggestionAutoAttemptedAt: 9999, titleSuggestionTurn: { first: false, completed: true } }
+        }, () => {})
+
+        expect(store.sessions.getSessionByNamespace(session.id, 'default')?.metadata).toMatchObject({
+            titleSuggestionAutoAttemptedAt: 1234,
+            titleSuggestionTurn: { first: true, completed: false }
         })
     })
 })
