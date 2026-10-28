@@ -121,19 +121,10 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     // replacement while the source backend may still be live.
     private clearRequested = false;
     private abortController = new AbortController();
-    // Set by the dequeue loop as soon as a batch is identified as a
-    // `operation:'compact'` one — deliberately *before* that batch's inline
-    // model/effort switch runs, not only once runCompactOperation()'s
-    // triggerOpencodeCompact() REST call actually starts (a hostile-review
-    // sweep found that creating it any later left a window during that
-    // switch — a real async ACP round-trip — where an abort had nothing to
-    // act on yet). Null whenever no compact batch is in flight. Unlike
-    // `abortController` above (which governs the dequeue loop's
-    // wait-for-next-message signal), `handleAbort()` needs this to actually
-    // interrupt the compact's HTTP call(s) — without it, Stop/switch-to-local
-    // has no way to unblock a dequeued /compact whose REST call is
-    // deliberately unbounded (see triggerOpencodeCompact's doc comment) and
-    // the launcher stays wedged until it eventually settles on its own.
+    // Created before the compact batch's async model/effort switch so aborts
+    // during that switch reach the same controller as the later HTTP calls.
+    // Null when no compact batch is in flight. Unlike abortController, which
+    // interrupts queue waiting, this controller interrupts compact HTTP work.
     private compactAbortController: AbortController | null = null;
     // A plain Stop must keep waiting only while the summarize POST is
     // actually in flight. That POST can outlive a client-side abort while
@@ -529,25 +520,9 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         // dequeue loop below (not an externally-invoked trigger) is what
         // executes it, in its actual FIFO queue position.
         //
-        // A 9th PR-review round found a race here: a terminal
-        // switch-to-local/exit can land *during* the newSession/loadSession
-        // await above (setupTerminal() wires up onExit/onSwitchToLocal
-        // before runMainLoop() even starts, so this is reachable well
-        // before setupAbortHandlers() below registers the RPC
-        // 'abort'/'switch' handlers). RemoteLauncherBase.requestExit()
-        // already fired onLeavingRemote() (availability(false)) and set
-        // `this.shouldExit = true` synchronously for that switch/exit,
-        // before awaiting its handler — but this line used to run
-        // regardless once initialization finished, resurrecting
-        // availability(true) even though the session is already on its way
-        // out. runOpencode.ts's compactSupported/compactTeardownInProgress
-        // gate treats compactSupported flipping true as reason enough to
-        // ignore compactTeardownInProgress entirely (see that gate's doc
-        // comment), so this stray true could let a /compact arriving right
-        // after slip into the queue mid-teardown. Checking `shouldExit`
-        // here — the same flag requestExit() already set — keeps
-        // availability from ever un-flipping once a switch/exit is
-        // underway.
+        // Terminal switch/exit handlers are active during newSession/loadSession.
+        // requestExit() synchronously withdraws availability and sets shouldExit;
+        // finishing initialization must not advertise compact again mid-teardown.
         if (!this.shouldExit && (this.v2RestInfo !== null || this.baseUrl !== null)) {
             this.options.onCompactAvailabilityChange?.(true);
         }
@@ -641,17 +616,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     break;
                 }
 
-                // Created here — before the model/effort switch below — rather
-                // than inside runCompactOperation(), so it already exists for
-                // handleAbort() to act on during that switch. backend.setModel()/
-                // setConfigOption() are real async ACP round-trips that yield to
-                // the event loop; a hostile-review whole-feature sweep found
-                // that an abort landing in that window used to hit a still-null
-                // compactAbortController (a no-op) and then get silently
-                // forgotten once runCompactOperation() created a *fresh*
-                // controller afterward — the compact's unbounded REST call would
-                // then run to completion with no way to interrupt it, despite
-                // the user having already pressed Stop/switch/exit.
+                // Install the controller before async model/effort changes so
+                // handleAbort() can cancel this batch even before HTTP work starts.
                 const isCompactBatch = batch.mode.operation === 'compact';
                 const compactAbortController = isCompactBatch ? new AbortController() : null;
                 if (compactAbortController) {
@@ -789,50 +755,12 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     // batch.items[0]?.localId.
                     const compactLocalId = batch.items[0]?.localId;
 
-                    // A 7th PR-review round found that a plain Stop landing
-                    // *during the model/effort switch above* — before this
-                    // compact's REST request has ever actually been sent — was
-                    // silently ignored here. Plain Stop's handleAbort(false) only
-                    // sets `compactResultSuppressed = true`; it deliberately
-                    // leaves compactAbortController.signal alone (see that
-                    // field's doc comment — Round 6 needs the real HTTP request
-                    // to keep running so the dequeue loop can wait for genuine
-                    // server-side completion). But that logic assumed a request
-                    // was already in flight to wait for. Here, mid-switch, none
-                    // has been sent yet — so this branch used to call
-                    // runCompactOperation() unconditionally once the switch
-                    // resolved anyway, starting a brand new REST request the
-                    // instant a cancelled compact's turn came up and blocking
-                    // the dequeue loop for however long that takes.
-                    //
-                    // The fix is narrow on purpose: skip starting the operation
-                    // only when a plain Stop landed (compactResultSuppressed)
-                    // AND the controller was never actually aborted. If the
-                    // controller WAS aborted, that means switch/exit's
-                    // handleAbort(true) ran instead — and Round 5's test
-                    // (below) established that runCompactOperation() must still
-                    // be called in that case, threading the pre-aborted signal
-                    // through so the fetch call rejects immediately without any
-                    // network I/O, rather than being skipped here.
-                    //
-                    // An 8th PR-review round found this same reasoning also
-                    // applies to isLocalIdCancelled, which round 7 had
-                    // deliberately left out of this check (see runOpencode.ts's
-                    // preparingLocalIds/cancelledBeforeEnqueue doc comment for
-                    // the full mechanism): the localId-keyed cancel Set it reads
-                    // can *only* ever be populated during the brief network
-                    // round trip between the CLI emitting the /compact item's
-                    // "invoked" ack and the hub recording it — never while a
-                    // compact REST call is actually running. So if
-                    // isLocalIdCancelled(compactLocalId) is already true here,
-                    // that unconditionally means this compact was cancelled
-                    // before its REST request was ever sent, exactly like the
-                    // compactResultSuppressed case above — there's no
-                    // in-flight server-side work to preserve by starting the
-                    // operation anyway. (isLocalIdCancelled is a delete-and-
-                    // return, one-shot callback, so checking it here consumes
-                    // the same entry runCompactOperation()'s own isCancelled()
-                    // would otherwise have consumed — it isn't checked twice.)
+                    // Stop during model/effort setup must not start new HTTP work.
+                    // Switch/exit instead passes its aborted signal through the
+                    // operation so fetch rejects without issuing a request.
+                    // Local-id cancellation is recorded during the invoked ACK,
+                    // before HTTP work starts. Consume its one-shot entry here;
+                    // there is no running server mutation to wait for in that case.
                     const compactCancelledByLocalId = compactLocalId
                         ? (this.options.isLocalIdCancelled?.(compactLocalId) ?? false)
                         : false;
@@ -844,27 +772,10 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                             this.compactAbortController = null;
                             this.compactOperationPhase = 'idle';
                         }
-                        // A 10th PR-review round found this skip path never
-                        // calls session.onThinkingChange(true) (that's the
-                        // whole point of skipping) but also never told the hub
-                        // this queued item is done, leaving the web UI spinner
-                        // stuck: markMessageQueued's 15s "queued thinking"
-                        // grace (hub/src/sync/sessionCache.ts) keeps thinking
-                        // pinned true regardless of keepalives until either the
-                        // grace expires or a messages-consumed ack with
-                        // `clearQueuedThinkingGrace` arrives. Same situation,
-                        // same fix, as the synchronous slash.kind === 'handled'
-                        // path in runOpencode.ts (e.g. /model — see its
-                        // `clearQueuedThinkingGrace` comment there): ack with
-                        // the grace-clearing flag, then push an immediate
-                        // thinking=false keepalive so the spinner clears
-                        // without waiting on the grace. (This is on top of, not
-                        // instead of, the queue's own unflagged
-                        // onBatchConsumed ack — a second ack for an
-                        // already-invoked localId is a no-op on the hub's
-                        // first-write-wins queued-message protocol, and
-                        // clearQueuedThinkingGrace itself is keyed by session,
-                        // not by localId, so it's idempotent too.)
+                        // Clear the hub's queued-thinking grace even though this
+                        // operation never entered thinking=true. The queue's normal
+                        // unflagged consumed ACK does not clear that grace; repeating
+                        // the ACK with the session-level flag is idempotent.
                         if (compactLocalId) {
                             session.client.emitMessagesConsumed([compactLocalId], { clearQueuedThinkingGrace: true });
                         }
@@ -995,18 +906,10 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     }
 
     /**
-     * /compact must stop being offered the instant remote mode starts
-     * leaving — not merely by the time it's actually torn down, and
-     * critically not only on the *next* local-mode entry (the previous
-     * mechanism, in loop.ts's `runLocal:` callback). That gap between "a
-     * switch/exit was requested" and "the next runLocal() call reset this"
-     * is exactly the window a PR-review round found: a /compact slash
-     * command arriving in it still queues normally (runOpencode.ts's
-     * `compactSupported` flag hadn't flipped yet), and since local mode
-     * immediately hands back to remote when it finds a non-empty queue, that
-     * queued compact can end up running anyway — despite the user having
-     * already asked to leave remote mode. See onLeavingRemote()'s doc
-     * comment on RemoteLauncherBase for exactly when this fires.
+     * Withdraw /compact as soon as remote mode starts leaving. Waiting for
+     * the next local-mode entry would allow another compact to queue during
+     * teardown and immediately hand control back to remote mode. See
+     * RemoteLauncherBase.onLeavingRemote() for the synchronous exit boundary.
      */
     protected onLeavingRemote(): void {
         this.historyProbeAbortController.abort();
@@ -1215,14 +1118,9 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
      * completion, preserving the shared-session FIFO invariant. Switch/exit
      * aborts every phase because teardown disconnects the session.
      *
-     * `compactAbortController` is created by the caller (the dequeue loop),
-     * not here, and passed in — deliberately, before the loop's model/effort
-     * switch for this batch runs, not after. A hostile-review whole-feature
-     * sweep found that creating it in here (i.e. only once this function was
-     * actually entered) left a window during that switch — a real async ACP
-     * round-trip — where an abort had nothing to act on yet (`this
-     * .compactAbortController` was still null) and was silently lost by the
-     * time this function created a *fresh* controller afterward.
+     * The dequeue loop creates compactAbortController before async model/effort
+     * setup and passes it here. Replacing it would lose cancellation received
+     * during that setup window.
      */
     private async runCompactOperation(
         acpSessionId: string,
@@ -1574,32 +1472,18 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     }
 
     /**
-     * `leavingRemote` distinguishes plain Stop (`false`, the default — stays
-     * in the same remote session) from switch-to-local/exit (`true` — the
-     * session is being torn down). A 6th PR-review round rejected an earlier
-     * fix (always aborting `compactAbortController` here) because it broke
-     * this feature's core invariant: compact and a prompt must never touch
-     * the same OpenCode session concurrently (see
-     * `compactResultSuppressed`'s field doc comment for the full
-     * reasoning). Plain Stop aborts only read-only marker/result GETs. It
+     * leavingRemote distinguishes plain Stop (false, stays in this remote
+     * session) from switch-to-local/exit (true, tears down the session).
+     * Compact and a prompt must never mutate the same OpenCode session
+     * concurrently. Plain Stop aborts only read-only marker/result GETs. It
      * leaves an in-flight summarize POST running so the dequeue loop waits
      * for its real server-side completion; only that phase can still mutate
      * the shared session. Switch/exit aborts every phase because cleanup()
      * disconnects the ACP subprocess right after.
      */
     private async handleAbort(leavingRemote = false): Promise<void> {
-        // A hostile-review sweep found that a plain Stop during an in-flight
-        // compact — which deliberately leaves the operation running for real
-        // (see compactResultSuppressed's doc comment) — still unconditionally
-        // flipped `thinking` off and reported "Turn aborted" below, telling
-        // the user the turn had stopped while the dequeue loop was actually
-        // still blocked inside runCompactOperation() for however long the
-        // real server-side compaction takes (potentially minutes). Track
-        // that specific case so the messaging stays honest: nothing has
-        // actually stopped yet from the user's perspective, and the dequeue
-        // loop's own `finally` (once runCompactOperation() genuinely
-        // returns) remains the sole source of truth for when this turn is
-        // done.
+        // Keep thinking and status truthful while a plain Stop waits for an
+        // in-flight summarize POST. The dequeue loop's finally owns completion.
         const compactAbortController = this.compactAbortController;
         if (compactAbortController) {
             this.compactResultSuppressed = true;
