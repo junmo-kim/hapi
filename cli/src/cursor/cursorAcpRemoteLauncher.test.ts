@@ -47,6 +47,7 @@ const harness = vi.hoisted(() => ({
     agentActivityListener: null as ((thinking: boolean) => void) | null,
     titleSyncControllers: [] as unknown[],
     titleSyncRegistered: [] as unknown[],
+    onChangeTitle: null as ((title: string) => void) | null,
     /** When set, the next backend.initialize() rejects once, then clears. */
     failNextInitialize: null as Error | null,
     /** When > 0, the next N backend.initialize() calls reject. */
@@ -256,12 +257,15 @@ vi.mock('@/agent/permissionAdapter', () => ({
 }));
 
 vi.mock('@/codex/utils/buildHapiMcpBridge', () => ({
-    buildHapiMcpBridge: async () => ({
-        server: { stop: () => {} },
-        mcpServers: {
-            hapi: { command: 'hapi', args: ['mcp', '--url', 'http://127.0.0.1:1/'] },
-        },
-    }),
+    buildHapiMcpBridge: async (_client: unknown, options?: { onChangeTitle?: (title: string) => void }) => {
+        harness.onChangeTitle = options?.onChangeTitle ?? null;
+        return {
+            server: { stop: () => {} },
+            mcpServers: {
+                hapi: { command: 'hapi', args: ['mcp', '--url', 'http://127.0.0.1:1/'] },
+            },
+        };
+    },
 }));
 
 vi.mock('./utils/cursorMcpOverlay', () => ({
@@ -384,6 +388,7 @@ describe('cursorAcpRemoteLauncher', () => {
         harness.agentActivityListener = null;
         harness.titleSyncControllers = [];
         harness.titleSyncRegistered = [];
+        harness.onChangeTitle = null;
         harness.failNextInitialize = null;
         harness.failInitializeTimes = 0;
         harness.deferNextInitialize = null;
@@ -683,6 +688,40 @@ describe('cursorAcpRemoteLauncher', () => {
         expect(harness.titleSyncRegistered.length).toBeGreaterThan(0);
         for (const controller of harness.titleSyncRegistered) {
             expect(controller).toBe(harness.titleSyncControllers[0]);
+        }
+    });
+
+    it.each([false, true])('keeps manual title precedence after live Auto relaunch (restore: %s)', async (restore) => {
+        const session = makeSession(null, false);
+        session.model = 'composer-2.5[fast=false]';
+        const runPromise = cursorAcpRemoteLauncher(session);
+        try {
+            await vi.waitFor(() => expect(harness.newSessionCalled).toBe(true));
+            await vi.waitFor(() => expect(session.canApplyModelConfig()).toBe(true));
+            const createdBefore = vi.mocked(createCursorAcpBackend).mock.results.length;
+            if (restore) {
+                harness.failNextInitialize = new Error('auto spawn refused');
+                await expect(session.applyModelConfig('auto')).rejects.toThrow(/relaunch with --model auto failed/i);
+            } else {
+                await session.applyModelConfig('auto');
+            }
+            expect(vi.mocked(createCursorAcpBackend).mock.results.length).toBe(createdBefore + (restore ? 2 : 1));
+            expect(harness.loadSessionCalled).toBe(true);
+            const replacement = vi.mocked(createCursorAcpBackend).mock.results.at(-1)!.value!;
+            const listener = vi.mocked(replacement.setSessionInfoUpdateListener).mock.calls.at(-1)![0]!;
+            const sendSummary = vi.mocked(session.client.sendClaudeSessionMessage);
+            sendSummary.mockClear();
+            listener({ sessionId: 'loaded-acp-session', title: 'Relaunched Native Title' });
+            expect(sendSummary).toHaveBeenCalledWith(expect.objectContaining({ type: 'summary', summary: 'Relaunched Native Title' }));
+
+            sendSummary.mockClear();
+            expect(harness.onChangeTitle).not.toBeNull();
+            harness.onChangeTitle!('Manual Title');
+            listener({ sessionId: 'loaded-acp-session', title: 'Later Native Title' });
+            expect(sendSummary).not.toHaveBeenCalled();
+        } finally {
+            session.queue.close();
+            await runPromise;
         }
     });
 

@@ -58,6 +58,7 @@ const CURSOR_ABORT_DRAIN_TIMEOUT_MS = 5_000;
 
 class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     private readonly session: CursorSession;
+    private readonly titleSync: ReturnType<typeof createAcpSessionTitleSync>;
     private backend: ReturnType<typeof createCursorAcpBackend> | null = null;
     private acpSessionId: string | null = null;
     private permissionAdapter: PermissionAdapter | null = null;
@@ -97,6 +98,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     constructor(session: CursorSession) {
         super(process.env.DEBUG ? session.logPath : undefined);
         this.session = session;
+        this.titleSync = createAcpSessionTitleSync(session.client);
     }
 
     public async launch(): Promise<RemoteLauncherExitReason> {
@@ -115,7 +117,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         const messageBuffer = this.messageBuffer;
         session.client.updateAgentState?.((state) => ({ ...state, steeringActive: false }));
 
-        const titleSync = createAcpSessionTitleSync(session.client);
+        const titleSync = this.titleSync;
         const { server: happyServer, mcpServers } = await buildHapiMcpBridge(session.client, {
             onChangeTitle: () => titleSync.markManualTitle(),
             skillLookup: { workingDirectory: session.path, flavor: 'cursor' }
@@ -1288,7 +1290,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         });
         // Publish this.backend only after initialize + session/load so the
         // message loop cannot prompt against a half-ready process.
-        registerAcpSessionTitleSync(backend, session.client);
+        registerAcpSessionTitleSync(backend, session.client, this.titleSync);
         backend.setUsageUpdateListener((message) => this.handleAgentMessage(message));
         this.wireAgentActivityThinking(backend, session);
         this.wireStderrErrorListener(backend, (hint) => {
