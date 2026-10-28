@@ -53,7 +53,7 @@ afterEach(async () => {
     finally { vi.useRealTimers(); }
 });
 
-async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end'] }) {
+async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; create?: RootHost['create'] }) {
     const directory = await mkdtemp('/tmp/hapi-shared-root-');
     let state: AgentState = { steeringActive: true };
     let metadata: Metadata = { path: directory, host: 'test', flavor: 'codex' };
@@ -82,7 +82,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end'] }) 
     const end = opts?.end ?? (async () => { throw new Error('Unexpected root archive'); });
     const root = new SharedCodexRoot({ session, workingDirectory: directory } as SessionBootstrapResult, {
         directory, generation: 'test', endpoint: 'mock', settingsFor: () => undefined,
-        create: async () => { throw new Error('Unexpected root creation'); },
+        create: opts?.create ?? (async () => { throw new Error('Unexpected root creation'); }),
         end
     } satisfies RootHost);
     cleanups.push(async () => { await root.close(false); await rm(directory, { recursive: true, force: true }); });
@@ -118,6 +118,47 @@ async function startCompaction(f: Awaited<ReturnType<typeof fixture>>, id = 'inp
     f.native.notify('item/started', { threadId: 'thread', turnId, item: { id: 'compact', type: 'contextCompaction' } });
     return turn;
 }
+
+describe('historical fork during generation', () => {
+    it('rejects steered and unknown-status boundaries before creating a child', async () => {
+        const create = vi.fn<RootHost['create']>()
+        const f = await fixture({ create })
+        f.native.thread.turns = [
+            { id: 'earlier', status: 'completed', items: [
+                { id: 'u1', type: 'userMessage', clientId: 'first' },
+                { id: 'u2', type: 'userMessage', clientId: 'steer' }
+            ] },
+            { id: 'unknown', status: 'unknown', items: [{ id: 'u3', type: 'userMessage', clientId: 'unknown' }] },
+            { id: 'running', status: 'inProgress', items: [] }
+        ]
+        await f.root.refresh()
+        await f.root.activate()
+        await expect(f.rpc.get(RPC_METHODS.ForkConversation)!({ messageLocalId: 'steer' })).rejects.toThrow('first message')
+        await expect(f.rpc.get(RPC_METHODS.ForkConversation)!({ messageLocalId: 'unknown' })).rejects.toThrow('completed')
+        expect(create).not.toHaveBeenCalled()
+    })
+    it('creates a child before a completed turn without interrupting the active source', async () => {
+        const initialSettings = vi.fn(async () => {})
+        const create = vi.fn<RootHost['create']>(async () => ({ threadId: 'child',
+            session: { sessionId: 'child-session' }, initialSettings }) as unknown as SharedCodexRoot)
+        const f = await fixture({ create })
+        f.native.thread.turns = [
+            { id: 'earlier', status: 'completed', items: [{ id: 'u1', type: 'userMessage', clientId: 'local-earlier' }] },
+            { id: 'running', status: 'inProgress', items: [{ id: 'u2', type: 'userMessage', clientId: 'local-running' }] }
+        ]
+        await f.root.refresh()
+        await f.root.activate()
+        const request = vi.spyOn(f.root.client, 'request')
+        const fork = f.rpc.get(RPC_METHODS.ForkConversation)!
+        await expect(fork({ messageLocalId: 'local-earlier' })).resolves.toEqual({ nativeSessionId: 'child', sessionId: 'child-session' })
+        expect(create).toHaveBeenCalledWith('thread/fork', expect.objectContaining({ threadId: 'thread', beforeTurnId: 'earlier' }), f.root)
+        expect(f.state().steeringActive).toBe(true)
+        expect(request.mock.calls.some(([method]) => method === 'turn/interrupt')).toBe(false)
+        await expect(fork({})).rejects.toThrow('busy')
+        await expect(fork({ messageLocalId: 'local-running' })).rejects.toThrow('completed')
+        expect(create).toHaveBeenCalledTimes(1)
+    })
+})
 
 describe('compaction delivery confirmation', () => {
     it('does not turn uncertainty discovered by a cold snapshot into live compaction evidence', async () => {
@@ -200,6 +241,16 @@ async function completePlan(f: Awaited<ReturnType<typeof fixture>>, status = 'co
     await vi.waitFor(() => expect(f.send).toHaveBeenCalledWith(expect.objectContaining({ name: 'ExitPlanMode' }), expect.any(String)));
     return codexPlanProposalId('thread', turn.id, 'plan-item');
 }
+
+describe('shared permission modes', () => {
+    it('switches native auto-review on and back to the human reviewer', async () => {
+        const f = await fixture();
+        expect((await f.root.applySettings({ permissionMode: 'autoReview' })).applied.permissionMode).toBe('autoReview');
+        expect(f.root.client).toMatchObject({ settings: { approvalPolicy: 'on-request', approvalsReviewer: 'auto_review', sandboxPolicy: { type: 'workspaceWrite' } } });
+        expect((await f.root.applySettings({ permissionMode: 'default' })).applied.permissionMode).toBe('default');
+        expect(f.root.client).toMatchObject({ settings: { approvalsReviewer: 'user' } });
+    });
+});
 
 describe('shared plan actions', () => {
     it('applies remote change_title as metadata.name then lets native terminal rename win', async () => {
