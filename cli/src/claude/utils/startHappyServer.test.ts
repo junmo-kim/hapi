@@ -122,6 +122,9 @@ describe('startHappyServer skill_lookup', () => {
         sendAgentMessage = vi.fn()
         const sessionClient = {
             updateMetadata: vi.fn(),
+            refreshMetadata: vi.fn(async () => true),
+            getMetadata: vi.fn(() => null),
+            flushMetadata: vi.fn(async () => true),
             sendAgentMessage,
             sendClaudeSessionMessage: vi.fn()
         } as unknown as ApiSessionClient
@@ -138,6 +141,7 @@ describe('startHappyServer skill_lookup', () => {
         })
 
         expect(onChangeTitle).toHaveBeenCalledWith('Manual Title')
+        expect(sessionClient.flushMetadata).toHaveBeenCalledTimes(2)
     })
 
     it('does not invoke onChangeTitle when the metadata update fails', async () => {
@@ -145,6 +149,9 @@ describe('startHappyServer skill_lookup', () => {
         const updateMetadata = vi.fn()
         const sessionClient = {
             updateMetadata,
+            refreshMetadata: vi.fn(async () => true),
+            getMetadata: vi.fn(() => null),
+            flushMetadata: vi.fn(async () => true),
             sendAgentMessage,
             sendClaudeSessionMessage: vi.fn()
         } as unknown as ApiSessionClient
@@ -172,6 +179,9 @@ describe('startHappyServer skill_lookup', () => {
         const updateMetadata = vi.fn()
         const sessionClient = {
             updateMetadata,
+            refreshMetadata: vi.fn(async () => true),
+            getMetadata: vi.fn(() => null),
+            flushMetadata: vi.fn(async () => true),
             sendAgentMessage: vi.fn(),
             sendClaudeSessionMessage: vi.fn()
         } as unknown as ApiSessionClient
@@ -293,6 +303,9 @@ describe('startHappyServer change_title', () => {
         const sendClaudeSessionMessage = vi.fn()
         const sessionClient = {
             updateMetadata,
+            refreshMetadata: vi.fn(async () => true),
+            getMetadata: vi.fn(() => null),
+            flushMetadata: vi.fn(async () => true),
             sendAgentMessage: vi.fn(),
             sendClaudeSessionMessage
         } as unknown as ApiSessionClient
@@ -334,10 +347,93 @@ describe('startHappyServer change_title', () => {
         expect(sendClaudeSessionMessage).not.toHaveBeenCalled()
     })
 
+    it.each([false, true])('reports a user lock, including one acquired while the title write is pending (%s)', async (inFlight) => {
+        let locked = !inFlight
+        const updateMetadata = vi.fn()
+        const sessionClient = {
+            updateMetadata,
+            refreshMetadata: vi.fn(async () => true),
+            getMetadata: () => ({ path: '/tmp', host: 'localhost', name: 'Pinned', titleLocked: locked }),
+            flushMetadata: vi.fn(async () => { locked = true; return true }),
+            sendAgentMessage: vi.fn()
+        } as unknown as ApiSessionClient
+        const onChangeTitle = vi.fn()
+        const mcp = await connectChangeTitleServer(sessionClient, { onChangeTitle })
+        updateMetadata.mockClear()
+        const result = await mcp.callTool({ name: 'change_title', arguments: { title: 'Agent' } }) as ToolResult
+        expect(result.isError).toBe(true)
+        expect(result.content?.[0]?.text).toContain('locked by the user')
+        expect(updateMetadata).toHaveBeenCalledTimes(inFlight ? 1 : 0)
+        expect(onChangeTitle).not.toHaveBeenCalled()
+    })
+
+    it.each([1, 2])('does not acknowledge a rename when metadata flush %s fails', async (failedFlush) => {
+        const onChangeTitle = vi.fn()
+        let flushes = 0
+        const sessionClient = {
+            updateMetadata: vi.fn(),
+            refreshMetadata: vi.fn(async () => true),
+            getMetadata: () => null,
+            flushMetadata: vi.fn(async () => {
+                flushes++
+                if (flushes === 2) expect(onChangeTitle).toHaveBeenCalledWith('Manual Title')
+                return flushes !== failedFlush
+            })
+        } as unknown as ApiSessionClient
+        const mcp = await connectChangeTitleServer(sessionClient, { onChangeTitle })
+        const result = await mcp.callTool({ name: 'change_title', arguments: { title: 'Manual Title' } }) as ToolResult
+        expect(result.isError).toBe(true)
+        expect(flushes).toBe(failedFlush)
+        expect(onChangeTitle).toHaveBeenCalledTimes(failedFlush === 1 ? 0 : 1)
+    })
+
+    it('reports a user lock acquired while flushing manual-title precedence', async () => {
+        let locked = false
+        let flushes = 0
+        const onChangeTitle = vi.fn()
+        const sessionClient = {
+            updateMetadata: vi.fn(),
+            refreshMetadata: vi.fn(async () => true),
+            getMetadata: () => ({ path: '/tmp', host: 'localhost', titleLocked: locked }),
+            flushMetadata: vi.fn(async () => { locked = ++flushes === 2; return true })
+        } as unknown as ApiSessionClient
+        const mcp = await connectChangeTitleServer(sessionClient, { onChangeTitle })
+        const result = await mcp.callTool({ name: 'change_title', arguments: { title: 'Manual' } }) as ToolResult
+        expect(result.isError).toBe(true)
+        expect(result.content?.[0]?.text).toContain('locked by the user')
+        expect(onChangeTitle).toHaveBeenCalledTimes(1)
+    })
+
+    it('refreshes a stale cached lock before allowing an explicit rename', async () => {
+        let locked = true
+        const sessionClient = {
+            updateMetadata: vi.fn(), refreshMetadata: vi.fn(async () => { locked = false; return true }),
+            getMetadata: () => ({ path: '/tmp', host: 'localhost', titleLocked: locked }),
+            flushMetadata: vi.fn(async () => true), sendAgentMessage: vi.fn()
+        } as unknown as ApiSessionClient
+        const mcp = await connectChangeTitleServer(sessionClient)
+        const result = await mcp.callTool({ name: 'change_title', arguments: { title: 'Unlocked' } }) as ToolResult
+        expect(result.isError).toBe(false)
+        expect(sessionClient.refreshMetadata).toHaveBeenCalled()
+    })
+
+    it('fails without mutating when the Hub lock cannot be read', async () => {
+        const updateMetadata = vi.fn()
+        const sessionClient = { updateMetadata, refreshMetadata: vi.fn(async () => false), sendAgentMessage: vi.fn() } as unknown as ApiSessionClient
+        const mcp = await connectChangeTitleServer(sessionClient)
+        updateMetadata.mockClear()
+        const result = await mcp.callTool({ name: 'change_title', arguments: { title: 'Unknown' } }) as ToolResult
+        expect(result.isError).toBe(true)
+        expect(updateMetadata).not.toHaveBeenCalled()
+    })
+
     it('returns an error for blank titles instead of claiming success', async () => {
         const updateMetadata = vi.fn()
         const sessionClient = {
             updateMetadata,
+            refreshMetadata: vi.fn(async () => true),
+            getMetadata: vi.fn(() => null),
+            flushMetadata: vi.fn(async () => true),
             sendAgentMessage: vi.fn(),
             sendClaudeSessionMessage: vi.fn()
         } as unknown as ApiSessionClient
@@ -360,6 +456,9 @@ describe('startHappyServer change_title', () => {
         const sendClaudeSessionMessage = vi.fn()
         const sessionClient = {
             updateMetadata,
+            refreshMetadata: vi.fn(async () => true),
+            getMetadata: vi.fn(() => null),
+            flushMetadata: vi.fn(async () => true),
             sendAgentMessage: vi.fn(),
             sendClaudeSessionMessage
         } as unknown as ApiSessionClient

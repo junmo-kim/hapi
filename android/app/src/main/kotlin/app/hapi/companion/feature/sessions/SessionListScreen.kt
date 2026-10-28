@@ -1,5 +1,9 @@
 package app.hapi.companion.feature.sessions
 
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -57,6 +61,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import app.hapi.companion.R
 import app.hapi.companion.ui.components.AgentFlavorIcon
 import app.hapi.companion.ui.theme.HapiTheme
@@ -73,7 +81,8 @@ import app.hapi.protocol.wire.TodoProgress
  * Inventory (mirrors the web sidebar semantics):
  * - offline banner over snapshot data, search box (relevance-ranked, port of
  *   the web sidebar search), machine filter chips (≥ 2 machines),
- *   pull-to-refresh, empty state + no-search-results state;
+ *   activity date-range summary row + clear, pull-to-refresh, empty state
+ *   and no-search-results state;
  * - duplicate agent-session views are collapsed and fresh "new session"
  *   stubs hidden (ViewModel pipeline, web sidebar parity);
  * - pinned section first (the sort already puts globalPinned/pinned rows on
@@ -108,12 +117,29 @@ fun SessionListScreen(
     var renameRow by remember { mutableStateOf<SessionRowUi?>(null) }
     var deleteRow by remember { mutableStateOf<SessionRowUi?>(null) }
 
-    DisposableEffect(viewModel) {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(viewModel, context, lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) viewModel.refreshTimeZone()
+        }
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                if (intent?.action == Intent.ACTION_TIMEZONE_CHANGED) viewModel.refreshTimeZone()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        ContextCompat.registerReceiver(
+            context, receiver, IntentFilter(Intent.ACTION_TIMEZONE_CHANGED), ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
         viewModel.start()
-        onDispose { viewModel.stop() }
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            context.unregisterReceiver(receiver)
+            viewModel.stop()
+        }
     }
 
-    val context = LocalContext.current
     LaunchedEffect(viewModel, context) {
         viewModel.errors.collect { error ->
             val label = context.getString(
@@ -162,6 +188,20 @@ fun SessionListScreen(
                     TextButton(onClick = { viewModel.setMachineFilter(null) }) { Text(stringResource(R.string.sessions_clear_filter)) }
                 }
             }
+            state.dateRange?.let { range ->
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        stringResource(
+                            R.string.sessions_time_filter_summary,
+                            formatEpochDayLocalized(range.startEpochDay),
+                            formatEpochDayLocalized(range.endEpochDay),
+                        ),
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = viewModel::clearDateRange) { Text(stringResource(R.string.sessions_clear_filter)) }
+                }
+            }
             PullToRefreshBox(
                 isRefreshing = state.isRefreshing,
                 onRefresh = viewModel::refresh,
@@ -173,7 +213,7 @@ fun SessionListScreen(
                     if (state.isSearching) {
                         SearchEmptyState(query = state.searchQuery)
                     } else {
-                        EmptyState(hasLoaded = state.hasLoaded, isOffline = state.isOffline)
+                        EmptyState(hasLoaded = state.hasLoaded, isOffline = state.isOffline, hasDateFilter = state.dateRange != null)
                     }
                 } else {
                     SessionRows(
@@ -529,7 +569,7 @@ private fun SearchEmptyState(query: String) {
 }
 
 @Composable
-private fun EmptyState(hasLoaded: Boolean, isOffline: Boolean) {
+private fun EmptyState(hasLoaded: Boolean, isOffline: Boolean, hasDateFilter: Boolean = false) {
     // verticalScroll keeps the pull-to-refresh gesture available even though
     // there is nothing to scroll.
     Column(
@@ -545,6 +585,7 @@ private fun EmptyState(hasLoaded: Boolean, isOffline: Boolean) {
                 when {
                     !hasLoaded && !isOffline -> R.string.sessions_empty_loading_title
                     isOffline -> R.string.sessions_empty_offline_title
+                    hasDateFilter -> R.string.sessions_time_filter_empty_title
                     else -> R.string.sessions_empty_title
                 },
             ),
@@ -556,6 +597,7 @@ private fun EmptyState(hasLoaded: Boolean, isOffline: Boolean) {
                 when {
                     !hasLoaded && !isOffline -> R.string.sessions_empty_loading_hint
                     isOffline -> R.string.sessions_empty_offline_hint
+                    hasDateFilter -> R.string.sessions_time_filter_empty_hint
                     else -> R.string.sessions_empty_hint
                 },
             ),
