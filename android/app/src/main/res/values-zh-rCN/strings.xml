@@ -496,6 +496,11 @@
     <string name="scratchlist_delete">删除</string>
     <string name="scratchlist_cancel">取消</string>
     <string name="scratchlist_save">保存</string>
+    <string name="scratchlist_action_move_up">上移笔记</string>
+    <string name="scratchlist_action_move_down">下移笔记</string>
+    <string name="scratchlist_action_copy">复制文本到剪贴板（不含图片）</string>
+    <string name="scratchlist_action_copied">已复制！</string>
+    <string name="scratchlist_confirm_delete">删除这条草稿？此操作无法撤销。</string>
     <string name="scratchlist_retry">重试</string>
     <string name="scratchlist_load_failed">无法加载草稿夹</string>
     <string name="scratchlist_check_connection">请检查与 hub 的连接后重试。</string>
@@ -582,6 +587,13 @@
     <string name="sessions_clear_filter">清除筛选</string>
     <string name="sessions_machine_fallback">机器 · %1$s</string>
     <string name="sessions_filter_summary">筛选：%1$s</string>
+    <string name="sessions_time_filter_label">按最后活动时间筛选会话</string>
+    <string name="sessions_time_filter_apply">应用</string>
+    <string name="sessions_time_filter_clear">清除</string>
+    <string name="sessions_time_filter_summary">活动时间：%1$s – %2$s</string>
+    <string name="sessions_time_filter_empty_title">此日期范围内没有会话</string>
+    <string name="sessions_time_filter_empty_hint">调整或清除日期筛选以查看更多会话。</string>
+    <string name="sessions_time_filter_recent_activity">近期活动</string>
     <string name="privacy_policy">隐私政策</string>
     <string name="privacy_open_failed">没有可打开此链接的应用。</string>
     <string name="chat_tool_resolved">已处理</string>

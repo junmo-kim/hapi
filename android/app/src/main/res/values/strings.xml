@@ -492,6 +492,11 @@
     <string name="scratchlist_delete">Delete</string>
     <string name="scratchlist_cancel">Cancel</string>
     <string name="scratchlist_save">Save</string>
+    <string name="scratchlist_action_move_up">Move note up</string>
+    <string name="scratchlist_action_move_down">Move note down</string>
+    <string name="scratchlist_action_copy">Copy text to clipboard (not images)</string>
+    <string name="scratchlist_action_copied">Copied!</string>
+    <string name="scratchlist_confirm_delete">Delete this scratchlist entry? This cannot be undone.</string>
     <string name="scratchlist_retry">Retry</string>
     <string name="scratchlist_load_failed">Couldn’t load the scratchlist</string>
     <string name="scratchlist_check_connection">Check the connection to your hub and try again.</string>
@@ -578,6 +583,13 @@
     <string name="sessions_clear_filter">Clear filter</string>
     <string name="sessions_machine_fallback">Machine · %1$s</string>
     <string name="sessions_filter_summary">Filtered by: %1$s</string>
+    <string name="sessions_time_filter_label">Filter sessions by last activity</string>
+    <string name="sessions_time_filter_apply">Apply</string>
+    <string name="sessions_time_filter_clear">Clear</string>
+    <string name="sessions_time_filter_summary">Activity: %1$s – %2$s</string>
+    <string name="sessions_time_filter_empty_title">No sessions in this date range</string>
+    <string name="sessions_time_filter_empty_hint">Adjust or clear the date filter to see more sessions.</string>
+    <string name="sessions_time_filter_recent_activity">Recent activity</string>
     <string name="privacy_policy">Privacy Policy</string>
     <string name="privacy_open_failed">No app can open this link.</string>
 </resources>

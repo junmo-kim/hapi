@@ -492,6 +492,11 @@
     <string name="scratchlist_delete">Удалить</string>
     <string name="scratchlist_cancel">Отмена</string>
     <string name="scratchlist_save">Сохранить</string>
+    <string name="scratchlist_action_move_up">Переместить заметку выше</string>
+    <string name="scratchlist_action_move_down">Переместить заметку ниже</string>
+    <string name="scratchlist_action_copy">Скопировать текст в буфер обмена (без изображений)</string>
+    <string name="scratchlist_action_copied">Скопировано!</string>
+    <string name="scratchlist_confirm_delete">Удалить эту запись? Это действие нельзя отменить.</string>
     <string name="scratchlist_retry">Повторить</string>
     <string name="scratchlist_load_failed">Не удалось загрузить заметки</string>
     <string name="scratchlist_check_connection">Проверьте подключение к хабу и попробуйте снова.</string>
@@ -578,6 +583,13 @@
     <string name="sessions_clear_filter">Сбросить фильтр</string>
     <string name="sessions_machine_fallback">Машина · %1$s</string>
     <string name="sessions_filter_summary">Фильтр: %1$s</string>
+    <string name="sessions_time_filter_label">Фильтр сессий по последней активности</string>
+    <string name="sessions_time_filter_apply">Применить</string>
+    <string name="sessions_time_filter_clear">Очистить</string>
+    <string name="sessions_time_filter_summary">Активность: %1$s – %2$s</string>
+    <string name="sessions_time_filter_empty_title">В этом диапазоне дат нет сессий</string>
+    <string name="sessions_time_filter_empty_hint">Измените или сбросьте фильтр по дате, чтобы увидеть больше сессий.</string>
+    <string name="sessions_time_filter_recent_activity">Недавняя активность</string>
     <string name="privacy_policy">Политика конфиденциальности</string>
     <string name="privacy_open_failed">Нет приложения, способного открыть эту ссылку.</string>
 </resources>

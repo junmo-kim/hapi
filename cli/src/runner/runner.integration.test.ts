@@ -423,6 +423,7 @@ exec /bin/ps "$@"
       happyLibDir: process.cwd(),
       happyToolsDir: process.cwd(),
       hostPid: pid,
+      hostStartMarker: getProcessStartMarker(pid)!,
       startedBy: 'runner',
       machineId: 'test-generation-machine',
     });
