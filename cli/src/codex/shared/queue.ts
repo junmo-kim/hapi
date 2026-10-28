@@ -311,17 +311,13 @@ export class SharedCodexQueue {
             return !entry || (entry.state !== 'consumed' && entry.state !== 'canceled');
         });
         if (!first) return;
-        const replaced: Removal[] = (applied?.members ?? []).filter(member => member.id !== first.id)
-            .map(member => ({ id: member.id, input: member.input, intent: 'replace' as const }));
+        const replaced: Removal[] = [...(applied?.removed ?? []),
+            ...(applied?.members ?? []).filter(member => member.id !== first.id)
+                .map(member => ({ id: member.id, input: member.input, intent: 'replace' as const }))];
         const replacement = this.version(item.input, [{ id: first.id, input: item.input }], replaced);
         batch.versions.push(replacement); this.supersedeOlder(batch, replacement);
         batch.nativeId = item.id; batch.state = 'queued';
-        for (const removal of replaced) {
-            const entry = this.entries[removal.id];
-            if (entry && entry.state !== 'consumed' && entry.state !== 'canceled') {
-                entry.state = 'canceled'; this.mirror?.(removal.id, null);
-            }
-        }
+        this.withdrawRemovals(batch, replacement);
         this.adoptMembers(replacement, item, presentMembers);
     }
     private adoptMembers(version: Version, item: Submission, presentMembers: Set<string>): void {
@@ -443,8 +439,9 @@ export class SharedCodexQueue {
             const entry = this.entries[member.id];
             return !entry || (entry.state !== 'consumed' && entry.state !== 'canceled');
         });
-        const replaced: Removal[] = (applied?.members ?? []).filter(member => member.id !== first?.id)
-            .map(member => ({ id: member.id, input: member.input, intent: 'replace' as const }));
+        const replaced: Removal[] = [...(applied?.removed ?? []),
+            ...(applied?.members ?? []).filter(member => member.id !== first?.id)
+                .map(member => ({ id: member.id, input: member.input, intent: 'replace' as const }))];
         const proposal = this.version(input, first ? [{ id: first.id, input }] : [], replaced);
         batch.versions.push(proposal); batch.current = batch.versions.length - 1;
         await this.save();
@@ -452,13 +449,9 @@ export class SharedCodexQueue {
             const response = await this.client.request('thread/queue/update', values);
             this.validateUpdate(response, batch, input);
             this.supersedeOlder(batch, proposal);
-            // Replaced members are withdrawn only after a definitive update response.
-            for (const removal of replaced) {
-                const entry = this.entries[removal.id];
-                if (entry && entry.state !== 'consumed' && entry.state !== 'canceled') {
-                    entry.state = 'canceled'; this.mirror?.(removal.id, null);
-                }
-            }
+            // The replacement proves inherited cancellation intents too, while
+            // detached steering retains its independent unknown outcome.
+            this.withdrawRemovals(batch, proposal);
             if (first) {
                 const entry = this.entries[first.id];
                 if (entry && entry.state !== 'consumed') {

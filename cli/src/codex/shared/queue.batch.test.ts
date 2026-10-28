@@ -482,6 +482,93 @@ it('never revives a canceled member when a later whole delete loses its ACK befo
     expect(mirror).not.toHaveBeenCalledWith('original-A', text('MARKER-A'));
 });
 
+it.each(['gateway', 'snapshot', 'lost-edit-ack'] as const)('retains removal intents through %s after an indeterminate cancellation', async route => {
+    for (const cancelApplied of [false, true]) {
+        const f = await fixture();
+        await f.queue.enqueue('original-A', text('A'), false, 'same');
+        await f.queue.enqueue('original-B', text('B'), false, 'same');
+        f.overrides.set('thread/queue/update', params => {
+            if (cancelApplied) f.native[0].input = structuredClone(params.input as QueueInput);
+            throw lost('cancel reply lost');
+        });
+        expect(await f.queue.cancel('original-A')).toBe('indeterminate');
+        expect(f.queue.state('original-A')).toBe('unknown');
+        f.overrides.delete('thread/queue/update');
+        if (route === 'snapshot') {
+            f.native[0].input = text('EDITED-X');
+            await f.queue.reconcile();
+        } else {
+            if (route === 'lost-edit-ack') f.overrides.set('thread/queue/update', params => {
+                f.native[0].input = structuredClone(params.input as QueueInput);
+                throw lost('edit reply lost');
+            });
+            const edit = f.queue.nativeMutation('thread/queue/update', {
+                threadId: 'thread', queuedSubmissionId: f.native[0].id, input: text('EDITED-X')
+            });
+            if (route === 'lost-edit-ack') await expect(edit).rejects.toThrow('edit reply lost');
+            else await edit;
+            f.overrides.delete('thread/queue/update');
+        }
+        const restored = new SharedCodexQueue(f.client, 'thread', join(f.directory, 'ledger.json'), f.consumed, f.uncertain, f.mirror);
+        await restored.load();
+        await restored.suspend();
+        const resumed = new SharedCodexQueue(f.client, 'thread', join(f.directory, 'ledger.json'), f.consumed, f.uncertain, f.mirror);
+        await resumed.load();
+        // Only ledger-proven released originals are replayed by a resumed root.
+        for (const id of ['original-A', 'original-B']) {
+            if (resumed.state(id) === 'released') await resumed.enqueue(id, text(id), false, 'same');
+        }
+        expect(f.native.flatMap(item => item.input)).toEqual(text('EDITED-X'));
+        expect(resumed.state('original-A')).toBe('canceled');
+        expect(resumed.state('original-B')).toBe('queued');
+        expect(f.mirror).toHaveBeenCalledWith('original-A', null);
+        expect(f.consumed).not.toHaveBeenCalled();
+    }
+});
+
+it('settles removal intents when edited content is accepted before the native edit response', async () => {
+    const f = await fixture();
+    await f.queue.enqueue('original-A', text('A'), false, 'same');
+    await f.queue.enqueue('original-B', text('B'), false, 'same');
+    f.overrides.set('thread/queue/update', () => { throw lost('cancel reply lost'); });
+    expect(await f.queue.cancel('original-A')).toBe('indeterminate');
+    const batchId = f.native[0].clientUserMessageId;
+    f.overrides.set('thread/queue/update', async params => {
+        f.native[0].input = structuredClone(params.input as QueueInput);
+        expect(await f.queue.committed(batchId, params.input)).toEqual([{ id: 'original-B', input: text('EDITED-X') }]);
+        expect(f.queue.state('original-A')).toBe('canceled');
+        return { queuedSubmission: structuredClone(f.native[0]) };
+    });
+    await f.queue.nativeMutation('thread/queue/update', { threadId: 'thread', queuedSubmissionId: f.native[0].id, input: text('EDITED-X') });
+    const restored = new SharedCodexQueue(f.client, 'thread', join(f.directory, 'ledger.json'), f.consumed, f.uncertain);
+    await restored.load();
+    expect(restored.state('original-A')).toBe('canceled');
+    expect(restored.state('original-B')).toBe('consumed');
+    expect(f.consumed).toHaveBeenCalledExactlyOnceWith(['original-B']);
+});
+
+it.each(['gateway', 'snapshot'] as const)('preserves detached steer removal intents through a %s whole edit and resume', async route => {
+    const f = await fixture();
+    await f.queue.enqueue('original-A', text('A'), false, 'same');
+    await f.queue.enqueue('original-B', text('B'), false, 'same');
+    f.overrides.set('turn/steer', () => { throw lost('steer reply lost'); });
+    expect(await f.queue.steer('original-A', 'active-turn')).toEqual({ steered: false, indeterminate: true });
+    if (route === 'snapshot') {
+        f.native[0].input = text('EDITED-X');
+        await f.queue.reconcile();
+    } else await f.queue.nativeMutation('thread/queue/update', { threadId: 'thread', queuedSubmissionId: f.native[0].id, input: text('EDITED-X') });
+    await f.queue.suspend();
+    const restored = new SharedCodexQueue(f.client, 'thread', join(f.directory, 'ledger.json'), f.consumed, f.uncertain);
+    await restored.load();
+    expect(restored.state('original-A')).toBe('unknown');
+    expect(restored.state('original-B')).toBe('released');
+    await restored.enqueue('original-A', text('A'), false, 'same');
+    await restored.enqueue('original-B', text('B'), false, 'same');
+    expect(f.native.flatMap(item => item.input)).toEqual(text('EDITED-X'));
+    expect(f.mirror).not.toHaveBeenCalledWith('original-A', null);
+    expect(f.consumed).not.toHaveBeenCalled();
+});
+
 it('journals an external whole edit before the RPC and lets the first member own the edited input', async () => {
     const { queue, native, consumed, mirror } = await fixture();
     await queue.enqueue('original-A', text('MARKER-A'), false, 'same-mode');
