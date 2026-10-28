@@ -30,7 +30,7 @@ import {
     CLAUDE_CONVERSATION_HISTORY,
     toConversationHistoryCapabilities
 } from '@hapi/protocol/conversationHistory';
-import { readNativeTurns, resolveRewindPlan, supportsNativeRewind } from './conversationHistory';
+import { hasRewindProof, readNativeTurns, readTranscriptUuids, resolveRewindPlan, supportsNativeRewind } from './conversationHistory';
 import { listSkills, type SkillSummary } from '@/modules/common/skills';
 
 export interface StartOptions {
@@ -318,7 +318,10 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     // scrubs truncated entries automatically via `conversationHistoryPoints`.
     const promptUuidByLocalId = new Map<string, string>()
     const localIdsByPromptUuid = new Map<string, string[]>()
-    const REWIND_ACK_TIMEOUT_MS = 60_000
+    // Bounded by the respawn itself: the ack resolves in ~REWIND_SETTLE_MS
+    // (silence past the rejection window) or immediately on a stream rejection
+    // result; only a hung respawn reaches this timeout.
+    const REWIND_ACK_TIMEOUT_MS = 15_000
     const stripRewindFlags = (args: string[] | undefined): string[] | undefined => {
         if (!args) return undefined
         const filtered: string[] = []
@@ -375,17 +378,44 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
 
         // One-shot flags consumed by the respawned process; Session.consumeOneTimeFlags
         // strips them after onSessionFound so they never leak into later launches.
+        // NOTE: `--resume-session-at` alone IS the truncation — claude 2.1.312
+        // accepts it for any number of dropped turns and re-parents the next
+        // turn onto the boundary, leaving the dropped turns orphaned in the
+        // file. `--resume-drops-turn` additionally requires per-turn slices and
+        // its multi-turn validation is off-by-one broken (measured: every
+        // multi-drop declaration is rejected with "range does not start with
+        // the declared turn prompt"), so the drop flags are not used.
         const flags = ['--resume', nativeSessionId]
         if (plan.resumeSessionAt) flags.push('--resume-session-at', plan.resumeSessionAt)
-        for (const dropTurn of plan.dropsTurns) flags.push('--resume-drops-turn', dropTurn)
         claudeSession.claudeArgs = [...(claudeSession.claudeArgs ?? []), ...flags]
 
-        // The respawn starts Claude immediately with the resume flags. Claude
-        // emits no init until the first prompt, but a rejected resume exits
-        // within moments of spawn — so the launcher confirms application once
-        // the new attempt survives a short stability window, and reports
-        // failure immediately on a deterministic resume rejection. Until then
-        // the hub must not truncate its transcript.
+        // Acceptance evidence has two parts. (1) Immediate, in-stream: a
+        // REJECTED resume ends the stream with a result whose errors[] say
+        // "Resume rejected by --resume..." — claudeRemote turns that into
+        // ack(false) deterministically. An ACCEPTED respawn stays silent and
+        // writes nothing until the next user turn, so (2) the proof of true
+        // truncation is Claude's own first post-rewind write: the next turn's
+        // user entry re-parented onto the keep boundary. The rewindProof probe
+        // (below) reports that lazily and claudeRemote acks(true) as soon as
+        // it appears — but the rewind RPC cannot wait for a user turn, so the
+        // ack resolves once the stream has settled past the rejection window
+        // (REWIND_SETTLE_MS) with no rejection result. The settle is a grace
+        // bound on the deterministic negative path, not an acceptance guess:
+        // claude exits almost immediately on rejection, so silence after the
+        // window means the resume was accepted and is streaming idle.
+        const transcriptUuidBaseline = readTranscriptUuids(workingDirectory, nativeSessionId)
+        claudeSession.rewindProof = (resumeSessionAt: string) => {
+            const ok = hasRewindProof(workingDirectory, nativeSessionId, resumeSessionAt, transcriptUuidBaseline)
+            if (ok && claudeSession.rewindAck) {
+                // Native acceptance proven: resolve the ack exactly here so the
+                // hub truncates only against the verified marker.
+                const ack = claudeSession.rewindAck
+                claudeSession.rewindAck = null
+                ack(true)
+            }
+            return ok
+        }
+
         let confirmed = false
         // Arm the ack BEFORE requesting the restart: the launcher respawns
         // synchronously during the abort and needs the armed callback then.
@@ -416,6 +446,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             confirmed = true
         } finally {
             claudeSession.rewindAck = null
+            claudeSession.rewindProof = null
             if (!confirmed) {
                 claudeSession.claudeArgs = stripRewindFlags(claudeSession.claudeArgs)
             }
@@ -784,6 +815,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
                         conversationHistoryEntryIds: {}
                     }))
                 };
+                sessionInstance.rewindProof = null;
                 if (nativeSkills) {
                     sessionInstance.setNativeSkillNames(nativeSkills.map((skill) => skill.name));
                 }

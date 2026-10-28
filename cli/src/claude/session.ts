@@ -54,6 +54,13 @@ export class Session extends AgentSessionBase<EnhancedMode> {
      * is only guaranteed truncated after the new process actually started.
      */
     rewindAck: ((applied: boolean, error?: string) => void) | null = null;
+    /**
+     * Evidence probe for rewind acceptance, set by runClaude before the
+     * restart: returns true only when the native transcript contains a
+     * post-respawn entry re-parented onto the requested keep boundary.
+     * claudeRemote polls it instead of guessing from a timer.
+     */
+    rewindProof: ((resumeSessionAt: string) => boolean) | null = null;
 
     constructor(opts: {
         api: ApiClient;

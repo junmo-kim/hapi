@@ -72,9 +72,14 @@ export async function claudeRemote(opts: {
     onThinkingChange?: (thinking: boolean) => void,
     onMessage: (message: SDKMessage) => void,
     onFirstResult?: (initialMessage: string) => void,
-    onCompactResultAccepted?: () => void,
     onCompletionEvent?: (message: string) => void,
-    onSessionReset?: () => void
+    onSessionReset?: () => void,
+    onCompactResultAccepted?: () => void,
+    /**
+     * Rewind acceptance probe: returns true when the native transcript shows
+     * a post-respawn entry re-parented onto the given keep-boundary uuid.
+     */
+    rewindProof?: (resumeSessionAt: string) => boolean
 }) {
     const debugPrefix = '[claudeRemote][async-debug]';
 
@@ -145,7 +150,6 @@ export async function claudeRemote(opts: {
     // success to the hub. Like --fork-session, start query() without waiting
     // for an initial child prompt; stream-json input stays open for later turns.
     let awaitingRewindInit = resumeSessionAt !== undefined;
-    const REWIND_READY_DELAY_MS = 4_000;
 
     // Mode starts from the persisted session for fork bootstrap; updated when
     // the first child prompt arrives. plan/auto must be present at process start.
@@ -453,23 +457,81 @@ export async function claudeRemote(opts: {
     };
 
     // A rewind respawn starts with no running turn: booting into "thinking"
-    // would leave the session permanently generating. Report idle once the
-    // process has survived long enough to prove the resume flags were accepted
-    // (a rejected resume exits almost immediately). The timer must not outlive
-    // this attempt — a rejected resume exits before it fires, and a stale
-    // callback would steal the queue waiter from the launcher's next attempt.
-    let rewindReadyTimer: ReturnType<typeof setTimeout> | null = null;
-    if (awaitingRewindInit) {
-        rewindReadyTimer = setTimeout(() => {
-            rewindReadyTimer = null;
-            awaitingRewindInit = false;
-            updateThinking(false);
-            void opts.onReady?.();
-            // No result message will ever arrive for the skipped initial turn,
-            // so the queue consumer must be started here or user messages
-            // sent after the rewind would never reach Claude.
-            scheduleNextMessage();
-        }, REWIND_READY_DELAY_MS);
+    // would leave the session permanently generating. Acceptance evidence:
+    // a REJECTED resume ends the stream with a result whose errors[] contain
+    // "Resume rejected by --resume..." and the process exits (deterministic
+    // negative). An ACCEPTED respawn stays silent — no init, no transcript
+    // write — until the first user turn, so the positive ack cannot come from
+    // the stream or the file before any input. After the resume hooks settle,
+    // a short grace window (REWIND_SETTLE_MS) without a rejection result is
+    // therefore the acceptance signal: the probe poller below also watches
+    // for the real proof (first post-respawn entry re-parented onto the keep
+    // boundary) and acks(true) early when a user turn already arrived. The
+    // poller and timers die with this attempt (finally below).
+    const rewindProof = opts.rewindProof;
+    let rewindTimersCleared = false;
+    let rewindProofPoll: ReturnType<typeof setInterval> | null = null;
+    let rewindRejectTimer: ReturnType<typeof setTimeout> | null = null;
+    let rewindSettleTimer: ReturnType<typeof setTimeout> | null = null;
+    const clearRewindTimers = () => {
+        if (rewindTimersCleared) return;
+        rewindTimersCleared = true;
+        if (rewindSettleTimer) {
+            clearTimeout(rewindSettleTimer);
+            rewindSettleTimer = null;
+        }
+        if (rewindRejectTimer) {
+            clearTimeout(rewindRejectTimer);
+            rewindRejectTimer = null;
+        }
+        if (rewindProofPoll) {
+            clearInterval(rewindProofPoll);
+            rewindProofPoll = null;
+        }
+    };
+    const finishRewindInit = () => {
+        clearRewindTimers();
+        awaitingRewindInit = false;
+        updateThinking(false);
+        void opts.onReady?.();
+        // No result message will ever arrive for the skipped initial
+        // turn, so the queue consumer must be started here or user
+        // messages sent after the rewind would never reach Claude.
+        scheduleNextMessage();
+    };
+    const REWIND_SETTLE_MS = 2_500;
+    const REWIND_PROOF_POLL_MS = 500;
+    const REWIND_PROOF_TIMEOUT_MS = 45_000;
+    if (awaitingRewindInit && resumeSessionAt && rewindProof) {
+        const startedAt = Date.now();
+        // Lazy positive proof: the next user turn's snapshot re-parented onto
+        // the keep boundary. Resolves ack(true) early when it appears.
+        rewindProofPoll = setInterval(() => {
+            try {
+                if (rewindProof(resumeSessionAt)) {
+                    if (rewindProofPoll) {
+                        clearInterval(rewindProofPoll);
+                        rewindProofPoll = null;
+                    }
+                } else if (Date.now() - startedAt > REWIND_PROOF_TIMEOUT_MS) {
+                    if (rewindProofPoll) {
+                        clearInterval(rewindProofPoll);
+                        rewindProofPoll = null;
+                    }
+                }
+            } catch (error) {
+                logger.debug(`[claudeRemote] rewind proof poll failed: ${error instanceof Error ? error.message : String(error)}`);
+            }
+        }, REWIND_PROOF_POLL_MS);
+        // Negative path: a rejection result ends this attempt's stream with an
+        // error (handled in the result branch below). Silence past the grace
+        // window means claude did not exit with a rejection result, so the
+        // resume was accepted and is streaming idle — report ready.
+        rewindRejectTimer = setTimeout(() => {
+            rewindRejectTimer = null;
+            if (!awaitingRewindInit) return;
+            finishRewindInit();
+        }, REWIND_SETTLE_MS);
     } else {
         updateThinking(true);
     }
@@ -679,6 +741,21 @@ export async function claudeRemote(opts: {
             if (message.type === 'result') {
                 resultSeq += 1;
                 updateThinking(false);
+                // A rejected rewind resume surfaces as the attempt's only
+                // result with a "Resume rejected by --resume..." error entry
+                // (measured: claude exits right after). That is the
+                // deterministic negative ack — surface it as an error so the
+                // launcher's catch reports rewind failure instead of treating
+                // the attempt as a normal no-turn return.
+                if (awaitingRewindInit) {
+                    const errors = (message as { errors?: unknown[] }).errors;
+                    const rejectText = Array.isArray(errors) ? errors.map(String).join(' | ') : '';
+                    if (/Resume rejected by --resume/i.test(rejectText)) {
+                        logger.debug(`[claudeRemote] rewind resume rejected: ${rejectText.slice(0, 300)}`);
+                        clearRewindTimers();
+                        throw new Error(rejectText);
+                    }
+                }
                 logger.debug(
                     `${debugPrefix} result #${resultSeq} received; scheduling next user message ` +
                     `(nextInFlight=${nextMessageFetchInFlight}, inputEnded=${inputEnded})`
@@ -776,10 +853,7 @@ export async function claudeRemote(opts: {
             `(streamMessages=${streamMessageSeq}, results=${resultSeq}, nextFetches=${nextMessageFetchSeq}, inputEnded=${inputEnded})`
         );
         opts.setPermissionModeListener?.(null);
-        if (rewindReadyTimer) {
-            clearTimeout(rewindReadyTimer);
-            rewindReadyTimer = null;
-        }
+        clearRewindTimers();
         updateThinking(false);
     }
 }

@@ -84,10 +84,16 @@ export function readNativeTurns(workingDirectory: string, sessionId: string): Na
 
 export type RewindPlan = {
     resumeSessionAt?: string
-    dropsTurns: string[]
 }
 
-/** Native `--resume-session-at` truncation landed in Claude Code v2.1.223. */
+/**
+ * Native `--resume-session-at` truncation landed in Claude Code v2.1.223.
+ * `--resume-drops-turn` is deliberately NOT used: its multi-turn validation
+ * is off-by-one broken in current Claude Code (measured on 2.1.312 — every
+ * declaration of two or more dropped turns is rejected with "range does not
+ * start with the declared turn prompt" even for a contiguous drop range),
+ * while `--resume-session-at` alone truncates every turn after the boundary.
+ */
 export const NATIVE_REWIND_MIN_VERSION = [2, 1, 223] as const
 
 export function parseClaudeVersion(versionOutput: string | null | undefined): number[] | null {
@@ -128,7 +134,52 @@ export function resolveRewindPlan(turns: NativeTurn[], dropFromPromptUuid: strin
         throw new Error('Cannot rewind the first message')
     }
     return {
-        resumeSessionAt: turns[index - 1]!.endUuid,
-        dropsTurns: turns.slice(index).map((turn) => turn.promptUuid)
+        resumeSessionAt: turns[index - 1]!.endUuid
     }
+}
+
+/**
+ * Lazy positive acceptance proof for a rewind: Claude's first post-respawn
+ * transcript write re-parents onto the kept boundary
+ * (`parentUuid === resumeSessionAt` — observed on the next user turn's
+ * `attachment prompt_snapshot`). An accepted respawn that receives no user
+ * input writes nothing, so before the next turn this proof cannot exist and
+ * acceptance is inferred in-stream (no rejection result past the settle
+ * window). A rejected resume exits without writing anything.
+ * `knownUuids` must be the full uuid set read BEFORE the respawn so only
+ * post-respawn writes count.
+ */
+export function hasRewindProof(workingDirectory: string, sessionId: string, resumeSessionAt: string, knownUuids: ReadonlySet<string>): boolean {
+    const file = join(getProjectPath(workingDirectory), `${sessionId}.jsonl`)
+    if (!existsSync(file)) return false
+    for (const line of readFileSync(file, 'utf-8').split('\n')) {
+        if (!line.trim()) continue
+        let entry: TranscriptEntry
+        try {
+            entry = JSON.parse(line)
+        } catch {
+            continue
+        }
+        if (typeof entry.uuid !== 'string' || knownUuids.has(entry.uuid)) continue
+        if (entry.isSidechain) continue
+        if (entry.parentUuid === resumeSessionAt) return true
+    }
+    return false
+}
+
+/** Snapshot of every entry uuid currently in the native transcript. */
+export function readTranscriptUuids(workingDirectory: string, sessionId: string): Set<string> {
+    const file = join(getProjectPath(workingDirectory), `${sessionId}.jsonl`)
+    const uuids = new Set<string>()
+    if (!existsSync(file)) return uuids
+    for (const line of readFileSync(file, 'utf-8').split('\n')) {
+        if (!line.trim()) continue
+        try {
+            const entry = JSON.parse(line) as TranscriptEntry
+            if (typeof entry.uuid === 'string') uuids.add(entry.uuid)
+        } catch {
+            continue
+        }
+    }
+    return uuids
 }

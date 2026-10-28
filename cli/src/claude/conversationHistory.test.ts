@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { readNativeTurns, resolveRewindPlan, supportsNativeRewind } from './conversationHistory'
+import { readNativeTurns, readTranscriptUuids, resolveRewindPlan, supportsNativeRewind, hasRewindProof } from './conversationHistory'
 
 const CWD = '/tmp/rewind-fixture-project'
 
@@ -82,6 +82,52 @@ describe('readNativeTurns', () => {
     })
 })
 
+describe('rewind native acceptance proof', () => {
+    function writeProofLines(lines: string[]): string {
+        const root = writeTranscript(lines)
+        process.env.CLAUDE_CONFIG_DIR = root.replace(/\/projects$/, '')
+        return root
+    }
+
+    it('accepts only a NEW post-respawn entry re-parented onto the keep boundary', () => {
+        try {
+            const root = writeProofLines([
+                line({ type: 'user', uuid: 'u1', parentUuid: 'p0', message: { role: 'user', content: 'Say ONE' } }),
+                line({ type: 'assistant', uuid: 'as1', parentUuid: 'u1', message: { role: 'assistant', content: [{ type: 'text', text: 'ONE' }] } }),
+                // Claude's own resume marker: attachment re-parented onto the keep boundary
+                line({ type: 'attachment', uuid: 'resume-marker', parentUuid: 'as1' })
+            ])
+            void root
+            const baseline = readTranscriptUuids(CWD, 'session-a')
+            expect(baseline.has('resume-marker')).toBe(true)
+            // Baseline includes it → not proof (must be new since respawn)
+            expect(hasRewindProof(CWD, 'session-a', 'as1', baseline)).toBe(false)
+            // Without the marker in baseline → proof
+            const beforeRespawn = new Set([...baseline].filter((u) => u !== 'resume-marker'))
+            expect(hasRewindProof(CWD, 'session-a', 'as1', beforeRespawn)).toBe(true)
+        } finally {
+            delete process.env.CLAUDE_CONFIG_DIR
+        }
+    })
+
+    it('rejects entries not bound to the requested boundary and sidechain writes', () => {
+        try {
+            writeProofLines([
+                line({ type: 'user', uuid: 'u1', parentUuid: 'p0', message: { role: 'user', content: 'Say ONE' } }),
+                line({ type: 'assistant', uuid: 'as1', parentUuid: 'u1', message: { role: 'assistant', content: [{ type: 'text', text: 'ONE' }] } }),
+                // post-respawn write attached to the WRONG parent (untruncated chain)
+                line({ type: 'attachment', uuid: 'wrong-parent', parentUuid: 'u1' }),
+                line({ type: 'assistant', uuid: 'side', parentUuid: 'as1', isSidechain: true, message: { role: 'assistant', content: [] } })
+            ])
+            const baseline = new Set<string>(['u1', 'as1'])
+            expect(hasRewindProof(CWD, 'session-a', 'as1', baseline)).toBe(false)
+            expect(hasRewindProof(CWD, 'session-a', 'missing-boundary', baseline)).toBe(false)
+        } finally {
+            delete process.env.CLAUDE_CONFIG_DIR
+        }
+    })
+})
+
 describe('supportsNativeRewind', () => {
     it('accepts versions at or above 2.1.223', () => {
         expect(supportsNativeRewind('2.1.240 (Claude Code)')).toBe(true)
@@ -105,10 +151,9 @@ describe('resolveRewindPlan', () => {
         { promptUuid: 'u3', endUuid: 'as3' }
     ]
 
-    it('keeps the previous turn boundary and drops the selected turn onward', () => {
+    it('keeps the previous turn boundary (truncation is --resume-session-at alone)', () => {
         expect(resolveRewindPlan(turns, 'u2')).toEqual({
-            resumeSessionAt: 'as1',
-            dropsTurns: ['u2', 'u3']
+            resumeSessionAt: 'as1'
         })
     })
 
@@ -168,8 +213,7 @@ describe('readNativeTurns active chain', () => {
             const turns = readNativeTurns(CWD, 'session-a')
             expect(turns.map((t) => t.promptUuid)).toEqual(['u1', 'u3'])
             expect(resolveRewindPlan(turns, 'u3')).toEqual({
-                resumeSessionAt: 'as1',
-                dropsTurns: ['u3']
+                resumeSessionAt: 'as1'
             })
         } finally {
             delete process.env.CLAUDE_CONFIG_DIR
