@@ -33,7 +33,7 @@ import {
 import { useFue } from '@/lib/use-fue'
 import { FueCallout, FueDot } from '@/components/Fue'
 import type { AgentState, CodexCollaborationMode, PermissionMode, PiModelSummary } from '@/types/api'
-import type { Suggestion } from '@/hooks/useActiveSuggestions'
+import type { SuggestionHandler, Suggestion } from '@/hooks/useActiveSuggestions'
 import type { ConversationStatus } from '@/realtime/types'
 import { useActiveWord } from '@/hooks/useActiveWord'
 import { useActiveSuggestions } from '@/hooks/useActiveSuggestions'
@@ -346,7 +346,7 @@ export function HappyComposer(props: {
     onTerminal?: () => void
     terminalUnsupported?: boolean
     autocompletePrefixes?: string[]
-    autocompleteSuggestions?: (query: string) => Promise<Suggestion[]>
+    autocompleteSuggestions?: SuggestionHandler
     // Voice assistant props
     voiceStatus?: ConversationStatus
     voiceMicMuted?: boolean
