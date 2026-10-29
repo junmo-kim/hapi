@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { MessageDeliveryModeSchema } from '@hapi/protocol'
+import { PeerDeliveryModeSchema } from './deliveryMode'
 import {
     PingPeerError,
     exitCodeForPingPeerError,
@@ -137,7 +139,7 @@ describe('pingPeer', () => {
         expect(http.post).toHaveBeenCalledTimes(2)
     })
 
-    it('resumes an inactive session, waits for active, then sends', async () => {
+    it.each([undefined, 'auto', 'queue'] as const)('resumes an inactive session with %s delivery, waits for active, then sends', async (deliveryMode) => {
         const sessionId = 'aaaaaaaa-1111-1111-1111-111111111111'
         let active = false
         let polls = 0
@@ -192,6 +194,7 @@ describe('pingPeer', () => {
         const result = await pingPeer({
             sessionIdPrefix: 'aaaaaaaa',
             message: 'wake up',
+            deliveryMode,
             accessToken: 'tok',
             apiUrl: 'http://hub.test',
             waitActiveSecs: 10,
@@ -414,10 +417,10 @@ describe('pingPeer delivery modes', () => {
 
     function setup(session = active, steerResult: MockResponse | Error = {
         status: 200, data: { status: 'steered' }
-    }) {
+    }, listedSession = session) {
         const http = createHttpMock({
             get: (url) => url.endsWith('/api/sessions')
-                ? { status: 200, data: { sessions: [session] } }
+                ? { status: 200, data: { sessions: [listedSession] } }
                 : { status: 200, data: { session } },
             post: (url) => {
                 if (url.endsWith('/api/auth')) return { status: 200, data: { token: 'jwt' } }
@@ -438,15 +441,99 @@ describe('pingPeer delivery modes', () => {
         }
     }
 
-    it.each([undefined, 'queue'] as const)('keeps %s delivery on the queue path', async (deliveryMode) => {
+    it('keeps auto out of the hub wire delivery modes', () => {
+        expect(PeerDeliveryModeSchema.parse('auto')).toBe('auto')
+        expect(MessageDeliveryModeSchema.safeParse('auto').success).toBe(false)
+    })
+
+    it('honors explicit queue even when a Codex turn is steerable', async () => {
         const { http, options } = setup()
-        const result = await pingPeer({ ...options, deliveryMode })
+        const result = await pingPeer({ ...options, deliveryMode: 'queue' })
         expect(result.delivery).toBe('accepted')
         expect(result.localId).toMatch(/^ping-peer-[0-9a-f-]{36}$/)
         expect(http.post.mock.calls.map(([url]) => url)).toEqual([
             'http://hub.test/api/auth', `http://hub.test/api/sessions/${sessionId}/messages`
         ])
         expect(http.post.mock.calls[1]?.[1]).toEqual({ text: options.message, localId: result.localId })
+    })
+
+    it.each([undefined, 'auto'] as const)('steers an active Codex peer with %s delivery', async (deliveryMode) => {
+        const { http, options } = setup()
+        const onProgress = vi.fn()
+        const result = await pingPeer({ ...options, deliveryMode, onProgress })
+        expect(result.delivery).toBe('steered')
+        expect(http.post.mock.calls.map(([url]) => url)).toEqual([
+            'http://hub.test/api/auth',
+            `http://hub.test/api/sessions/${sessionId}/messages`,
+            `http://hub.test/api/sessions/${sessionId}/messages/${result.localId}/steer`
+        ])
+        expect(http.post.mock.calls[1]?.[1]).toEqual({ text: options.message, localId: result.localId })
+        expect(onProgress).toHaveBeenCalledWith(expect.stringContaining('steer via auto'))
+    })
+
+    it.each([
+        { name: 'idle Codex', session: { ...active, thinking: false, agentState: { steeringActive: false } } },
+        { name: 'thinking Codex without a steerable turn', session: { ...active, agentState: { steeringActive: false } } },
+        { name: 'Codex without steering state', session: { ...active, agentState: null } },
+        { name: 'local Codex without concurrent control', session: { ...active, agentState: { steeringActive: true, controlledByUser: true } } },
+        { name: 'unknown flavor', session: { ...active, metadata: null } },
+        { name: 'Pi', session: { ...active, metadata: { flavor: 'pi', piSessionId: 'pi-thread' } } },
+        { name: 'Cursor ACP', session: { ...active, metadata: { flavor: 'cursor', cursorSessionProtocol: 'acp' as const } } },
+        { name: 'legacy Cursor', session: { ...active, metadata: { flavor: 'cursor', cursorSessionProtocol: 'stream-json' as const } } },
+        { name: 'Claude', session: { ...active, metadata: { flavor: 'claude' } } }
+    ])('auto queues for $name', async ({ session }) => {
+        const { http, options } = setup(session)
+        expect((await pingPeer({ ...options, deliveryMode: 'auto' })).delivery).toBe('accepted')
+        expect(http.post.mock.calls.map(([url]) => url)).toEqual([
+            'http://hub.test/api/auth', `http://hub.test/api/sessions/${sessionId}/messages`
+        ])
+    })
+
+    it('auto steers concurrent Codex when thinking is false but steeringActive is true', async () => {
+        const { options } = setup({
+            ...active, thinking: false,
+            agentState: { steeringActive: true, controlledByUser: true },
+            metadata: { flavor: 'codex', capabilities: { concurrentClients: true } }
+        })
+        expect((await pingPeer({ ...options, deliveryMode: 'auto' })).delivery).toBe('steered')
+    })
+
+    it.each([true, false])('auto uses live steeringActive=%s rather than the list snapshot', async (steeringActive) => {
+        const { http, options } = setup(
+            { ...active, agentState: { steeringActive } },
+            undefined,
+            { ...active, agentState: { steeringActive: !steeringActive } }
+        )
+        expect((await pingPeer({ ...options, deliveryMode: 'auto' })).delivery).toBe(steeringActive ? 'steered' : 'accepted')
+        expect(http.post.mock.calls.filter(([url]) => url.endsWith('/steer'))).toHaveLength(steeringActive ? 1 : 0)
+    })
+
+    it.each([true, false])('auto re-evaluates Codex steeringActive=%s after resume', async (steeringActive) => {
+        let resumed = false
+        const http = createHttpMock({
+            get: (url) => url.endsWith('/api/sessions')
+                ? { status: 200, data: { sessions: [{ ...active, active: false }] } }
+                : { status: 200, data: { session: { ...active, active: resumed, agentState: { steeringActive: resumed && steeringActive } } } },
+            post: (url) => {
+                if (url.endsWith('/api/auth')) return { status: 200, data: { token: 'jwt' } }
+                if (url.endsWith('/resume')) {
+                    resumed = true
+                    return { status: 200, data: { type: 'success', sessionId } }
+                }
+                if (url.endsWith('/messages')) return { status: 200, data: { ok: true } }
+                if (url.endsWith('/steer')) return { status: 200, data: { status: 'steered' } }
+                throw new Error(`Unexpected POST ${url}`)
+            }
+        })
+        const result = await pingPeer({
+            sessionIdPrefix: sessionId, message: 'update', deliveryMode: 'auto',
+            apiUrl: 'http://hub.test', accessToken: 'tok', http: http as never
+        })
+        expect(result.resumed).toBe(true)
+        expect(result.delivery).toBe(steeringActive ? 'steered' : 'accepted')
+        expect(http.post.mock.calls.filter(([url]) => url.endsWith('/resume'))).toHaveLength(1)
+        expect(http.post.mock.calls.filter(([url]) => url.endsWith('/messages'))).toHaveLength(1)
+        expect(http.post.mock.calls.filter(([url]) => url.endsWith('/steer'))).toHaveLength(steeringActive ? 1 : 0)
     })
 
     it.each([
@@ -467,9 +554,9 @@ describe('pingPeer delivery modes', () => {
         expect(http.post).toHaveBeenCalledTimes(3)
     })
 
-    it('reports a message consumed before the steer without claiming it was steered', async () => {
+    it.each([undefined, 'auto', 'steer'] as const)('reports a message consumed before %s steer without claiming it was steered', async (deliveryMode) => {
         const { options } = setup(active, { status: 200, data: { status: 'invoked' } })
-        expect((await pingPeer({ ...options, deliveryMode: 'steer' })).delivery).toBe('invoked')
+        expect((await pingPeer({ ...options, deliveryMode })).delivery).toBe('invoked')
     })
 
     it.each([
@@ -522,49 +609,52 @@ describe('pingPeer delivery modes', () => {
         expect(http.post.mock.calls.map(([url]) => url)).toEqual(['http://hub.test/api/auth'])
     })
 
-    it.each([
-        { status: 200, data: { status: 'failed', error: 'Message not in queue' } },
-        { status: 409, data: { error: 'Session inactive' } },
-        new Error('Request timed out')
-    ])('reports accepted but unconfirmed steer without resending: %j', async (failure) => {
-        const { http, options } = setup(active, failure)
-        await expect(pingPeer({ ...options, deliveryMode: 'steer' })).rejects.toThrow(
-            /Message accepted \(localId=ping-peer-.+\), but steer was not confirmed: .*Do not resend automatically/
-        )
-        expect(http.post.mock.calls.filter(([url]) => url.endsWith('/messages'))).toHaveLength(1)
-        expect(http.post.mock.calls.filter(([url]) => url.endsWith('/steer'))).toHaveLength(1)
-    })
-
     it('validates delivery mode before making requests', async () => {
         const { http, options } = setup()
         await expect(pingPeer({ ...options, deliveryMode: 'interrupt' as never })).rejects.toThrow(
-            'deliveryMode must be queue or steer'
+            'deliveryMode must be auto, queue or steer'
         )
         expect(http.post).not.toHaveBeenCalled()
         expect(http.get).not.toHaveBeenCalled()
     })
 
-    it('does not steer or resend when the initial send times out', async () => {
-        const { http, options } = setup()
-        http.post.mockImplementationOnce(async () => ({ status: 200, data: { token: 'jwt' } }))
-        http.post.mockImplementationOnce(async () => { throw new Error('Request timed out') })
-        await expect(pingPeer({ ...options, deliveryMode: 'steer' })).rejects.toThrow(
-            /Send not confirmed \(localId=ping-peer-.+\).*Do not resend automatically/
-        )
-        expect(http.post).toHaveBeenCalledTimes(2)
-    })
+    describe.each([undefined, 'auto', 'steer'] as const)('selected steer with %s delivery', (deliveryMode) => {
+        it.each([
+            { status: 200, data: { status: 'failed', error: 'No active turn' } },
+            { status: 200, data: { status: 'failed', error: 'Message not in queue' } },
+            { status: 409, data: { error: 'Session inactive' } },
+            new Error('Request timed out')
+        ])('reports accepted but unconfirmed steer without fallback or resending: %j', async (failure) => {
+            const { http, options } = setup(active, failure)
+            await expect(pingPeer({ ...options, deliveryMode })).rejects.toThrow(
+                /Message accepted \(localId=ping-peer-.+\), but steer was not confirmed: .*Do not resend automatically/
+            )
+            expect(http.post.mock.calls.filter(([url]) => url.endsWith('/messages'))).toHaveLength(1)
+            expect(http.post.mock.calls.filter(([url]) => url.endsWith('/steer'))).toHaveLength(1)
+        })
 
-    it.each([
-        { status: 500, data: { error: 'Publish failed' } },
-        { status: 200, data: { ok: false } }
-    ])('retains the localId when the initial send response does not confirm acceptance: %j', async (response) => {
-        const { http, options } = setup()
-        http.post.mockImplementationOnce(async () => ({ status: 200, data: { token: 'jwt' } }))
-        http.post.mockImplementationOnce(async () => response)
-        await expect(pingPeer({ ...options, deliveryMode: 'steer' })).rejects.toThrow(
-            /Send not confirmed \(localId=ping-peer-.+\).*Do not resend automatically/
-        )
-        expect(http.post).toHaveBeenCalledTimes(2)
+        it('does not steer or resend when the initial send times out', async () => {
+            const { http, options } = setup()
+            http.post.mockImplementationOnce(async () => ({ status: 200, data: { token: 'jwt' } }))
+            http.post.mockImplementationOnce(async () => { throw new Error('Request timed out') })
+            await expect(pingPeer({ ...options, deliveryMode })).rejects.toThrow(
+                /Send not confirmed \(localId=ping-peer-.+\).*Do not resend automatically/
+            )
+            expect(http.post).toHaveBeenCalledTimes(2)
+        })
+
+        it.each([
+            { status: 500, data: { error: 'Publish failed' } },
+            { status: 200, data: { ok: false } }
+        ])('retains the localId when the initial send response does not confirm acceptance: %j', async (response) => {
+            const { http, options } = setup()
+            http.post.mockImplementationOnce(async () => ({ status: 200, data: { token: 'jwt' } }))
+            http.post.mockImplementationOnce(async () => response)
+            await expect(pingPeer({ ...options, deliveryMode })).rejects.toThrow(
+                /Send not confirmed \(localId=ping-peer-.+\).*Do not resend automatically/
+            )
+            expect(http.post).toHaveBeenCalledTimes(2)
+        })
     })
 
     it('does not attempt steering when a queue submission fails', async () => {
