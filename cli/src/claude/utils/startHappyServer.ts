@@ -8,6 +8,7 @@ import { createServer, type IncomingMessage } from "node:http";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { AddressInfo } from "node:net";
 import { z } from "zod";
+import { MessageDeliveryModeSchema, type MessageDeliveryMode } from '@hapi/protocol';
 import { logger } from "@/ui/logger";
 import { ApiSessionClient } from "@/api/apiSession";
 import { randomUUID } from "node:crypto";
@@ -133,6 +134,9 @@ function createHapiMcpServer(
     const pingPeerInputSchema: z.ZodTypeAny = z.object({
         sessionIdPrefix: z.string().trim().min(1).describe(SESSION_ID_PREFIX_PARAM_DESCRIPTION),
         message: z.string().min(1).describe('Message text to deliver to the target session'),
+        deliveryMode: MessageDeliveryModeSchema.optional().describe(
+            'queue (default): next turn, resuming if needed. steer: insert into an active Pi, Codex, or Cursor ACP turn; idle/inactive targets are rejected. If steer fails after send, inspect the target before retrying; do not resend automatically.'
+        ),
     });
 
     const maxInlineMediaBytes = 25 * 1024 * 1024;
@@ -323,18 +327,21 @@ function createHapiMcpServer(
             description: PING_PEER_TOOL_DESCRIPTION,
             title: 'Ping Peer Session',
             inputSchema: pingPeerInputSchema,
-        }, async (args: { sessionIdPrefix: string; message: string }) => {
+        }, async (args: { sessionIdPrefix: string; message: string; deliveryMode?: MessageDeliveryMode }) => {
             logger.debug('[hapiMCP] ping_peer:', args.sessionIdPrefix);
             try {
                 const result = await pingPeer({
                     sessionIdPrefix: args.sessionIdPrefix,
                     message: args.message,
+                    deliveryMode: args.deliveryMode,
                 });
                 return {
                     content: [
                         {
                             type: 'text' as const,
-                            text: `Accepted for ${result.sessionId}${result.resumed ? ' (resumed)' : ''} (${result.name}) localId=${result.localId} — delivery shows in the recipient chat when its runtime consumes it`,
+                            text: result.delivery === 'accepted'
+                                ? `Accepted for ${result.sessionId}${result.resumed ? ' (resumed)' : ''} (${result.name}) localId=${result.localId} — delivery shows in the recipient chat when its runtime consumes it`
+                                : `${result.delivery} to ${result.sessionId}${result.resumed ? ' (resumed)' : ''} (${result.name}) localId=${result.localId}`,
                         },
                     ],
                     isError: false,
