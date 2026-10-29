@@ -5,7 +5,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 
 class SessionSortingTest {
-    private fun summary(id: String, createdAt: Long = 0, at: Long? = null) =
+    private fun summary(id: String, createdAt: Long? = null, at: Long? = null) =
         SessionSummary(id = id, active = false, createdAt = createdAt, lastUserMessageAt = at)
 
     @Test
@@ -27,6 +27,30 @@ class SessionSortingTest {
         val rows = listOf(summary("b", 2), summary("a", 2), summary("old", 1))
         assertEquals(listOf("a", "b", "old"), sortSessionSummaries(rows).map { it.id })
         assertEquals(listOf("a", "b", "old"), sortSessionSummaries(rows.reversed()).map { it.id })
+    }
+
+    @Test
+    fun `missing ordering timestamps sort after present timestamps`() {
+        val rows = listOf(
+            summary("missing"),
+            summary("created", createdAt = 100),
+            summary("user-input", at = 200),
+        )
+        val expected = listOf("user-input", "created", "missing")
+        assertEquals(expected, sortSessionSummaries(rows).map { it.id })
+        assertEquals(expected, sortSessionSummaries(rows.reversed()).map { it.id })
+    }
+
+    @Test
+    fun `tied user input timestamps compare missing creation times as zero`() {
+        val rows = listOf(
+            summary("a-missing", at = 200),
+            summary("b-zero", createdAt = 0, at = 200),
+            summary("c-created", createdAt = 100, at = 200),
+        )
+        val expected = listOf("c-created", "a-missing", "b-zero")
+        assertEquals(expected, sortSessionSummaries(rows).map { it.id })
+        assertEquals(expected, sortSessionSummaries(rows.reversed()).map { it.id })
     }
 
     @Test

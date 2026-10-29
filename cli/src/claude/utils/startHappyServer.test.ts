@@ -131,6 +131,10 @@ describe('startHappyServer skill_lookup', () => {
 
     it.each([
         [undefined, 'accepted'],
+        [undefined, 'steered'],
+        ['auto', 'accepted'],
+        ['auto', 'steered'],
+        ['auto', 'invoked'],
         ['queue', 'accepted'],
         ['steer', 'steered'],
         ['steer', 'invoked']
@@ -143,7 +147,8 @@ describe('startHappyServer skill_lookup', () => {
             const mcp = await connect(false)
             const tools = await mcp.listTools()
             const tool = tools.tools.find((entry) => entry.name === 'ping_peer')
-            expect(tool?.inputSchema.properties?.deliveryMode).toMatchObject({ enum: ['queue', 'steer'] })
+            expect(tool?.inputSchema.properties?.deliveryMode).toMatchObject({ enum: ['auto', 'queue', 'steer'] })
+            expect(tool?.description).toContain('auto (default)')
             const result = await mcp.callTool({
                 name: 'ping_peer',
                 arguments: { sessionIdPrefix: 'peer-id', message: 'hello', ...(deliveryMode ? { deliveryMode } : {}) }

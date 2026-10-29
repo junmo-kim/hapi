@@ -443,7 +443,7 @@ describe('Windows orphan startMarker format agreement', () => {
                 },
             ],
             sessionId,
-            1 // Keep the synthetic target independent of the test worker's PID.
+            1 // Synthetic self PID: never collide with the fixture PID (4242).
         )
         expect(targets).toEqual([{ pid: 4242, startMarker: iso }])
     })

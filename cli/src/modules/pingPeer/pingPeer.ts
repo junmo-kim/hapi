@@ -23,6 +23,7 @@ import { configuration } from '@/configuration'
 import { isPeerToolsDisabled } from '@/modules/common/peerTools'
 import { getAuthToken } from '@/api/auth'
 import { buildHubRequestHeaders } from '@/api/hubExtraHeaders'
+import { PeerDeliveryModeSchema, type PeerDeliveryMode } from './deliveryMode'
 
 export type PingPeerErrorCode =
     | 'bad_args'
@@ -81,7 +82,7 @@ export type PingPeerSessionSummary = {
 export type PingPeerOptions = {
     sessionIdPrefix: string
     message: string
-    deliveryMode?: MessageDeliveryMode
+    deliveryMode?: PeerDeliveryMode
     waitActiveSecs?: number
     apiUrl?: string
     accessToken?: string
@@ -546,6 +547,25 @@ export function formatPeerSessionsList(
     return rows.join('\n')
 }
 
+function getSteeringUnavailableReason(session: PingPeerSessionSummary): string | null {
+    if (!session.active) {
+        return 'Steering requires an active turn; target is inactive, no message sent. Use queue to resume it'
+    }
+    if (!isSteeringSupportedForSession(session.metadata)) {
+        return 'Steering is only supported for Pi, Codex, and Cursor ACP sessions; no message sent'
+    }
+    if (session.agentState?.controlledByUser && !session.metadata?.capabilities?.concurrentClients) {
+        return 'Steering is only available for remote sessions; no message sent'
+    }
+    const steeringActive = session.metadata?.flavor === 'pi'
+        ? session.thinking
+        : session.agentState?.steeringActive === true
+    if (!steeringActive) {
+        return 'Steering requires an active turn; target is idle, no message sent. Use queue to start a turn'
+    }
+    return null
+}
+
 export async function pingPeer(options: PingPeerOptions): Promise<PingPeerResult> {
     assertPeerToolsEnabled()
     const prefix = normalizeSessionIdPrefix(options.sessionIdPrefix ?? '')
@@ -556,10 +576,11 @@ export async function pingPeer(options: PingPeerOptions): Promise<PingPeerResult
     if (!message) {
         throw new PingPeerError('bad_args', 'message is required')
     }
-    const deliveryMode = options.deliveryMode ?? 'queue'
-    if (deliveryMode !== 'queue' && deliveryMode !== 'steer') {
-        throw new PingPeerError('bad_args', 'deliveryMode must be queue or steer')
+    const parsedDeliveryMode = PeerDeliveryModeSchema.safeParse(options.deliveryMode ?? 'auto')
+    if (!parsedDeliveryMode.success) {
+        throw new PingPeerError('bad_args', 'deliveryMode must be auto, queue or steer')
     }
+    const requestedDeliveryMode = parsedDeliveryMode.data
 
     const waitActiveSecs = options.waitActiveSecs ?? DEFAULT_WAIT_ACTIVE_SECS
     if (!Number.isFinite(waitActiveSecs) || waitActiveSecs <= 0) {
@@ -585,7 +606,7 @@ export async function pingPeer(options: PingPeerOptions): Promise<PingPeerResult
         if (session.active) {
             return session
         }
-        if (deliveryMode === 'steer') {
+        if (requestedDeliveryMode === 'steer') {
             throw new PingPeerError('bad_args', 'Steering requires an active turn; target is inactive, no message sent. Use queue to resume it')
         }
         onProgress?.(progressMessage)
@@ -614,20 +635,17 @@ export async function pingPeer(options: PingPeerOptions): Promise<PingPeerResult
         }
     }
 
-    if (deliveryMode === 'steer' && !isSteeringSupportedForSession(live.metadata)) {
-        throw new PingPeerError('bad_args', 'Steering is only supported for Pi, Codex, and Cursor ACP sessions; no message sent')
-    }
-    if (deliveryMode === 'steer' && live.agentState?.controlledByUser && !live.metadata?.capabilities?.concurrentClients) {
-        throw new PingPeerError('bad_args', 'Steering is only available for remote sessions; no message sent')
-    }
-    const steeringActive = live.metadata?.flavor === 'pi'
-        ? live.thinking
-        : live.agentState?.steeringActive === true
-    if (deliveryMode === 'steer' && !steeringActive) {
-        throw new PingPeerError('bad_args', 'Steering requires an active turn; target is idle, no message sent. Use queue to start a turn')
+    // Use the live snapshot, not the discovery list. Auto initially steers only
+    // Codex targets; other flavors retain queue unless steer is explicit.
+    const steeringError = getSteeringUnavailableReason(live)
+    const deliveryMode: MessageDeliveryMode = requestedDeliveryMode === 'auto'
+        ? (live.metadata?.flavor === 'codex' && steeringError === null ? 'steer' : 'queue')
+        : requestedDeliveryMode
+    if (deliveryMode === 'steer' && steeringError !== null) {
+        throw new PingPeerError('bad_args', steeringError)
     }
 
-    onProgress?.(`sending message (${message.length} chars, ${deliveryMode})...`)
+    onProgress?.(`sending message (${message.length} chars, ${deliveryMode}${requestedDeliveryMode === 'auto' ? ' via auto' : ''})...`)
     const localId = createPeerMessageLocalId()
     const delivery = await sendMessage(apiUrl, jwt, matched.id, message, localId, http, deliveryMode)
 
