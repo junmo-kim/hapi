@@ -60,6 +60,7 @@ See `src/router.tsx` for route definitions.
 - Pending permission request count.
 - Agent name and model display.
 - Metadata search with relevance ranking, wildcard matching, and date/unread/machine filters.
+- Stable user-input ordering across sessions and machine/project groups; agent output and status updates do not reorder ordinary rows.
 - Machine/project grouping, pinned and in-progress sections, and configurable collapsed previews.
 
 ### Session title lock
