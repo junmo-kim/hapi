@@ -1202,6 +1202,7 @@ export class ApiSessionClient extends EventEmitter {
         type: 'compact-summary'
         summary: string
         tokensBefore?: number
+        tokensAfter?: number
         estimatedTokensAfter?: number
     }, id?: string): void {
         const content = {
