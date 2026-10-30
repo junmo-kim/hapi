@@ -2668,12 +2668,15 @@ describe('opencodeRemoteLauncher mid-turn steer', () => {
         stub: SteerSession;
         handlers: Map<string, (params: unknown) => unknown>;
         releasePrompt: () => void;
+        rejectPrompt: (error: Error) => void;
         runPromise: Promise<'switch' | 'exit'>;
     }> {
         let releasePrompt!: () => void;
+        let rejectPrompt!: (error: Error) => void;
         if (opts.holdPrompt !== false) {
-            harness.promptImpl = () => new Promise<void>((resolve) => {
+            harness.promptImpl = () => new Promise<void>((resolve, reject) => {
                 releasePrompt = resolve;
+                rejectPrompt = reject;
             });
         }
         const mode = opts.firstMode ?? createMode();
@@ -2689,7 +2692,11 @@ describe('opencodeRemoteLauncher mid-turn steer', () => {
             harness.promptImpl = null;
             releasePrompt();
         };
-        return { stub, handlers: stub.rpcHandlers, releasePrompt: release, runPromise };
+        return { stub, handlers: stub.rpcHandlers, releasePrompt: release, rejectPrompt: error => {
+            harness.promptImpl = null;
+            harness.events.push('prompt:end');
+            rejectPrompt(error);
+        }, runPromise };
     }
 
     async function stopTurn(
@@ -3658,12 +3665,143 @@ describe('opencodeRemoteLauncher mid-turn steer', () => {
         }
     });
 
-    it.each(['foreground', 'steer'] as const)('does not treat an abandoned %s late native save as a newer steer receipt', async writer => {
+    it.each(['foreground', 'steer', 'failed-steer', 'failed-foreground'] as const)('post-stop native receipts recover only after successful old %s responses', async writer => {
+        const receipts = await import('./utils/opencodeInputReceipt');
+        const receipt = vi.spyOn(receipts, 'fetchOpencodeUserMessages').mockResolvedValue(null);
+        let resolveOld!: () => void;
+        let rejectOld!: (error: Error) => void;
+        harness.deferSoftSteer = new Promise<void>((resolve, reject) => { resolveOld = resolve; rejectOld = reject; });
+        const { stub, releasePrompt, rejectPrompt, runPromise } = await startTurn();
+        let releaseSecond: (() => void) | undefined;
+        let resolveNew: (() => void) | undefined;
+        try {
+            const text = 'same correction';
+            if (writer === 'steer' || writer === 'failed-steer') {
+                stub.session.queue.push(text, createMode(), 'old-steer');
+                await steerHandlerOf(stub)({ localId: 'old-steer' });
+            }
+            await (stub.rpcHandlers.get('abort') as () => Promise<void>)();
+            if (writer === 'failed-foreground') rejectPrompt(indeterminateError('old foreground response lost'));
+            else releasePrompt();
+            if (writer === 'failed-steer') rejectOld(indeterminateError('old native response lost'));
+            else resolveOld();
+            await vi.waitFor(() => expect(harness.events.filter(event => event === 'prompt:end')).toHaveLength(1));
+            await vi.waitFor(() => expect(stub.session.thinking).toBe(false));
+            await new Promise<void>(resolve => setImmediate(resolve));
+            stub.emitMessagesConsumedCalls.length = 0;
+            harness.promptImpl = () => new Promise<void>(resolve => { releaseSecond = resolve; });
+            stub.session.queue.push('second foreground', createMode(), 'second');
+            await vi.waitFor(() => expect(harness.promptCount).toBe(2));
+            const oldMessage = { id: 'already-saved-old-input', text };
+            receipt.mockReset().mockResolvedValueOnce([oldMessage]).mockResolvedValue([
+                oldMessage, { id: 'new-native-input', text }
+            ]);
+            harness.deferSoftSteer = new Promise<void>(resolve => { resolveNew = resolve; });
+            stub.session.queue.push(text, createMode(), 'new-steer');
+            await steerHandlerOf(stub)({ localId: 'new-steer' });
+            if (writer === 'failed-steer' || writer === 'failed-foreground') {
+                expect(receipt).not.toHaveBeenCalled();
+                expect(stub.emitMessagesConsumedCalls).toEqual([]);
+                resolveNew!();
+            }
+            await vi.waitFor(() => expect(stub.emitMessagesConsumedCalls).toEqual([
+                { localIds: ['new-steer'], options: { steered: true } }
+            ]));
+            // The foreground and new soft prompt are still unresolved in the
+            // recovery cases: this is input acceptance, not output completion.
+            expect(harness.events.filter(event => event === 'prompt:end')).toHaveLength(1);
+        } finally {
+            resolveOld(); resolveNew?.(); releaseSecond?.();
+            receipt.mockRestore(); harness.deferSoftSteer = null;
+            await stopTurn(stub, releasePrompt, runPromise);
+        }
+    });
+
+    it('post-stop resumes receipts when an old writer succeeds while a newer foreground remains live', async () => {
         const receipts = await import('./utils/opencodeInputReceipt');
         const receipt = vi.spyOn(receipts, 'fetchOpencodeUserMessages').mockResolvedValue(null);
         let resolveOld!: () => void;
         harness.deferSoftSteer = new Promise<void>(resolve => { resolveOld = resolve; });
         const { stub, releasePrompt, runPromise } = await startTurn();
+        let releaseSecond: (() => void) | undefined;
+        let resolveNew: (() => void) | undefined;
+        try {
+            stub.session.queue.push('same correction', createMode(), 'old-steer');
+            await steerHandlerOf(stub)({ localId: 'old-steer' });
+            await (stub.rpcHandlers.get('abort') as () => Promise<void>)();
+            releasePrompt();
+            harness.promptImpl = () => new Promise<void>(resolve => { releaseSecond = resolve; });
+            stub.session.queue.push('second foreground', createMode(), 'second');
+            await vi.waitFor(() => expect(harness.promptCount).toBe(2));
+            resolveOld();
+            await vi.waitFor(() => expect(stub.emitMessagesConsumedCalls).toEqual([
+                { localIds: ['old-steer'], options: { steered: true } }
+            ]));
+            stub.emitMessagesConsumedCalls.length = 0;
+            const oldMessage = { id: 'old-native-input', text: 'same correction' };
+            receipt.mockReset().mockResolvedValueOnce([oldMessage]).mockResolvedValue([
+                oldMessage, { id: 'new-native-input', text: 'same correction' }
+            ]);
+            harness.deferSoftSteer = new Promise<void>(resolve => { resolveNew = resolve; });
+            stub.session.queue.push('same correction', createMode(), 'new-steer');
+            await steerHandlerOf(stub)({ localId: 'new-steer' });
+            await vi.waitFor(() => expect(stub.emitMessagesConsumedCalls).toEqual([
+                { localIds: ['new-steer'], options: { steered: true } }
+            ]));
+            expect(harness.events.filter(event => event === 'prompt:end')).toHaveLength(1);
+        } finally {
+            resolveOld(); resolveNew?.(); releaseSecond?.();
+            receipt.mockRestore(); harness.deferSoftSteer = null;
+            await stopTurn(stub, releasePrompt, runPromise);
+        }
+    });
+
+    it('post-stop does not use a late old write after the next foreground completed and drained', async () => {
+        const receipts = await import('./utils/opencodeInputReceipt');
+        const receipt = vi.spyOn(receipts, 'fetchOpencodeUserMessages').mockResolvedValue(null);
+        let resolveOld!: () => void;
+        harness.deferSoftSteer = new Promise<void>(resolve => { resolveOld = resolve; });
+        const { stub, releasePrompt, runPromise } = await startTurn();
+        let releaseThird: (() => void) | undefined;
+        let resolveNew: (() => void) | undefined;
+        try {
+            stub.session.queue.push('same correction', createMode(), 'old-steer');
+            await steerHandlerOf(stub)({ localId: 'old-steer' });
+            await (stub.rpcHandlers.get('abort') as () => Promise<void>)();
+            releasePrompt();
+            stub.session.queue.push('second foreground', createMode(), 'second');
+            await vi.waitFor(() => expect(harness.promptCount).toBe(2));
+            await vi.waitFor(() => expect(harness.events.filter(event => event === 'prompt:end')).toHaveLength(2));
+            await vi.waitFor(() => expect(stub.session.thinking).toBe(false));
+            harness.promptImpl = () => new Promise<void>(resolve => { releaseThird = resolve; });
+            stub.session.queue.push('third foreground', createMode(), 'third');
+            await vi.waitFor(() => expect(harness.promptCount).toBe(3));
+            receipt.mockReset().mockResolvedValueOnce([]).mockResolvedValue([
+                { id: 'late-old-input-only', text: 'same correction' }
+            ]);
+            harness.deferSoftSteer = new Promise<void>(resolve => { resolveNew = resolve; });
+            stub.session.queue.push('same correction', createMode(), 'new-steer');
+            await steerHandlerOf(stub)({ localId: 'new-steer' });
+            await new Promise<void>(resolve => setImmediate(resolve));
+            expect(stub.emitMessagesConsumedCalls).toEqual([]);
+            expect(receipt).not.toHaveBeenCalled();
+            resolveNew!();
+            await vi.waitFor(() => expect(stub.emitMessagesConsumedCalls).toEqual([
+                { localIds: ['new-steer'], options: { steered: true } }
+            ]));
+        } finally {
+            resolveOld(); resolveNew?.(); releaseThird?.();
+            receipt.mockRestore(); harness.deferSoftSteer = null;
+            await stopTurn(stub, releasePrompt, runPromise);
+        }
+    });
+
+    it.each(['foreground', 'steer'] as const)('does not treat an abandoned %s late native save as a newer steer receipt', async writer => {
+        const receipts = await import('./utils/opencodeInputReceipt');
+        const receipt = vi.spyOn(receipts, 'fetchOpencodeUserMessages').mockResolvedValue(null);
+        let resolveOld!: () => void;
+        harness.deferSoftSteer = new Promise<void>(resolve => { resolveOld = resolve; });
+        const { stub, releasePrompt, rejectPrompt, runPromise } = await startTurn();
         let releaseSecond: (() => void) | undefined;
         let resolveNew: (() => void) | undefined;
         try {
@@ -3675,7 +3813,11 @@ describe('opencodeRemoteLauncher mid-turn steer', () => {
                 await steerHandlerOf(stub)({ localId: 'old-steer' });
             }
             await (stub.rpcHandlers.get('abort') as () => Promise<void>)();
-            releasePrompt();
+            // A successful native response fences that request's input writes.
+            // To model an abandoned foreground still capable of a late save,
+            // its transport result must remain unknown, not report success.
+            if (writer === 'foreground') rejectPrompt(indeterminateError('foreground response lost'));
+            else releasePrompt();
             harness.promptImpl = () => new Promise<void>(resolve => { releaseSecond = resolve; });
             stub.session.queue.push('second foreground', createMode(), 'second');
             await vi.waitFor(() => expect(harness.promptCount).toBe(2));
