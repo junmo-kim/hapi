@@ -16,6 +16,7 @@ export class OpencodeCompactionProjector {
     private readonly messages = new Map<string, RecordValue>();
     private readonly parts = new Map<string, RecordValue>();
     private readonly emitted = new Set<string>();
+    private readonly started = new Set<string>();
     private readonly emittedText = new Map<string, string>();
 
     constructor(private readonly options: {
@@ -23,6 +24,7 @@ export class OpencodeCompactionProjector {
         onSummary: (id: string, summary: string, trigger: OpencodeCompactionTrigger) => void;
         onText?: (part: OpencodeNativeText) => void;
         onFailure?: (id: string, trigger: OpencodeCompactionTrigger) => void;
+        onStart?: (id: string, trigger: OpencodeCompactionTrigger) => void;
     }) {}
 
     message(info: RecordValue): void {
@@ -53,15 +55,22 @@ export class OpencodeCompactionProjector {
         this.flush();
     }
 
+    /** Native application has begun. Background preparation has no public start record. */
+    start(id: string, trigger: OpencodeCompactionTrigger): void {
+        if (this.started.has(id) || this.emitted.has(id) || this.emitted.has(`failed:${id}`)) return;
+        this.started.add(id);
+        this.options.onStart?.(id, trigger);
+    }
+
     /** Call after a terminal native update or a complete storage scan. */
     flush(): void {
         for (const info of this.messages.values()) {
             const id = info.id as string;
             if (info.type === 'compaction') {
+                if (this.emitted.has(id) || this.emitted.has(`failed:${id}`)) continue;
+                if (info.status === 'running') this.start(id, info.reason === 'auto' ? 'auto' : info.reason === 'manual' ? 'manual' : undefined);
                 if (info.status === 'failed' || info.status === 'error') this.fail(id, info.reason === 'auto' ? 'auto' : info.reason === 'manual' ? 'manual' : undefined);
-                const native = isObject(info.native) ? info.native : null;
-                if (info.status === 'completed' && typeof info.summary === 'string'
-                    && (info.summary.trim() || isObject(info.providerContext) || native?.messages !== undefined)) {
+                if (info.status === 'completed' && typeof info.summary === 'string') {
                     this.emit(id, info.summary, info.reason === 'auto' ? 'auto' : info.reason === 'manual' ? 'manual' : undefined);
                 }
                 continue;

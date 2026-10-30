@@ -53,7 +53,7 @@ const harness = vi.hoisted(() => ({
         directory: string;
         sessionId: string;
         onRetry: (retry: { attempt: number; message: string }) => void;
-        onEvent?: (type: string, properties: Record<string, unknown>) => void;
+        onEvent?: (type: string, properties: Record<string, unknown>, eventId?: string) => void;
     }>,
     eventStreamCloseCount: 0,
     // v2-compat harness: flavor detection + port/password discovery stubs.
@@ -268,7 +268,7 @@ vi.mock('./utils/opencodeEventStream', async (importOriginal) => ({
         directory: string;
         sessionId: string;
         onRetry: (retry: { attempt: number; message: string }) => void;
-        onEvent?: (type: string, properties: Record<string, unknown>) => void;
+        onEvent?: (type: string, properties: Record<string, unknown>, eventId?: string) => void;
     }) => {
         harness.eventStreamOptions.push(options);
         return {
@@ -2589,6 +2589,27 @@ describe('opencodeRemoteLauncher v2 flavor wiring', () => {
         for (const name of ['createOpencodeBackend', 'detectOpencodeFlavorVersion', 'discoverOpencodeV2RestPort', 'listLoopbackListeners']) {
             backendModuleFns[name]?.mockClear();
         }
+    });
+
+    it('v2: reports one automatic application start without changing turn thinking for preparation', async () => {
+        harness.detectedVersion = 'v2';
+        harness.discoveredPort = 41234;
+        harness.discoveredPassword = 'pw-secret';
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        const { session, sessionEvents, thinkingChangeCalls } = createSessionStub([{ message: 'normal', mode: createMode() }]);
+        harness.promptImpl = async () => {
+            const event = harness.eventStreamOptions[0].onEvent!;
+            const before = [...thinkingChangeCalls];
+            event('session.usage.recorded', { sessionID: 'acp-session-1', source: 'compaction' }, 'evt_preparation');
+            expect(sessionEvents.filter(e => e.message === '📦 Compaction started')).toHaveLength(0);
+            event('session.compaction.started', { sessionID: 'other', reason: 'auto' }, 'evt_foreign');
+            event('session.compaction.started', { sessionID: 'acp-session-1', reason: 'manual' }, 'evt_manual');
+            event('session.compaction.started', { sessionID: 'acp-session-1', reason: 'auto' }, 'evt_application');
+            event('session.compaction.started', { sessionID: 'acp-session-1', reason: 'auto' }, 'evt_application');
+            expect(thinkingChangeCalls).toEqual(before);
+        };
+        await opencodeRemoteLauncher(session as never, { onCompactAvailabilityChange: () => {} });
+        expect(sessionEvents.filter(e => e.message === '📦 Compaction started')).toHaveLength(1);
     });
 
     it('v2: spawns with only [acp] args + majorVersion and discovers the REST port after the session is established', async () => {

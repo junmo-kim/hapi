@@ -26,6 +26,7 @@ export class OpencodeNativeTranscript {
         onSummary: (id: string, summary: string, trigger: OpencodeCompactionTrigger) => void;
         onText: (part: OpencodeNativeText) => void;
         onFailure?: (id: string, trigger: OpencodeCompactionTrigger) => void;
+        onStart?: (id: string, trigger: OpencodeCompactionTrigger) => void;
         onReadFailure?: () => void;
         fetchImpl?: FetchLike;
     }) {
@@ -33,13 +34,20 @@ export class OpencodeNativeTranscript {
             sessionId: options.sessionId,
             onSummary: options.onSummary,
             onFailure: options.onFailure,
+            onStart: options.onStart,
             onText: part => { if (!this.initializing && !this.closed) this.emitText(part); }
         });
     }
 
-    event(type: string, properties: Record<string, unknown>): void {
+    event(type: string, properties: Record<string, unknown>, eventId?: string): void {
         if (this.closed) return;
         this.revision++;
+        if (this.options.mode === 'v2' && type === 'session.compaction.started'
+            && properties.sessionID === this.options.sessionId && typeof eventId === 'string' && eventId.startsWith('evt_')) {
+            // Session.Message.ID.fromEvent: the persisted row shares this durable event identity.
+            const id = typeof properties.inputID === 'string' ? properties.inputID : eventId.replace(/^evt_/, 'msg_');
+            this.projector.start(id, properties.reason === 'auto' ? 'auto' : properties.reason === 'manual' ? 'manual' : undefined);
+        }
         if (type === 'message.updated' && isObject(properties.info)) {
             this.projector.message(properties.info);
             if (typeof properties.info.finish === 'string') this.projector.flush();

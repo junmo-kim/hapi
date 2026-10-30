@@ -52,7 +52,7 @@ describe('OpenCode native compaction projection', () => {
         projector.message({ id: 'answer', sessionID: 'ses', role: 'assistant' });
         expect(onText).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ text: 'Next answer', role: 'assistant' }));
     });
-    it('accepts v2 completed checkpoints, including native windows, but never fabricates empty success', () => {
+    it('accepts v2 completed checkpoints, including opaque windows and factless completed status', () => {
         const { projector, onSummary } = setup();
         projector.message({ id: 'v2', sessionID: 'ses', type: 'compaction', status: 'running', summary: 'partial' });
         projector.message({ id: 'failed', sessionID: 'ses', type: 'compaction', status: 'failed', summary: 'partial' });
@@ -60,7 +60,7 @@ describe('OpenCode native compaction projection', () => {
         projector.message({ id: 'v2', sessionID: 'ses', type: 'compaction', status: 'completed', summary: 'Done' });
         projector.message({ id: 'native', sessionID: 'ses', type: 'compaction', status: 'completed', summary: '', native: { messages: [{ role: 'user', content: 'input' }] } });
         projector.flush();
-        expect(onSummary.mock.calls).toEqual([['v2', 'Done', undefined], ['native', '', undefined]]);
+        expect(onSummary.mock.calls).toEqual([['v2', 'Done', undefined], ['empty', '', undefined], ['native', '', undefined]]);
     });
     it('keeps visible synthetic assistant output without an end time and honors ignored metadata', () => {
         const { projector, onText } = setup();
@@ -95,4 +95,45 @@ describe('OpenCode native compaction projection', () => {
         expect(onFailure).toHaveBeenCalledExactlyOnceWith('marker', 'auto');
     });
 
+});
+
+
+describe('v2 background application boundary', () => {
+    it('starts only a native running application, ignores usage as context, and deduplicates terminal replay', () => {
+        const onStart = vi.fn(), onSummary = vi.fn(), onFailure = vi.fn();
+        const projector = new OpencodeCompactionProjector({ sessionId: 'ses', onStart, onSummary, onFailure });
+        projector.message({ id: 'answer', sessionID: 'ses', type: 'assistant', tokens: { input: 156000, output: 20 } });
+        projector.flush();
+        expect(onStart).not.toHaveBeenCalled(); expect(onSummary).not.toHaveBeenCalled();
+        projector.snapshot([{ id: 'apply', sessionID: 'other', type: 'compaction', status: 'running', reason: 'auto', summary: '' }]);
+        expect(onStart).not.toHaveBeenCalled();
+        projector.snapshot([{ id: 'apply', sessionID: 'ses', type: 'compaction', status: 'running', reason: 'auto', summary: '' }]);
+        projector.start('apply', 'auto');
+        expect(onStart).toHaveBeenCalledExactlyOnceWith('apply', 'auto');
+        projector.snapshot([{ id: 'apply', sessionID: 'ses', type: 'compaction', status: 'completed', reason: 'auto', summary: '', tokens: { input: 100, output: 20 } }]);
+        projector.snapshot([{ id: 'apply', sessionID: 'ses', type: 'compaction', status: 'running', reason: 'auto', summary: '' }]);
+        projector.start('apply', 'auto');
+        expect(onSummary).toHaveBeenCalledExactlyOnceWith('apply', '', 'auto');
+        expect(onStart).toHaveBeenCalledTimes(1);
+        expect(onFailure).not.toHaveBeenCalled();
+    });
+});
+
+
+describe('v2 terminal application ordering', () => {
+    it('never reopens a failed application or publishes a delayed opposite terminal outcome', () => {
+        const onStart = vi.fn(), onSummary = vi.fn(), onFailure = vi.fn();
+        const projector = new OpencodeCompactionProjector({ sessionId: 'ses', onStart, onSummary, onFailure });
+        const row = { id: 'apply', sessionID: 'ses', type: 'compaction', reason: 'auto' };
+        projector.snapshot([{ ...row, status: 'failed', error: { type: 'compaction.interrupted' } }]);
+        projector.start('apply', 'auto');
+        projector.snapshot([{ ...row, status: 'running', summary: '' }]);
+        projector.snapshot([{ ...row, status: 'completed', summary: 'stale summary' }]);
+        expect(onFailure).toHaveBeenCalledExactlyOnceWith('apply', 'auto');
+        expect(onStart).not.toHaveBeenCalled(); expect(onSummary).not.toHaveBeenCalled();
+        projector.snapshot([{ ...row, id: 'next', status: 'completed', summary: 'new application' }]);
+        projector.snapshot([{ ...row, id: 'next', status: 'failed' }]);
+        expect(onSummary).toHaveBeenCalledExactlyOnceWith('next', 'new application', 'auto');
+        expect(onFailure).toHaveBeenCalledTimes(1);
+    });
 });

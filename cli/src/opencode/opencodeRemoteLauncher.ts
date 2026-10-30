@@ -335,6 +335,11 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 if (trigger !== 'auto') return;
                 session.client.sendAgentMessage({ type: 'compact-summary', summary }, opencodeCompactionEventId(acpSessionId, id));
             },
+            onStart: (id, trigger) => {
+                if (trigger !== 'auto') return;
+                const localId = `${opencodeCompactionEventId(acpSessionId, id)}:started`;
+                session.client.sendSessionEvent({ type: 'message', message: '📦 Compaction started' }, localId, { localId });
+            },
             onFailure: (id, trigger) => {
                 if (trigger === 'auto') session.client.sendAgentMessage({ type: 'error', message: 'OpenCode compaction failed or was interrupted.' }, `${opencodeCompactionEventId(acpSessionId, id)}:failed`);
             },
@@ -366,7 +371,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             mode: this.majorVersion ?? 'v1',
             onRetry: (retry) => this.surfaceUpstreamRetry(retry),
             onConnected: () => { void this.nativeTranscript?.refresh(); },
-            onEvent: (type, properties) => this.nativeTranscript?.event(type, properties)
+            onEvent: (type, properties, eventId) => this.nativeTranscript?.event(type, properties, eventId)
         });
         }
 

@@ -87,3 +87,23 @@ describe('OpenCode native transcript reconciliation', () => {
     });
 
 });
+
+
+describe('v2 durable application start', () => {
+    it('keeps the start identity across fast completion and running snapshot replay without observing preparation usage', async () => {
+        const onStart = vi.fn(), onSummary = vi.fn();
+        const fetchImpl = vi.fn(async () => Response.json({ data: [{ id: 'msg_apply', type: 'compaction', status: 'completed', reason: 'auto', summary: 'Installed summary' }] }));
+        const transcript = new OpencodeNativeTranscript({ baseUrl: 'http://127.0.0.1:1', sessionId: 'ses', directory: '/project', mode: 'v2', fetchImpl, onText: vi.fn(), onStart, onSummary });
+        transcript.event('session.usage.recorded', { sessionID: 'ses', source: 'compaction', tokens: { input: 100, output: 20 } }, 'evt_prepare_usage');
+        transcript.event('session.compaction.started', { sessionID: 'other', reason: 'auto' }, 'evt_foreign');
+        expect(onStart).not.toHaveBeenCalled();
+        transcript.event('session.compaction.started', { sessionID: 'ses', reason: 'auto' }, 'evt_apply');
+        transcript.event('session.compaction.started', { sessionID: 'ses', reason: 'auto' }, 'evt_apply');
+        await transcript.refresh();
+        expect(onStart).toHaveBeenCalledExactlyOnceWith('msg_apply', 'auto');
+        expect(onSummary).toHaveBeenCalledExactlyOnceWith('msg_apply', 'Installed summary', 'auto');
+        transcript.close();
+        transcript.event('session.compaction.started', { sessionID: 'ses', reason: 'auto' }, 'evt_late');
+        expect(onStart).toHaveBeenCalledTimes(1);
+    });
+});
