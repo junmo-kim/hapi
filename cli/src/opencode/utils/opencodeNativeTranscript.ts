@@ -5,6 +5,7 @@ import { OpencodeCompactionProjector, type OpencodeNativeText, type OpencodeComp
 
 /** Supplements SSE with read-only snapshots after reconnect and each prompt. */
 export class OpencodeNativeTranscript {
+    private readonly attachedAt = Date.now();
     private readonly controller = new AbortController();
     private readonly projector: OpencodeCompactionProjector;
     private readonly parts = new Map<string, Record<string, unknown>>();
@@ -137,8 +138,18 @@ export class OpencodeNativeTranscript {
             if (!this.closed && revision === this.revision) {
                 for (const entry of entries) {
                     if (!isObject(entry) || !Array.isArray(entry.parts)) continue;
+                    const info = isObject(entry.info) ? entry.info : entry;
+                    const created = isObject(info.time) ? info.time.created : undefined;
+                    // v1 message creation uses the local native process's epoch
+                    // clock. A reply created after attachment is new even if
+                    // SSE missed every part while the first read was failing.
+                    const newReply = this.initializing && this.options.mode === 'v1'
+                        && info.sessionID === this.options.sessionId && info.role === 'assistant'
+                        && typeof info.id === 'string' && typeof created === 'number'
+                        && Number.isSafeInteger(created) && created >= this.attachedAt;
                     for (const part of entry.parts) {
                         if (!isObject(part) || part.sessionID !== this.options.sessionId || typeof part.id !== 'string') continue;
+                        if (newReply && part.messageID === info.id) this.liveTextParts.add(part.id);
                         if (this.liveTextParts.has(part.id)) {
                             const live = this.parts.get(part.id);
                             const complete = isObject(part.time) && typeof part.time.end === 'number';

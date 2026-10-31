@@ -35,6 +35,26 @@ describe('OpenCode native transcript reconciliation', () => {
         expect(onText).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: 'next-part', text: 'New answer', complete: true }));
         transcript.close();
     });
+    it.each([true, false])('recovers post-attachment replies from the first snapshot without SSE (initial failure: %s)', async (initialFailure) => {
+        vi.useFakeTimers();
+        vi.setSystemTime(1_000);
+        const entry = (id: string, created: number | string | undefined, sessionID = 'ses') => ({
+            info: { id, sessionID, role: 'assistant', time: { created } },
+            parts: [{ id: `${id}-part`, messageID: id, sessionID, type: 'text', text: id, time: { end: 1 } }]
+        });
+        const fetchImpl = vi.fn();
+        if (initialFailure) fetchImpl.mockResolvedValueOnce(new Response('', { status: 503 }));
+        fetchImpl.mockImplementation(async () => Response.json([
+            entry('Historical answer', 999), entry('Recovered new answer', 1_001),
+            entry('Missing timestamp', undefined), entry('Invalid timestamp', '1001'), entry('Foreign answer', 1_001, 'foreign')
+        ]));
+        const { transcript, onText } = setup(fetchImpl);
+        if (initialFailure) await transcript.refresh();
+        await transcript.refresh();
+        await transcript.refresh();
+        expect(onText).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ text: 'Recovered new answer', complete: true }));
+        transcript.close();
+    });
     it('retains live text during baseline recovery without replaying unrelated historical text', async () => {
         const live = { id: 'live-part', messageID: 'live', sessionID: 'ses', type: 'text', text: 'Live answer', time: { end: 1 } };
         const fetchImpl = vi.fn().mockResolvedValueOnce(new Response('', { status: 503 }))
