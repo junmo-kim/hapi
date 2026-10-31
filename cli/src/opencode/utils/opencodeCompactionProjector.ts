@@ -39,7 +39,7 @@ export class OpencodeCompactionProjector {
         this.projectText([part]);
     }
 
-    snapshot(entries: unknown): void {
+    snapshot(entries: unknown, liveParts: readonly RecordValue[] = [], replayLiveText = false): void {
         if (!Array.isArray(entries)) return;
         // Metadata/markers must precede text, including on startup/reconnect.
         for (const entry of entries) {
@@ -51,6 +51,13 @@ export class OpencodeCompactionProjector {
                     if (isObject(part) && part.sessionID === this.options.sessionId && typeof part.id === 'string') this.parts.set(part.id, part);
                 }
             }
+        }
+        // A v1 durable snapshot may lag already observed live text deltas.
+        // Revalidate those parts against the snapshot's metadata before replay.
+        for (const part of liveParts) {
+            if (part.sessionID !== this.options.sessionId || typeof part.id !== 'string') continue;
+            this.parts.set(part.id, part);
+            if (replayLiveText) this.emittedText.delete(part.id);
         }
         this.flush();
     }

@@ -20,6 +20,87 @@ describe('OpenCode native transcript reconciliation', () => {
         expect(onText).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ text: 'old new', complete: false }));
         transcript.close();
     });
+    it('primes the first successful historical snapshot after a failed initial read without replaying it', async () => {
+        const history = [{ info: { id: 'old', sessionID: 'ses', role: 'assistant' }, parts: [{ id: 'old-part', messageID: 'old', sessionID: 'ses', type: 'text', text: 'Existing local answer', time: { end: 1 } }] }];
+        const fetchImpl = vi.fn().mockResolvedValueOnce(new Response('', { status: 503 }))
+            .mockImplementation(async () => Response.json(history));
+        const { transcript, onText, onReadFailure } = setup(fetchImpl);
+        await transcript.refresh();
+        expect(onReadFailure).toHaveBeenCalledOnce();
+        await transcript.refresh();
+        await transcript.refresh();
+        expect(onText).not.toHaveBeenCalled();
+        transcript.event('message.updated', { info: { id: 'next', sessionID: 'ses', role: 'assistant' } });
+        transcript.event('message.part.updated', { part: { id: 'next-part', messageID: 'next', sessionID: 'ses', type: 'text', text: 'New answer', time: { end: 1 } } });
+        expect(onText).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: 'next-part', text: 'New answer', complete: true }));
+        transcript.close();
+    });
+    it('retains live text during baseline recovery without replaying unrelated historical text', async () => {
+        const live = { id: 'live-part', messageID: 'live', sessionID: 'ses', type: 'text', text: 'Live answer', time: { end: 1 } };
+        const fetchImpl = vi.fn().mockResolvedValueOnce(new Response('', { status: 503 }))
+            .mockImplementation(async () => Response.json([
+                { info: { id: 'old', sessionID: 'ses', role: 'assistant' }, parts: [{ id: 'old-part', messageID: 'old', sessionID: 'ses', type: 'text', text: 'Historical answer' }] },
+                { info: { id: 'live', sessionID: 'ses', role: 'assistant' }, parts: [live] }
+            ]));
+        const { transcript, onText } = setup(fetchImpl);
+        await transcript.refresh();
+        transcript.event('message.part.updated', { part: { ...live, text: 'Live' } });
+        transcript.event('message.updated', { info: { id: 'live', sessionID: 'ses', role: 'assistant' } });
+        transcript.event('message.part.updated', { part: live });
+        expect(onText).not.toHaveBeenCalled();
+        await transcript.refresh();
+        await transcript.refresh();
+        expect(onText).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: 'live-part', text: 'Live answer', complete: true }));
+        transcript.close();
+    });
+    it('recovers a live delta that arrives before its full part during baseline recovery', async () => {
+        const fetchImpl = vi.fn().mockResolvedValueOnce(new Response('', { status: 503 }))
+            .mockImplementation(async () => Response.json([{ info: { id: 'live', sessionID: 'ses', role: 'assistant' }, parts: [{ id: 'live-part', messageID: 'live', sessionID: 'ses', type: 'text', text: 'Complete live answer', time: { end: 1 } }] }]));
+        const { transcript, onText } = setup(fetchImpl);
+        await transcript.refresh();
+        transcript.event('message.part.delta', { sessionID: 'ses', partID: 'live-part', field: 'text', delta: 'answer' });
+        transcript.event('message.part.delta', { sessionID: 'foreign', partID: 'old-part', field: 'text', delta: 'foreign' });
+        await transcript.refresh();
+        await transcript.refresh();
+        expect(onText).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: 'live-part', text: 'Complete live answer', complete: true }));
+        transcript.close();
+    });
+    it.each([true, false])('keeps live delta text when the recovered durable part is still empty (known base: %s)', async (knownBase) => {
+        vi.useFakeTimers();
+        const part = { id: 'live-part', messageID: 'live', sessionID: 'ses', type: 'text', text: '' };
+        const fetchImpl = vi.fn().mockResolvedValueOnce(new Response('', { status: 503 }))
+            .mockImplementation(async () => Response.json([{ info: { id: 'live', sessionID: 'ses', role: 'assistant' }, parts: [part] }]));
+        const { transcript, onText } = setup(fetchImpl);
+        await transcript.refresh();
+        transcript.event('message.updated', { info: { id: 'live', sessionID: 'ses', role: 'assistant' } });
+        if (knownBase) transcript.event('message.part.updated', { part });
+        transcript.event('message.part.delta', { sessionID: 'ses', partID: 'live-part', field: 'text', delta: 'A' });
+        await transcript.refresh();
+        expect(onText).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ text: 'A' }));
+        await transcript.refresh();
+        expect(onText).toHaveBeenCalledOnce();
+        transcript.event('message.part.delta', { sessionID: 'ses', partID: 'live-part', field: 'text', delta: 'B' });
+        await vi.advanceTimersByTimeAsync(120);
+        expect(onText).toHaveBeenLastCalledWith(expect.objectContaining({ text: 'AB', complete: false }));
+        transcript.event('message.part.updated', { part: { ...part, text: 'AB', time: { end: 1 } } });
+        expect(onText).toHaveBeenLastCalledWith(expect.objectContaining({ text: 'AB', complete: true }));
+        expect(onText.mock.calls.some(c => c[0].text === '' || c[0].text === 'B')).toBe(false);
+        transcript.close();
+    });
+    it('does not flush buffered recovery text after close while the baseline read is in flight', async () => {
+        let resolve!: (response: Response) => void;
+        const fetchImpl = vi.fn().mockResolvedValueOnce(new Response('', { status: 503 }))
+            .mockImplementationOnce(() => new Promise<Response>(r => { resolve = r; }));
+        const { transcript, onText } = setup(fetchImpl);
+        await transcript.refresh();
+        transcript.event('message.updated', { info: { id: 'live', sessionID: 'ses', role: 'assistant' } });
+        transcript.event('message.part.updated', { part: { id: 'live-part', messageID: 'live', sessionID: 'ses', type: 'text', text: 'Buffered answer', time: { end: 1 } } });
+        const recovering = transcript.refresh();
+        transcript.close();
+        resolve(Response.json([]));
+        await recovering;
+        expect(onText).not.toHaveBeenCalled();
+    });
     it('drops a stale read and honors an idle/reconnect refresh requested while it was in flight', async () => {
         let resolve!: (r: Response) => void;
         const fetchImpl = vi.fn().mockImplementationOnce(() => new Promise<Response>(r => { resolve = r; })).mockResolvedValue(Response.json([]));
@@ -31,7 +112,7 @@ describe('OpenCode native transcript reconciliation', () => {
         resolve(Response.json([{ info: { id: 'answer', sessionID: 'ses', role: 'assistant' }, parts: [{ id: 'part', sessionID: 'ses', messageID: 'answer', type: 'text', text: 'stale' }] }]));
         await first;
         expect(fetchImpl).toHaveBeenCalledTimes(2);
-        expect(onText.mock.calls.some(c => c[0].text === 'stale')).toBe(false);
+        expect(onText).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ text: 'new' }));
         transcript.close();
     });
     it('scopes v2 records from the session read route and ignores explicitly foreign entries', async () => {

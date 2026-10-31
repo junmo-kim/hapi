@@ -14,6 +14,9 @@ export class OpencodeNativeTranscript {
     private readFailureReported = false;
     private closed = false;
     private initializing = true;
+    private readonly liveTextParts = new Set<string>();
+    private readonly initialText = new Map<string, OpencodeNativeText>();
+    private readonly unbasedDeltas = new Map<string, string>();
     private readonly pendingText = new Map<string, OpencodeNativeText>();
     private readonly textTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
@@ -35,7 +38,12 @@ export class OpencodeNativeTranscript {
             onSummary: options.onSummary,
             onFailure: options.onFailure,
             onStart: options.onStart,
-            onText: part => { if (!this.initializing && !this.closed) this.emitText(part); }
+            onText: part => {
+                if (this.closed) return;
+                if (this.initializing) {
+                    if (this.liveTextParts.has(part.id)) this.initialText.set(part.id, part);
+                } else this.emitText(part);
+            }
         });
     }
 
@@ -54,15 +62,25 @@ export class OpencodeNativeTranscript {
         }
         if (type === 'message.part.updated' && isObject(properties.part)) {
             const part = properties.part;
-            if (typeof part.id === 'string') this.parts.set(part.id, part);
+            if (typeof part.id === 'string') {
+                this.parts.set(part.id, part);
+                this.unbasedDeltas.delete(part.id);
+                if (part.sessionID === this.options.sessionId) {
+                    if (this.initializing || !isObject(part.time) || typeof part.time.end !== 'number') this.liveTextParts.add(part.id);
+                    else this.liveTextParts.delete(part.id);
+                }
+            }
             this.projector.part(part);
         }
         if (type === 'message.part.delta' && typeof properties.partID === 'string' && properties.field === 'text' && typeof properties.delta === 'string') {
+            if (properties.sessionID === this.options.sessionId) this.liveTextParts.add(properties.partID);
             const part = this.parts.get(properties.partID);
             if (part && typeof part.text === 'string') {
                 const next = { ...part, text: part.text + properties.delta };
                 this.parts.set(properties.partID, next);
                 this.projector.part(next);
+            } else if (properties.sessionID === this.options.sessionId) {
+                this.unbasedDeltas.set(properties.partID, (this.unbasedDeltas.get(properties.partID) ?? '') + properties.delta);
             }
         }
         if (type === 'session.status' && isObject(properties.status) && properties.status.type === 'idle') void this.refresh();
@@ -120,14 +138,43 @@ export class OpencodeNativeTranscript {
                 for (const entry of entries) {
                     if (!isObject(entry) || !Array.isArray(entry.parts)) continue;
                     for (const part of entry.parts) {
-                        if (isObject(part) && part.sessionID === this.options.sessionId && typeof part.id === 'string') this.parts.set(part.id, part);
+                        if (!isObject(part) || part.sessionID !== this.options.sessionId || typeof part.id !== 'string') continue;
+                        if (this.liveTextParts.has(part.id)) {
+                            const live = this.parts.get(part.id);
+                            const complete = isObject(part.time) && typeof part.time.end === 'number';
+                            if (!complete && live) continue;
+                            const delta = this.unbasedDeltas.get(part.id);
+                            this.parts.set(part.id, !complete && delta && typeof part.text === 'string'
+                                ? { ...part, text: part.text + delta } : part);
+                            this.unbasedDeltas.delete(part.id);
+                        } else this.parts.set(part.id, part);
                     }
                 }
+                // v1 text deltas are live-only until text-end persists the part.
+                // Reapply those parts after priming historical metadata, rather
+                // than replacing their accumulator with an older stored prefix.
+                const liveParts = [...this.liveTextParts]
+                    .flatMap(id => this.parts.has(id) ? [this.parts.get(id)!] : []);
+                this.initialText.clear();
                 this.projector.snapshot(this.options.mode === 'v2'
                     ? entries.filter(entry => isObject(entry) && (entry.sessionID === undefined || entry.sessionID === this.options.sessionId))
                         .map(entry => isObject(entry) ? { ...entry, sessionID: this.options.sessionId } : entry)
-                    : entries);
+                    : entries, liveParts, this.initializing);
                 this.readFailureReported = false;
+                if (this.initializing && !this.closed) {
+                    // Only an applied baseline primes historical text. Keep the
+                    // latest verified text for parts observed live during recovery.
+                    this.initializing = false;
+                    for (const part of this.initialText.values()) this.emitText(part);
+                    this.initialText.clear();
+                }
+                for (const id of this.liveTextParts) {
+                    const part = this.parts.get(id);
+                    if (part && isObject(part.time) && typeof part.time.end === 'number') {
+                        this.liveTextParts.delete(id);
+                        this.unbasedDeltas.delete(id);
+                    }
+                }
             }
         } catch (error) {
             if (!this.closed) {
@@ -135,8 +182,6 @@ export class OpencodeNativeTranscript {
                 if (!this.readFailureReported) this.options.onReadFailure?.();
                 this.readFailureReported = true;
             }
-        } finally {
-            this.initializing = false;
         }
     }
 
@@ -163,6 +208,9 @@ export class OpencodeNativeTranscript {
     }
 
     close(): void {
+        this.initialText.clear();
+        this.liveTextParts.clear();
+        this.unbasedDeltas.clear();
         for (const timer of this.textTimers.values()) clearTimeout(timer);
         this.textTimers.clear();
         for (const part of this.pendingText.values()) this.options.onText(part);
