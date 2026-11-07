@@ -248,6 +248,13 @@ function sessionEvents(client: ReturnType<typeof makeClient>): unknown[] {
     return client.sendSessionEvent.mock.calls.map(([event]) => event);
 }
 
+function roundSummaries(client: ReturnType<typeof makeClient>): Array<Record<string, unknown> & { agy_usage: Record<string, number> }> {
+    return client.sendAgentMessage.mock.calls
+        .map(([message]) => message as { type: string; summary: Record<string, unknown> & { agy_usage: Record<string, number> } })
+        .filter((message) => message.type === 'round-summary')
+        .map((message) => message.summary);
+}
+
 describe('AgyAcpRemoteLauncher', () => {
     beforeEach(() => {
         process.stdin.isTTY = false;
@@ -384,11 +391,16 @@ describe('AgyAcpRemoteLauncher', () => {
         await launch(session, [backend]).run;
 
         const sent = client.sendAgentMessage.mock.calls.map(([message]) => message as { type: string });
-        expect(sent.map((message) => message.type)).toEqual(['message', 'token_count']);
-        expect(sent[1]).toMatchObject({
-            type: 'token_count',
-            model: 'gemini-4-argon-medium',
-            info: { total: { inputTokens: 160, outputTokens: 7, totalTokens: 157, cachedInputTokens: 10 } }
+        // No token_count: agy's usage is not a context size.
+        expect(sent.map((message) => message.type)).toEqual(['message', 'round-summary']);
+        expect(sent[1]).toEqual({
+            type: 'round-summary',
+            summary: {
+                provider: 'agy',
+                model: 'gemini-4-argon-medium',
+                agy_usage: { input_tokens: 150, output_tokens: 7, cache_read_tokens: 10, total_tokens: 157 },
+                duration_ms: expect.any(Number)
+            }
         });
     });
 
@@ -652,11 +664,9 @@ describe('AgyAcpRemoteLauncher steer', () => {
         await run;
 
         expect(client.emitMessagesConsumed).toHaveBeenCalledWith(['steer-1'], { steered: true });
-        const usage = client.sendAgentMessage.mock.calls
-            .map(([message]) => message as { type: string; info?: { total: { inputTokens: number; outputTokens: number } } })
-            .filter((message) => message.type === 'token_count');
-        expect(usage).toHaveLength(1);
-        expect(usage[0]!.info!.total).toMatchObject({ inputTokens: 150, outputTokens: 10 });
+        const summaries = roundSummaries(client);
+        expect(summaries).toHaveLength(1);
+        expect(summaries[0]!.agy_usage).toMatchObject({ input_tokens: 150, output_tokens: 10 });
         expect(steeringStates(client).at(-1)).toBe(false);
     });
 
@@ -816,7 +826,7 @@ describe('AgyAcpRemoteLauncher steer', () => {
         await vi.waitFor(() => expect(backend.permissionResponses.at(-1)).toEqual({ outcome: 'cancelled' }));
         expect(backend.permissionResponses).not.toContainEqual({ outcome: 'selected', optionId: 'allow' });
         // Usage the dropped steer reports later is not a new turn.
-        const usageEvents = () => client.sendAgentMessage.mock.calls.filter(([m]) => (m as { type: string }).type === 'token_count').length;
+        const usageEvents = () => roundSummaries(client).length;
         const before = usageEvents();
         backend.steerCompletions[0]!.onUsage?.({ type: 'usage', inputTokens: 9, outputTokens: 9 });
         expect(usageEvents()).toBe(before);
@@ -993,6 +1003,26 @@ describe('AgyAcpRemoteLauncher delivery and recovery', () => {
         queue.close();
         await run;
         expect(created).toHaveLength(1);
+    });
+
+    it('times the round from sending the prompt to agy answering', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        backend.preSendDelayMs = 150;
+        backend.postResponseDrainMs = 150;
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({ type: 'text', text: 'done' });
+            onUpdate({ type: 'usage', inputTokens: 10, outputTokens: 1 });
+        });
+        queue.push('hello', REVIEW, 'a');
+        queue.close();
+
+        await launch(session, [backend]).run;
+
+        const summary = client.sendAgentMessage.mock.calls
+            .map(([message]) => message as { type: string; summary?: { duration_ms?: number } })
+            .find((message) => message.type === 'round-summary')!.summary!;
+        expect(summary.duration_ms).toBeLessThan(100);
     });
 
     it('does not report a start failure or fall back when the session is killed while agy starts', async () => {
@@ -1233,12 +1263,20 @@ describe('AgyAcpRemoteLauncher delivery and recovery', () => {
         queue.close();
         await run;
 
-        const usage = client.sendAgentMessage.mock.calls
-            .map(([m]) => m as { type: string; info?: { total: { inputTokens: number; outputTokens: number } } })
-            .filter((m) => m.type === 'token_count');
-        expect(usage).toHaveLength(1);
-        expect(usage[0]!.info!.total).toMatchObject({ inputTokens: 15172 + 15286, outputTokens: 44 + 14 });
-        expect(usage[0]!.info).toMatchObject({ contextTokens: 15286 });
+        const summaries = roundSummaries(client);
+        expect(summaries).toHaveLength(1);
+        expect(summaries[0]).toEqual({
+            provider: 'agy',
+            model: 'gemini-4-argon-medium',
+            agy_usage: {
+                input_tokens: 15172 + 15286,
+                output_tokens: 44 + 14,
+                thinking_tokens: 0,
+                cache_read_tokens: 0,
+                total_tokens: 15216 + 15300
+            },
+            duration_ms: expect.any(Number)
+        });
     });
 });
 
@@ -1362,11 +1400,7 @@ describe('agy ACP helpers', () => {
             totalTokens: undefined,
             thoughtTokens: 2,
             cacheReadTokens: 4,
-            cacheCreationTokens: undefined,
-            contextTokens: 24,
-            contextWindow: undefined
+            cacheCreationTokens: undefined
         });
-        expect(addAgyUsage(first, { ...second, contextTokens: 50, contextWindow: 1000 }))
-            .toMatchObject({ contextTokens: 50, contextWindow: 1000 });
     });
 });

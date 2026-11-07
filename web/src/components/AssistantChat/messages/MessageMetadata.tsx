@@ -54,11 +54,35 @@ function getRoundUsage(summary: RoundSummary): UsageData | undefined {
     }), { input_tokens: 0, output_tokens: 0 })
 }
 
+function buildAgyRoundLabels(summary: RoundSummary): string[] {
+    const parts: string[] = []
+    const usage = summary.agyUsage
+    if (usage) {
+        const breakdown = [
+            usage.input_tokens !== undefined ? `${formatCompactTokenCount(usage.input_tokens)} in` : undefined,
+            usage.output_tokens !== undefined ? `${formatCompactTokenCount(usage.output_tokens)} out` : undefined,
+            usage.thinking_tokens !== undefined ? `${formatCompactTokenCount(usage.thinking_tokens)} thinking` : undefined
+        ].filter(Boolean).join(' · ')
+        const total = usage.total_tokens !== undefined ? formatCompactTokenCount(usage.total_tokens) : undefined
+        if (total || breakdown) parts.push(`Tokens: ${total ? total + (breakdown ? ` (${breakdown})` : '') : breakdown}`)
+        // agy's input excludes cache reads.
+        const input = usage.input_tokens
+        const cached = usage.cache_read_tokens
+        if (input !== undefined && cached !== undefined && cached > 0 && Number.isSafeInteger(input + cached)) {
+            parts.push(`Cached input: ${formatPercentage(cached / (input + cached) * 100)}%`)
+        }
+    }
+    if (summary.durationMs !== undefined) parts.push(`Round: ${formatRoundDuration(summary.durationMs)}`)
+    return parts
+}
+
 function buildRoundSummaryLabels(summary: RoundSummary, fallbackModel?: string | null): string[] {
     const parts: string[] = []
     const models = Object.keys(summary.modelUsage)
     const model = models.length > 0 ? models.join(', ') : fallbackModel
     if (model) parts.push(`${models.length > 1 ? 'Models' : 'Model'}: ${model}`)
+
+    if (summary.provider === 'agy') return [...parts, ...buildAgyRoundLabels(summary)]
 
     const isCodex = summary.provider === 'codex'
     const usage = isCodex && summary.usage ? summary.usage : getRoundUsage(summary)

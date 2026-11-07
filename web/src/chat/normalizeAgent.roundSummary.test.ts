@@ -109,3 +109,43 @@ it('omits only the throughput pair for absent, partial or invalid optional gener
         expect(normalized?.content).not.toHaveProperty('summary.generationOutputTokens')
     }
 })
+
+describe('agy round summary carrier', () => {
+    const normalizeCarrier = (summary: unknown) => normalizeDecryptedMessage({
+        id: 'agy-round-summary', seq: 1, localId: null, createdAt: 1,
+        content: { role: 'agent', content: { type: 'codex', data: { type: 'round-summary', summary } } }
+    })
+
+    it('keeps the agy usage breakdown, model and round time', () => {
+        expect(normalizeCarrier({
+            provider: 'agy',
+            model: 'gemini-3-flash-low',
+            agy_usage: { input_tokens: 30458, output_tokens: 58, thinking_tokens: 0, cache_read_tokens: 0, total_tokens: 30516 },
+            duration_ms: 9_500
+        })).toMatchObject({
+            role: 'event',
+            content: {
+                type: 'turn-summary',
+                summary: {
+                    provider: 'agy',
+                    modelUsage: { 'gemini-3-flash-low': {} },
+                    agyUsage: { input_tokens: 30458, output_tokens: 58, thinking_tokens: 0, cache_read_tokens: 0, total_tokens: 30516 },
+                    durationMs: 9_500
+                }
+            }
+        })
+    })
+
+    it('drops invalid token counts and empty agy summaries', () => {
+        const normalized = normalizeCarrier({
+            provider: 'agy',
+            agy_usage: { input_tokens: -1, output_tokens: 1.5, thinking_tokens: '3', cache_read_tokens: 2, total_tokens: Number.MAX_SAFE_INTEGER + 1 }
+        })
+        expect(normalized?.content).toEqual({
+            type: 'turn-summary',
+            summary: { provider: 'agy', modelUsage: {}, agyUsage: { cache_read_tokens: 2 } }
+        })
+        expect(normalizeCarrier({ provider: 'agy', agy_usage: { input_tokens: -1 } })).toBeNull()
+        expect(normalizeCarrier({ provider: 'agy', agy_usage: [1, 2] })).toBeNull()
+    })
+})

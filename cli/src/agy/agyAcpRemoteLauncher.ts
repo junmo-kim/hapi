@@ -64,11 +64,7 @@ function addOptional(a: number | undefined, b: number | undefined): number | und
     return a === undefined && b === undefined ? undefined : (a ?? 0) + (b ?? 0);
 }
 
-/**
- * Each request of a steered turn reports only its own share, so they add up.
- * The summed input is not a context size, and agy sends no `usage_update`, so
- * the context is the latest request's input.
- */
+/** Each request of a steered turn reports only its own share, so they add up. */
 export function addAgyUsage(total: UsageMessage | null, next: UsageMessage): UsageMessage {
     if (!total) return next;
     return {
@@ -78,11 +74,27 @@ export function addAgyUsage(total: UsageMessage | null, next: UsageMessage): Usa
         totalTokens: addOptional(total.totalTokens, next.totalTokens),
         thoughtTokens: addOptional(total.thoughtTokens, next.thoughtTokens),
         cacheReadTokens: addOptional(total.cacheReadTokens, next.cacheReadTokens),
-        cacheCreationTokens: addOptional(total.cacheCreationTokens, next.cacheCreationTokens),
-        contextTokens: next.contextTokens
-            ?? next.inputTokens + (next.cacheReadTokens ?? 0) + (next.cacheCreationTokens ?? 0),
-        contextWindow: next.contextWindow ?? total.contextWindow
+        cacheCreationTokens: addOptional(total.cacheCreationTokens, next.cacheCreationTokens)
     };
+}
+
+/** The turn's response-footer record; the web reads `provider: 'agy'` summaries. */
+export function agyRoundSummary(usage: UsageMessage, durationMs: number | null, model: string | null) {
+    return {
+        type: 'round-summary',
+        summary: {
+            provider: 'agy',
+            ...(model ? { model } : {}),
+            agy_usage: {
+                input_tokens: usage.inputTokens,
+                output_tokens: usage.outputTokens,
+                ...(usage.thoughtTokens !== undefined ? { thinking_tokens: usage.thoughtTokens } : {}),
+                ...(usage.cacheReadTokens !== undefined ? { cache_read_tokens: usage.cacheReadTokens } : {}),
+                ...(usage.totalTokens !== undefined ? { total_tokens: usage.totalTokens } : {})
+            },
+            ...(durationMs !== null ? { duration_ms: durationMs } : {})
+        }
+    } as const;
 }
 
 function normalizeEcho(text: string): string {
@@ -102,6 +114,8 @@ type AgyTurn = {
     modeHash: string;
     aborted: boolean;
     stopReason: string | null;
+    sentAt: number | null;
+    answeredAt: number | null;
     usage: UsageMessage | null;
     // Any agent output proves agy accepted the prompt.
     sawActivity: boolean;
@@ -345,6 +359,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             modeHash,
             aborted: false,
             stopReason: null,
+            sentAt: null,
+            answeredAt: null,
             usage: null,
             sawActivity: false,
             // AgySession does not acknowledge on dequeue: a message counts as
@@ -394,7 +410,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             session.client.updateAgentState((state) => ({ ...state, steeringActive: true }));
             try {
                 await backend.prompt(acpSessionId, prompt, (update) => this.handleTurnUpdate(turn, update), {
-                    onAnswered: () => turn.answerMain()
+                    onSent: () => { turn.sentAt = Date.now(); },
+                    onAnswered: () => {
+                        turn.answeredAt = Date.now();
+                        turn.answerMain();
+                    }
                 });
                 // agy answers a cancel with a normal `cancelled` result; with no
                 // output yet, the prompt goes back to the composer.
@@ -422,7 +442,17 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             if (this.turn === turn) this.turn = null;
             session.client.updateAgentState((state) => ({ ...state, steeringActive: false }));
             this.turnPermissionMode = undefined;
-            if (turn.usage) this.forwardAgentMessage(turn.usage);
+            // agy's usage adds up every model call of a request, so it is not a
+            // context size: it goes to the response footer, not the context
+            // indicator (no token_count).
+            if (turn.usage) {
+                // agy's own time: HAPI's waits before sending and for late
+                // output are not part of it.
+                const durationMs = turn.sentAt !== null && turn.answeredAt !== null
+                    ? Math.max(0, turn.answeredAt - turn.sentAt)
+                    : null;
+                session.sendAgentMessage(agyRoundSummary(turn.usage, durationMs, this.currentModelId));
+            }
             session.onThinkingChange(false);
             await this.permissionHandler?.cancelAll('Prompt finished');
             if (session.queue.size() === 0 && !this.shouldExit) {
@@ -527,8 +557,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 [{ type: 'text', text: taken.item.message }],
                 {
                     onUsage: (usage) => {
-                        // Answered after its turn ended: the turn total is already
-                        // reported, and a second usage event would read as a turn.
+                        // Answered after its turn ended: the turn's summary is already
+                        // out, and a second one would read as another turn.
                         if (this.turn !== turn) return;
                         turn.usage = addAgyUsage(turn.usage, usage);
                     }
@@ -549,7 +579,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         turn.steers.push(settled);
         turn.steersTaken += 1;
         steerCounted = true;
-        turn.steerAnswers.push(steer.answered);
+        turn.steerAnswers.push(steer.answered.then(() => {
+            if (this.turn === turn) turn.answeredAt = Date.now();
+        }));
         // agy echoes a steer (user_message_chunk) when it folds it into the
         // turn, which is the moment it belongs in the transcript; the request
         // itself is only answered when the turn ends.
