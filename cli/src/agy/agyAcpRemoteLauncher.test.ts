@@ -995,6 +995,22 @@ describe('AgyAcpRemoteLauncher delivery and recovery', () => {
         expect(created).toHaveLength(1);
     });
 
+    it('does not report a start failure or fall back when the session is killed while agy starts', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        let failStart!: (error: Error) => void;
+        backend.initializeGate = new Promise((_resolve, reject) => { failStart = reject; });
+        backend.onDisconnect = () => failStart(new Error('ACP transport closed'));
+        const { run } = launch(session, [backend]);
+        await vi.waitFor(() => expect(backend.calls).toEqual(['initialize']));
+
+        await session.kill();
+        queue.close();
+
+        await expect(run).resolves.toBe('exit');
+        expect(sessionEvents(client).filter((event) => (event as { type: string }).type === 'error')).toEqual([]);
+    });
+
     it('refuses a steer that arrives after Stop and stops offering Steer at once', async () => {
         const backend = new FakeAgyBackend();
         const { queue, client, run, release } = await heldTurn(backend);

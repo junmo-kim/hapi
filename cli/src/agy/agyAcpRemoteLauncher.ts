@@ -95,6 +95,9 @@ export function isAgyQuestionRequest(request: PermissionRequest): boolean {
     return Array.isArray(input?.questions) || /\bask_question\b/.test(request.title ?? '');
 }
 
+/** agy acp did not come up; the caller may fall back to another transport. */
+export class AgyAcpStartError extends Error {}
+
 type AgyTurn = {
     modeHash: string;
     aborted: boolean;
@@ -180,11 +183,13 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         try {
             await this.startBackend(session.sessionId);
         } catch (error) {
+            // A kill during start-up is not a start failure.
+            if (this.shouldExit) return;
             // Otherwise the session only ends as crashed, without the reason
             // (agy not signed in, an agy release without `acp`, ...).
             const message = describeAgyStartFailure(error);
             this.reportTurnError(message);
-            throw new Error(message);
+            throw new AgyAcpStartError(message);
         }
 
         this.setupAbortHandlers(session.client.rpcHandlerManager, {
