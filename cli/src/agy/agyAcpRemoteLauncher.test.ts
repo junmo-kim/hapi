@@ -278,6 +278,22 @@ describe('AgyAcpRemoteLauncher', () => {
         expect(backend.disconnected).toBe(true);
     });
 
+    it('tells the user why agy could not start', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        backend.initialize = async () => { throw new Error('unknown command "acp"'); };
+        queue.push('hello', REVIEW, 'a');
+
+        await expect(launch(session, [backend]).run).rejects.toThrow('requires Antigravity CLI 1.5.0 or newer');
+
+        expect(sessionEvents(client)).toContainEqual({
+            type: 'error',
+            message: 'Failed to start agy acp (requires Antigravity CLI 1.5.0 or newer): unknown command "acp"'
+        });
+        expect(client.emitMessagesConsumed).not.toHaveBeenCalled();
+        queue.close();
+    });
+
     it('resumes the stored conversation without replay', async () => {
         const { session, queue } = makeSession('agy-conv-old');
         const backend = new FakeAgyBackend();
