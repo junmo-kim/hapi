@@ -17,7 +17,7 @@ import { getSessionTitle } from '@/lib/sessionTitle'
 import { useTranslation } from '@/lib/use-translation'
 import { getWorktreeSessionLabel } from '@/lib/sessionWorktreeLabel'
 import { SessionPrChip } from '@/components/SessionPrChip'
-import { getPrimaryGithubPrRef, type PrChipDisplayProfile } from '@hapi/protocol'
+import { getNativeSessionIdField, getPrimaryGithubPrRef, type PrChipDisplayProfile } from '@hapi/protocol'
 import {
     attachedJobFraction,
     formatAttachedJobProgress,
@@ -197,7 +197,9 @@ export function SessionRowSummary(props: {
     // Rows are memoized, so the label keeps itself current (also advances job elapsed).
     useMinuteTick()
     const nowMs = useHubClock()?.now() ?? Date.now()
-    const codexSessionId = s.metadata?.flavor === 'codex' ? s.metadata?.agentSessionId : null
+    const codexSessionId = getNativeSessionIdField(s.metadata?.flavor) === 'codexSessionId'
+        ? s.metadata?.agentSessionId
+        : null
     const legacyImportedAt = useSyncExternalStore(subscribeCodexImportedSessions, () => getCodexImportedAt(codexSessionId))
     const importedAt = s.metadata?.codexImportedAt !== undefined ? s.metadata.codexImportedAt : legacyImportedAt
     const timeLabel = getSessionTimeLabel(s, importedAt, t, showStoppedTime)

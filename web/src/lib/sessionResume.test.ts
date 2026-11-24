@@ -344,9 +344,6 @@ describe('sessionResume — pi flavor', () => {
 })
 
 describe('sessionResume — regression for all other flavor ids', () => {
-    // Every flavor-specific id resolver must still work; the switch in
-    // sessionResume.ts grew a new 'pi' branch and the existing branches
-    // must not be regressed.
     it('codex', () => {
         expect(resolveAgentSessionIdFromMetadata({
             path: '/p', host: 'h', flavor: 'codex', codexSessionId: 'cx-1',

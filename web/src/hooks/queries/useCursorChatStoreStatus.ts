@@ -1,3 +1,4 @@
+import { getNativeSessionId, getNativeSessionIdField } from '@hapi/protocol'
 import { useQuery } from '@tanstack/react-query'
 import type { ApiClient } from '@/api/client'
 import type { CursorChatStoreStatus, Session, SessionSummary } from '@/types/api'
@@ -18,16 +19,16 @@ export function useCursorChatStoreStatus(args: {
     const { api, session } = args
     const metadata = session?.metadata
     const cursorSessionId = metadata && 'cursorSessionId' in metadata
-        ? metadata.cursorSessionId
+        ? getNativeSessionId(metadata, 'cursor')
         : metadata && 'agentSessionId' in metadata
             ? metadata.agentSessionId
             : undefined
     const shouldProbe = Boolean(
         session
         && !session.active
-        && metadata?.flavor === 'cursor'
+        && getNativeSessionIdField(metadata?.flavor) === 'cursorSessionId'
         && cursorSessionId
-        && metadata.path
+        && metadata?.path
     )
     const enabled = Boolean((args.enabled ?? true) && api && shouldProbe)
     const sessionId = session?.id ?? 'unknown'

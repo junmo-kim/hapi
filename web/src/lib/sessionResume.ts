@@ -1,4 +1,4 @@
-import { isKnownFlavor } from '@hapi/protocol'
+import { Flavors, getNativeSessionId, getNativeSessionIdField, isKnownFlavor } from '@hapi/protocol'
 import type { Session } from '@/types/api'
 
 /** Transport liveness alone cannot tell whether the agent process has stopped. */
@@ -22,27 +22,15 @@ export function resolveAgentSessionIdFromMetadata(
         return undefined
     }
     const flavor = isKnownFlavor(metadata.flavor) ? metadata.flavor : 'claude'
-    switch (flavor) {
-        case 'agy': return metadata.agySessionId ?? undefined
-        case 'codex': return metadata.codexSessionId ?? undefined
-        case 'gemini': return metadata.geminiSessionId ?? undefined
-        case 'opencode': return metadata.opencodeSessionId ?? undefined
-        case 'grok': return metadata.grokSessionId ?? undefined
-        case 'cursor': return metadata.cursorSessionId ?? undefined
-        case 'kimi': return metadata.kimiSessionId ?? undefined
-        case 'copilot': return metadata.copilotSessionId ?? undefined
-        case 'pi': return metadata.piSessionId ?? undefined
-        case 'dsh': return metadata.dshSessionId ?? undefined
-        default: return metadata.claudeSessionId ?? undefined
-    }
+    return getNativeSessionId(metadata, flavor) ?? undefined
 }
 
 /**
  * Whether an inactive session can be activated via resume (or fresh spawn on first send).
  * Matches hub: resume with agent id, or fresh spawn when path exists, no agent id, no user messages.
- * Claude and Codex with messages but no flavor-specific id may attempt the
- * hub-authoritative stored-message recovery path; the hub still rejects logs
- * without a safe resume id.
+ * Flavors declaring message recovery with messages but no flavor-specific id
+ * may attempt the hub-authoritative stored-message recovery path; the hub
+ * still rejects logs without a safe resume id.
  *
  * Cursor: definitive `onDisk: false` still blocks. Probe failure / unknown
  * (`undefined`) must NOT be treated as missing data — allow reopen and show
@@ -59,15 +47,14 @@ export function inactiveSessionCanResume(
     if (!session.metadata?.path) {
         return false
     }
+    const flavor = isKnownFlavor(session.metadata.flavor) ? session.metadata.flavor : 'claude'
     if (resolveAgentSessionIdFromMetadata(session.metadata)) {
-        const flavor = isKnownFlavor(session.metadata.flavor) ? session.metadata.flavor : 'claude'
-        if (flavor === 'cursor') {
+        if (getNativeSessionIdField(flavor) === 'cursorSessionId') {
             return cursorChatOnDisk !== false
         }
         return true
     }
-    const flavor = isKnownFlavor(session.metadata.flavor) ? session.metadata.flavor : 'claude'
-    if ((flavor === 'claude' || flavor === 'codex') && userMessageCount > 0) {
+    if (Flavors[flavor].recoversNativeIdFromMessages && userMessageCount > 0) {
         return true
     }
     return userMessageCount === 0
