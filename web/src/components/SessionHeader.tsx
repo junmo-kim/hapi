@@ -31,9 +31,10 @@ import { useSessionInputTranslation } from '@/hooks/useSessionInputTranslation'
 import {
     DEFAULT_PR_CHIP_DISPLAY,
     getNativeSessionId,
-    getNativeSessionIdField,
     getPrimaryGithubPrRef,
-    resolveGithubPrChipDisplay
+    resolveGithubPrChipDisplay,
+    usesCodexThreadId,
+    usesPiThreadId
 } from '@hapi/protocol'
 import { formatGithubPrChipDetailParts } from '@/components/SessionPrChip'
 import { useMachines } from '@/hooks/queries/useMachines'
@@ -220,10 +221,9 @@ export function SessionHeader(props: {
     const showFastBadge = agentFlavor === 'codex' && isFastServiceTier(props.serviceTier ?? session.serviceTier)
     const createdAtLabel = headerMetadata.createdAt ? formatSessionHeaderTimestamp(session.createdAt, locale) : null
     const updatedAtLabel = headerMetadata.updatedAt ? formatSessionHeaderTimestamp(session.updatedAt, locale) : null
-    const nativeIdField = getNativeSessionIdField(agentFlavor)
     const nativeId = getNativeSessionId(session.metadata, agentFlavor)?.trim() || null
-    const codexSessionId = nativeIdField === 'codexSessionId' ? nativeId : null
-    const piSessionId = nativeIdField === 'piSessionId' ? nativeId : null
+    const codexSessionId = usesCodexThreadId(agentFlavor) ? nativeId : null
+    const piSessionId = usesPiThreadId(agentFlavor) ? nativeId : null
     const { machines } = useMachines(api, Boolean(api))
     const machineLabelsById = useMachineLabels(machines)
     const machineLabel = useMemo(

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { WORK_GRAPH_MAX_SUMMARY } from '@hapi/protocol'
+import { getFlavorForNativeIdField, getNativeIdFieldsInReadOrder, WORK_GRAPH_MAX_SUMMARY } from '@hapi/protocol'
 import type { SessionPatch, SyncEvent } from '@hapi/protocol/types'
 import { RpcRegistry } from '../socket/rpcRegistry'
 import { Store } from '../store'
@@ -142,6 +142,33 @@ describe('SyncEngine.handleRealtimeEvent dedup-on-metadata-change', () => {
 })
 
 describe('SyncEngine.handleRealtimeEvent native id dedup outcome', () => {
+    for (const field of getNativeIdFieldsInReadOrder()) {
+        it(`merges duplicates once a patch changes ${field} to collide`, async () => {
+            const engine = new SyncEngine(new Store(':memory:'), {} as never, new RpcRegistry(), { broadcast() {} } as never)
+            const cache = (engine as unknown as { sessionCache: SessionCache }).sessionCache
+            const base = { path: '/tmp', host: 'h', machineId: 'm1', flavor: getFlavorForNativeIdField(field) }
+            const first = cache.getOrCreateSession(`${field}-first`, { ...base, [field]: 'native-shared' }, null, 'default')
+            const second = cache.getOrCreateSession(`${field}-second`, { ...base, [field]: 'native-other' }, null, 'default')
+
+            engine.handleRealtimeEvent({
+                type: 'session-updated',
+                sessionId: second.id,
+                data: {
+                    metadata: {
+                        version: second.metadataVersion + 1,
+                        value: { ...base, [field]: 'native-shared' }
+                    }
+                }
+            })
+            const remaining = () => [cache.getSession(first.id), cache.getSession(second.id)].filter(Boolean).length
+            for (let attempt = 0; attempt < 200 && remaining() > 1; attempt++) {
+                await new Promise((resolve) => setTimeout(resolve, 10))
+            }
+
+            expect(remaining()).toBe(1)
+        })
+    }
+
     it('keeps duplicates apart when a metadata patch changes no native id', async () => {
         const engine = new SyncEngine(new Store(':memory:'), {} as never, new RpcRegistry(), { broadcast() {} } as never)
         const cache = (engine as unknown as { sessionCache: SessionCache }).sessionCache

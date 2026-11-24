@@ -2,7 +2,11 @@ import { describe, expect, test } from 'bun:test'
 import {
     Capabilities,
     Flavors,
+    getFlavorForNativeIdField,
     getFlavorLabel,
+    getLegacyNativeIdFieldsInReadOrder,
+    getNativeIdFieldsInReadOrder,
+    getNativeIdRecoverySource,
     getNativeSessionId,
     getNativeSessionIdField,
     getPermissionModesForFlavor,
@@ -10,13 +14,18 @@ import {
     getYoloToggleMigrationMode,
     hasCapability,
     isKnownFlavor,
+    isMachineScopedNativeId,
     isPermissionModeAllowedForFlavor,
     isSteeringSupportedForFlavor,
     isSteeringSupportedForSession,
+    recoversNativeIdFromMessages,
     resolveHapiYoloPermissionMode,
     supportsEffort,
     supportsModelChange,
+    usesCodexThreadId,
+    usesCursorChatStore,
     usesNativePermissionSelect,
+    usesPiThreadId,
     usesSharedPermissionModeState,
 } from './flavors'
 import {
@@ -205,5 +214,57 @@ describe('getNativeSessionId', () => {
     test.each(UNREGISTERED)('%p has no native id field', (flavor) => {
         expect(getNativeSessionIdField(flavor)).toBeNull()
         expect(getNativeSessionId({ path: '/p', host: 'h', claudeSessionId: 'cl-1' }, flavor)).toBeUndefined()
+    })
+})
+
+describe('native id queries', () => {
+    test('reads native ids in a fixed order when a row carries several', () => {
+        expect(getNativeIdFieldsInReadOrder()).toEqual([
+            'codexSessionId', 'claudeSessionId', 'geminiSessionId', 'opencodeSessionId', 'grokSessionId',
+            'cursorSessionId', 'piSessionId', 'agySessionId', 'copilotSessionId', 'kimiSessionId', 'dshSessionId'
+        ])
+    })
+
+    test('reads legacy rows without a known flavor in their own order, never as Pi', () => {
+        expect(getLegacyNativeIdFieldsInReadOrder()).toEqual([
+            'codexSessionId', 'claudeSessionId', 'geminiSessionId', 'opencodeSessionId', 'grokSessionId',
+            'agySessionId', 'cursorSessionId', 'kimiSessionId', 'copilotSessionId', 'dshSessionId'
+        ])
+    })
+
+    test('maps each declared field back to its flavor', () => {
+        for (const flavor of AGENT_FLAVORS) {
+            expect(getFlavorForNativeIdField(getNativeSessionIdField(flavor))).toBe(flavor)
+        }
+        expect(getFlavorForNativeIdField(null)).toBeUndefined()
+        expect(getFlavorForNativeIdField(undefined)).toBeUndefined()
+    })
+
+    test('scopes native ids to a machine except for Copilot and Gemini', () => {
+        expect(AGENT_FLAVORS.filter(isMachineScopedNativeId)).toEqual([
+            'agy', 'claude', 'codex', 'dsh', 'cursor', 'grok', 'kimi', 'opencode', 'pi'
+        ])
+    })
+
+    test('recovers a missing native id from stored messages only for Claude and Codex', () => {
+        expect(AGENT_FLAVORS.filter(recoversNativeIdFromMessages)).toEqual(['claude', 'codex'])
+        expect(getNativeIdRecoverySource('claude')).toBe('claude')
+        expect(getNativeIdRecoverySource('codex')).toBe('codex')
+        expect(getNativeIdRecoverySource('pi')).toBeNull()
+    })
+
+    test('names the flavor-specific native id stores', () => {
+        expect(AGENT_FLAVORS.filter(usesCodexThreadId)).toEqual(['codex'])
+        expect(AGENT_FLAVORS.filter(usesPiThreadId)).toEqual(['pi'])
+        expect(AGENT_FLAVORS.filter(usesCursorChatStore)).toEqual(['cursor'])
+    })
+
+    test.each(UNREGISTERED)('%p has no native id behavior', (flavor) => {
+        expect(isMachineScopedNativeId(flavor)).toBe(false)
+        expect(recoversNativeIdFromMessages(flavor)).toBe(false)
+        expect(getNativeIdRecoverySource(flavor)).toBeNull()
+        expect(usesCodexThreadId(flavor)).toBe(false)
+        expect(usesPiThreadId(flavor)).toBe(false)
+        expect(usesCursorChatStore(flavor)).toBe(false)
     })
 })

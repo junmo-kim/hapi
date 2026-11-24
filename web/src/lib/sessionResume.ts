@@ -1,4 +1,4 @@
-import { Flavors, getNativeSessionId, getNativeSessionIdField, isKnownFlavor } from '@hapi/protocol'
+import { getNativeSessionId, isKnownFlavor, recoversNativeIdFromMessages, usesCursorChatStore } from '@hapi/protocol'
 import type { Session } from '@/types/api'
 
 /** Transport liveness alone cannot tell whether the agent process has stopped. */
@@ -49,12 +49,12 @@ export function inactiveSessionCanResume(
     }
     const flavor = isKnownFlavor(session.metadata.flavor) ? session.metadata.flavor : 'claude'
     if (resolveAgentSessionIdFromMetadata(session.metadata)) {
-        if (getNativeSessionIdField(flavor) === 'cursorSessionId') {
+        if (usesCursorChatStore(flavor)) {
             return cursorChatOnDisk !== false
         }
         return true
     }
-    if (Flavors[flavor].recoversNativeIdFromMessages && userMessageCount > 0) {
+    if (recoversNativeIdFromMessages(flavor) && userMessageCount > 0) {
         return true
     }
     return userMessageCount === 0

@@ -7,7 +7,7 @@
  * - No E2E encryption; data is stored as JSON in SQLite
  */
 
-import { AGENT_FLAVORS, Flavors, getNativeSessionId, getNativeSessionIdField, type SessionReadStateRequest, isKnownFlavor, matchesClaudeSessionId, isLiveLifecycleState, isSteeringSupportedForSession, MACHINE_CAPABILITIES, type LocalResumeTarget, type NativeSessionIdField, type ResumableSession, type SessionEndReason } from '@hapi/protocol'
+import { AGENT_FLAVORS, getNativeIdRecoverySource, getNativeSessionId, getNativeSessionIdField, NativeIdRecovery, type SessionReadStateRequest, isKnownFlavor, matchesClaudeSessionId, isLiveLifecycleState, isSteeringSupportedForSession, MACHINE_CAPABILITIES, type LocalResumeTarget, type NativeSessionIdField, recoversNativeIdFromMessages, type ResumableSession, type SessionEndReason } from '@hapi/protocol'
 import {
     cliBinaryUpdatedOnDisk,
     isMachineCapabilitySkewed,
@@ -4941,8 +4941,10 @@ export class SyncEngine {
         if (nativeId !== undefined) return nativeId
 
         const field = getNativeSessionIdField(flavor)
-        if (field === null || !Flavors[flavor].recoversNativeIdFromMessages) return null
-        return field === 'codexSessionId'
+        if (field === null || !recoversNativeIdFromMessages(flavor)) return null
+        const recovery = getNativeIdRecoverySource(flavor)
+        if (recovery === null) return null
+        return recovery === NativeIdRecovery.Codex
             ? this.recoverCodexSessionIdFromMessages(session.id, namespace)
             : this.recoverClaudeSessionIdFromMessages(session.id, namespace)
     }

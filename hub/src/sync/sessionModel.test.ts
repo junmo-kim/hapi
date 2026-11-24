@@ -1,5 +1,5 @@
 import { describe, expect, it, spyOn } from 'bun:test'
-import { toSessionSummary } from '@hapi/protocol'
+import { getFlavorForNativeIdField, getNativeIdFieldsInReadOrder, isMachineScopedNativeId, toSessionSummary } from '@hapi/protocol'
 import type { SyncEvent } from '@hapi/protocol/types'
 import { Store } from '../store'
 import { RpcRegistry } from '../socket/rpcRegistry'
@@ -4608,6 +4608,52 @@ describe('session model', () => {
                 store.close()
             })
         }
+
+        for (const field of getNativeIdFieldsInReadOrder()) {
+            const flavor = getFlavorForNativeIdField(field)
+            it(`merges ${field} duplicates on one machine and ${isMachineScopedNativeId(flavor) ? 'keeps' : 'merges'} them across machines`, async () => {
+                const store = new Store(':memory:')
+                const cache = new SessionCache(store, createPublisher([]))
+                const row = (tag: string, machineId: string) => cache.getOrCreateSession(
+                    tag,
+                    { path: '/tmp/project', host: 'localhost', machineId, flavor, [field]: 'native-shared' },
+                    null,
+                    'default'
+                )
+
+                const sameA = row(`${field}-same-a`, 'machine-1')
+                const sameB = row(`${field}-same-b`, 'machine-1')
+                await cache.deduplicateByAgentSessionId(sameB.id)
+                expect([cache.getSession(sameA.id), cache.getSession(sameB.id)].filter(Boolean)).toHaveLength(1)
+
+                const remote = row(`${field}-remote`, 'machine-2')
+                await cache.deduplicateByAgentSessionId(remote.id)
+                expect(cache.getSessions().filter((session) => session.metadata?.[field] === 'native-shared'))
+                    .toHaveLength(isMachineScopedNativeId(flavor) ? 2 : 1)
+                store.close()
+            })
+        }
+
+        it('matches a row carrying several native ids by the first id in read order', async () => {
+            const store = new Store(':memory:')
+            const cache = new SessionCache(store, createPublisher([]))
+            const row = (tag: string, claudeSessionId: string, codexSessionId: string) => cache.getOrCreateSession(
+                tag,
+                { path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'codex', codexSessionId, claudeSessionId },
+                null,
+                'default'
+            )
+            const base = row('several-base', 'claude-a', 'thread-a')
+            const otherFirstId = row('several-other-first', 'claude-a', 'thread-b')
+            await cache.deduplicateByAgentSessionId(otherFirstId.id)
+            expect(cache.getSession(base.id)).toBeDefined()
+            expect(cache.getSession(otherFirstId.id)).toBeDefined()
+
+            const sameFirstId = row('several-same-first', 'claude-b', 'thread-a')
+            await cache.deduplicateByAgentSessionId(sameFirstId.id)
+            expect([cache.getSession(base.id), cache.getSession(sameFirstId.id)].filter(Boolean)).toHaveLength(1)
+            store.close()
+        })
 
         it('does not merge across namespaces', async () => {
             const store = new Store(':memory:')

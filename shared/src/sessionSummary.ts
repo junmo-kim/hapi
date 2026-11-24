@@ -1,7 +1,7 @@
 import type { AgentState, AttachedJob, ExternalRef, Metadata, Session, TodoItem, WorktreeMetadata } from './schemas'
 import type { SessionReadState } from './sessionReadState'
 import type { ConversationHistoryCapabilities } from './conversationHistory'
-import { getNativeSessionId, isKnownFlavor, type NativeSessionIdField } from './flavors'
+import { getLegacyNativeIdFieldsInReadOrder, getNativeSessionId, isKnownFlavor } from './flavors'
 
 export type ForkSessionSummary = {
     text: string
@@ -215,12 +215,7 @@ export function computeTodoProgress(todos: TodoItem[] | undefined): SessionSumma
 }
 
 // Legacy fallback only applies when the stored flavor is missing or unknown.
-// This is its fixed read priority, not a declaration of which field a flavor owns.
-const LEGACY_AGENT_SESSION_ID_FIELDS: readonly NativeSessionIdField[] = [
-    'codexSessionId', 'claudeSessionId', 'geminiSessionId', 'opencodeSessionId',
-    'grokSessionId', 'agySessionId', 'cursorSessionId', 'kimiSessionId',
-    'copilotSessionId', 'dshSessionId'
-]
+const LEGACY_AGENT_SESSION_ID_FIELDS = getLegacyNativeIdFieldsInReadOrder()
 
 function getSummaryAgentSessionId(metadata: Metadata): string | undefined {
     if (isKnownFlavor(metadata.flavor)) {

@@ -1,7 +1,7 @@
-import { AGENT_FLAVORS, Flavors, getNativeSessionIdField, mergeClaudeSessionIdHistory, mergeReadState, type NativeSessionIdField } from '@hapi/protocol'
+import { getFlavorForNativeIdField, getNativeIdFieldsInReadOrder, isMachineScopedNativeId, mergeClaudeSessionIdHistory, mergeReadState, usesCodexThreadId, type NativeSessionIdField } from '@hapi/protocol'
 import { SESSION_LIFECYCLE_IDLE, SESSION_LIFECYCLE_RUNNING } from '@hapi/protocol'
 import { AgentStateSchema, ExternalRefsSchema, MetadataSchema, SessionPatchSchema, TeamStateSchema } from '@hapi/protocol/schemas'
-import type { AgentFlavor, BackgroundTask, CodexCollaborationMode, CopilotAgentMode, ExternalRef, PermissionMode, Session, SessionPatch } from '@hapi/protocol/types'
+import type { BackgroundTask, CodexCollaborationMode, CopilotAgentMode, ExternalRef, PermissionMode, Session, SessionPatch } from '@hapi/protocol/types'
 import type { SessionTurnEndReason, SessionTurnTrigger, Store } from '../store'
 import type { TransferSessionJobsResult } from '../store/sessionJobs'
 import { clampAliveTime } from './aliveTime'
@@ -153,26 +153,11 @@ export function mergeSessionMetadataForSessionMerge(
     return changed ? merged : newMetadata
 }
 
-// Fixed priority for choosing one native id when a row carries several.
-const NATIVE_ID_READ_PRIORITY: readonly AgentFlavor[] = [
-    'codex', 'claude', 'gemini', 'opencode', 'grok', 'cursor', 'pi', 'agy', 'copilot', 'kimi', 'dsh'
-]
-
-const NATIVE_ID_FLAVOR_BY_FIELD = new Map<NativeSessionIdField, AgentFlavor>(
-    AGENT_FLAVORS.flatMap((flavor) => {
-        const field = getNativeSessionIdField(flavor)
-        return field === null ? [] : [[field, flavor] as const]
-    })
-)
+const CACHE_NATIVE_ID_FIELDS: readonly NativeSessionIdField[] = getNativeIdFieldsInReadOrder()
 
 function isMachineScopedNativeIdField(field: NativeSessionIdField): boolean {
-    const flavor = NATIVE_ID_FLAVOR_BY_FIELD.get(field)
-    return flavor !== undefined && Flavors[flavor].machineScopedNativeId
+    return isMachineScopedNativeId(getFlavorForNativeIdField(field))
 }
-
-const CACHE_NATIVE_ID_FIELDS: readonly NativeSessionIdField[] = NATIVE_ID_READ_PRIORITY
-    .map((flavor) => getNativeSessionIdField(flavor))
-    .filter((field): field is NativeSessionIdField => field !== null)
 
 /**
  * Machine-scoped native ids on different machines are separate conversations
@@ -186,7 +171,7 @@ function isDistinctNativeIdentity(
 ): boolean {
     // An attached projection is not an owned engine or another post-rewrite
     // view of the same native thread. Never merge their transcripts/queues.
-    if (field === 'codexSessionId' && a.codexRuntime?.bindingId !== b.codexRuntime?.bindingId) return true
+    if (usesCodexThreadId(getFlavorForNativeIdField(field)) && a.codexRuntime?.bindingId !== b.codexRuntime?.bindingId) return true
     if (!isMachineScopedNativeIdField(field)) return false
     return typeof a.machineId === 'string'
         && typeof b.machineId === 'string'

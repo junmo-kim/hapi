@@ -2,7 +2,26 @@ import type { PermissionMode, SteeringCapability, SteeringSessionMetadata, Steer
 import type { Metadata } from './schemas'
 
 /** Metadata keys that can hold a flavor's native resume id. */
-export type NativeSessionIdField = Extract<keyof Metadata, `${string}SessionId`>
+export type NativeSessionIdField =
+    | 'agySessionId'
+    | 'claudeSessionId'
+    | 'codexSessionId'
+    | 'copilotSessionId'
+    | 'cursorSessionId'
+    | 'dshSessionId'
+    | 'geminiSessionId'
+    | 'grokSessionId'
+    | 'kimiSessionId'
+    | 'opencodeSessionId'
+    | 'piSessionId'
+
+/** Stored message format that can recover a missing native id. */
+export const NativeIdRecovery = {
+    Codex: 'codex',
+    Claude: 'claude',
+} as const
+
+export type NativeIdRecoverySource = typeof NativeIdRecovery[keyof typeof NativeIdRecovery]
 
 export const Capabilities = {
     ModelChange: 'model-change',
@@ -40,6 +59,12 @@ type FlavorTraits = {
     readonly machineScopedNativeId: boolean
     /** True when a missing native id can be recovered from stored messages. */
     readonly recoversNativeIdFromMessages: boolean
+    /** Stored messages that recover this flavor's native id; null when none. */
+    readonly nativeIdRecoveryFromMessages: NativeIdRecoverySource | null
+    /** Position in the read order when a row carries several native ids. */
+    readonly nativeIdReadOrder: number
+    /** Position in the legacy unknown-flavor read order; null when excluded. */
+    readonly legacyNativeIdReadOrder: number | null
 }
 
 type FlavorSpec<
@@ -60,6 +85,9 @@ type FlavorSpec<
     nativeSessionIdField: TNativeSessionIdField
     machineScopedNativeId: boolean
     recoversNativeIdFromMessages: boolean
+    nativeIdRecoveryFromMessages: NativeIdRecoverySource | null
+    nativeIdReadOrder: number
+    legacyNativeIdReadOrder: number | null
 }
 
 const AUTO_APPROVE_MODES: readonly PermissionMode[] = ['yolo', 'bypassPermissions', 'always-proceed']
@@ -102,6 +130,9 @@ function defineFlavor<
         nativeSessionIdField: spec.nativeSessionIdField,
         machineScopedNativeId: spec.machineScopedNativeId,
         recoversNativeIdFromMessages: spec.recoversNativeIdFromMessages,
+        nativeIdRecoveryFromMessages: spec.nativeIdRecoveryFromMessages,
+        nativeIdReadOrder: spec.nativeIdReadOrder,
+        legacyNativeIdReadOrder: spec.legacyNativeIdReadOrder,
     }
 }
 
@@ -121,6 +152,9 @@ const agy = defineFlavor({
     nativeSessionIdField: 'agySessionId',
     machineScopedNativeId: true,
     recoversNativeIdFromMessages: false,
+    nativeIdRecoveryFromMessages: null,
+    nativeIdReadOrder: 8,
+    legacyNativeIdReadOrder: 6,
     capabilities: new Set([Capabilities.ModelChange, Capabilities.Effort]),
     permissionReplyStyle: 'generic',
     permissionModes: ['request-review', 'acceptEdits', 'plan', 'always-proceed'],
@@ -137,6 +171,9 @@ const claude = defineFlavor({
     nativeSessionIdField: 'claudeSessionId',
     machineScopedNativeId: true,
     recoversNativeIdFromMessages: true,
+    nativeIdRecoveryFromMessages: NativeIdRecovery.Claude,
+    nativeIdReadOrder: 2,
+    legacyNativeIdReadOrder: 2,
     capabilities: new Set([Capabilities.ModelChange, Capabilities.Effort]),
     permissionReplyStyle: 'allowTools',
     permissionModes: ['default', 'acceptEdits', 'auto', 'bypassPermissions', 'plan'],
@@ -153,6 +190,9 @@ const codex = defineFlavor({
     nativeSessionIdField: 'codexSessionId',
     machineScopedNativeId: true,
     recoversNativeIdFromMessages: true,
+    nativeIdRecoveryFromMessages: NativeIdRecovery.Codex,
+    nativeIdReadOrder: 1,
+    legacyNativeIdReadOrder: 1,
     capabilities: new Set([Capabilities.ModelChange]),
     permissionReplyStyle: 'decision',
     permissionModes: ['default', 'read-only', 'autoReview', 'yolo'],
@@ -169,6 +209,9 @@ const dsh = defineFlavor({
     nativeSessionIdField: 'dshSessionId',
     machineScopedNativeId: true,
     recoversNativeIdFromMessages: false,
+    nativeIdRecoveryFromMessages: null,
+    nativeIdReadOrder: 11,
+    legacyNativeIdReadOrder: 10,
     capabilities: new Set([Capabilities.ModelChange]),
     permissionReplyStyle: 'generic',
     // DSH applies its own server-side permission policy, so no modes are offered.
@@ -185,6 +228,9 @@ const copilot = defineFlavor({
     nativeSessionIdField: 'copilotSessionId',
     machineScopedNativeId: false,
     recoversNativeIdFromMessages: false,
+    nativeIdRecoveryFromMessages: null,
+    nativeIdReadOrder: 9,
+    legacyNativeIdReadOrder: 9,
     capabilities: new Set([Capabilities.ModelChange, Capabilities.Effort]),
     permissionReplyStyle: 'decision',
     permissionModes: ['default', 'read-only', 'safe-yolo', 'yolo'],
@@ -200,6 +246,9 @@ const cursor = defineFlavor({
     nativeSessionIdField: 'cursorSessionId',
     machineScopedNativeId: true,
     recoversNativeIdFromMessages: false,
+    nativeIdRecoveryFromMessages: null,
+    nativeIdReadOrder: 6,
+    legacyNativeIdReadOrder: 7,
     capabilities: new Set([Capabilities.ModelChange]),
     permissionReplyStyle: 'decision',
     permissionModes: ['default', 'plan', 'ask', 'debug', 'autoReview', 'yolo'],
@@ -216,6 +265,9 @@ const gemini = defineFlavor({
     nativeSessionIdField: 'geminiSessionId',
     machineScopedNativeId: false,
     recoversNativeIdFromMessages: false,
+    nativeIdRecoveryFromMessages: null,
+    nativeIdReadOrder: 3,
+    legacyNativeIdReadOrder: 3,
     capabilities: new Set([Capabilities.ModelChange]),
     permissionReplyStyle: 'decision',
     permissionModes: ['default', 'read-only', 'safe-yolo', 'yolo'],
@@ -232,6 +284,9 @@ const grok = defineFlavor({
     nativeSessionIdField: 'grokSessionId',
     machineScopedNativeId: true,
     recoversNativeIdFromMessages: false,
+    nativeIdRecoveryFromMessages: null,
+    nativeIdReadOrder: 5,
+    legacyNativeIdReadOrder: 5,
     capabilities: new Set([Capabilities.ModelChange, Capabilities.Effort]),
     permissionReplyStyle: 'decision',
     permissionModes: ['default', 'auto', 'plan', 'bypassPermissions'],
@@ -248,6 +303,9 @@ const kimi = defineFlavor({
     nativeSessionIdField: 'kimiSessionId',
     machineScopedNativeId: true,
     recoversNativeIdFromMessages: false,
+    nativeIdRecoveryFromMessages: null,
+    nativeIdReadOrder: 10,
+    legacyNativeIdReadOrder: 8,
     capabilities: new Set([Capabilities.ModelChange, Capabilities.Effort]),
     permissionReplyStyle: 'decision',
     permissionModes: ['default', 'read-only', 'safe-yolo', 'yolo'],
@@ -263,6 +321,9 @@ const opencode = defineFlavor({
     nativeSessionIdField: 'opencodeSessionId',
     machineScopedNativeId: true,
     recoversNativeIdFromMessages: false,
+    nativeIdRecoveryFromMessages: null,
+    nativeIdReadOrder: 4,
+    legacyNativeIdReadOrder: 4,
     capabilities: new Set([Capabilities.ModelChange]),
     permissionReplyStyle: 'decision',
     permissionModes: ['default', 'plan', 'yolo'],
@@ -279,6 +340,10 @@ const pi = defineFlavor({
     nativeSessionIdField: 'piSessionId',
     machineScopedNativeId: true,
     recoversNativeIdFromMessages: false,
+    // Legacy rows predate Pi; an unknown flavor must not infer a Pi identity from a stale field.
+    nativeIdRecoveryFromMessages: null,
+    nativeIdReadOrder: 7,
+    legacyNativeIdReadOrder: null,
     capabilities: new Set([Capabilities.ModelChange, Capabilities.Effort]),
     permissionReplyStyle: 'generic',
     // Pi RPC always auto-approves, so no modes are offered.
@@ -332,6 +397,9 @@ const UNKNOWN_FLAVOR_TRAITS: FlavorTraits = {
     nativeSessionIdField: null,
     machineScopedNativeId: false,
     recoversNativeIdFromMessages: false,
+    nativeIdRecoveryFromMessages: null,
+    nativeIdReadOrder: Number.MAX_SAFE_INTEGER,
+    legacyNativeIdReadOrder: null,
 }
 
 function traitsOf(flavor: string | null | undefined): FlavorTraits {
@@ -353,6 +421,64 @@ export function getFlavorLabel(flavor: string | null | undefined): string {
 
 export function getNativeSessionIdField(flavor: string | null | undefined): NativeSessionIdField | null {
     return traitsOf(flavor).nativeSessionIdField
+}
+
+const FLAVOR_BY_NATIVE_ID_FIELD = new Map<NativeSessionIdField, AgentFlavor>(
+    AGENT_FLAVORS.flatMap((flavor) => {
+        const field = getNativeSessionIdField(flavor)
+        return field === null ? [] : [[field, flavor] as const]
+    })
+)
+
+/** Flavor that declares a native id field, for callers holding only a metadata key. */
+export function getFlavorForNativeIdField(field: NativeSessionIdField | null | undefined): AgentFlavor | undefined {
+    return field === null || field === undefined ? undefined : FLAVOR_BY_NATIVE_ID_FIELD.get(field)
+}
+
+export function isMachineScopedNativeId(flavor: string | null | undefined): boolean {
+    return traitsOf(flavor).machineScopedNativeId
+}
+
+export function recoversNativeIdFromMessages(flavor: string | null | undefined): boolean {
+    return traitsOf(flavor).recoversNativeIdFromMessages
+}
+
+export function getNativeIdRecoverySource(flavor: string | null | undefined): NativeIdRecoverySource | null {
+    return traitsOf(flavor).nativeIdRecoveryFromMessages
+}
+
+/** Whether the flavor's native id is a Codex thread id, so Codex bindings apply. */
+export function usesCodexThreadId(flavor: string | null | undefined): boolean {
+    return getNativeSessionIdField(flavor) === 'codexSessionId'
+}
+
+/** Whether the flavor's native id is a Pi thread id. */
+export function usesPiThreadId(flavor: string | null | undefined): boolean {
+    return getNativeSessionIdField(flavor) === 'piSessionId'
+}
+
+/** Whether the flavor's native id is stored in the Cursor on-disk chat store. */
+export function usesCursorChatStore(flavor: string | null | undefined): boolean {
+    return getNativeSessionIdField(flavor) === 'cursorSessionId'
+}
+
+/** All declared native id keys in the fixed order used when a row carries several. */
+export function getNativeIdFieldsInReadOrder(): readonly NativeSessionIdField[] {
+    return AGENT_FLAVORS
+        .slice()
+        .sort((a, b) => traitsOf(a).nativeIdReadOrder - traitsOf(b).nativeIdReadOrder)
+        .map((flavor) => getNativeSessionIdField(flavor))
+        .filter((field): field is NativeSessionIdField => field !== null)
+}
+
+/** Legacy native id keys for rows whose flavor is missing or unknown. */
+export function getLegacyNativeIdFieldsInReadOrder(): readonly NativeSessionIdField[] {
+    const order = (flavor: AgentFlavor) => traitsOf(flavor).legacyNativeIdReadOrder
+    return AGENT_FLAVORS
+        .filter((flavor) => order(flavor) !== null)
+        .sort((a, b) => (order(a) ?? 0) - (order(b) ?? 0))
+        .map((flavor) => getNativeSessionIdField(flavor))
+        .filter((field): field is NativeSessionIdField => field !== null)
 }
 
 export function getNativeSessionId(
