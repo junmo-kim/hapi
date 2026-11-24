@@ -1,3 +1,4 @@
+import { AGENT_FLAVORS, getNativeSessionIdField, type NativeSessionIdField } from '@hapi/protocol'
 import type { Database } from 'bun:sqlite'
 import { prepareCached } from './statementCache'
 import { bumpSessionDeletionEpoch } from './sessionInvalidation'
@@ -70,19 +71,9 @@ const PARSE_IDENTITY_FIELDS = ['path', 'host'] as const
 
 const ROUTING_FIELDS = ['flavor', 'machineId'] as const
 
-const SIMPLE_RESUME_TOKENS = [
-    'claudeSessionId',
-    'codexSessionId',
-    'geminiSessionId',
-    'opencodeSessionId',
-    'grokSessionId',
-    'cursorSessionId',
-    'kimiSessionId',
-    'copilotSessionId',
-    'piSessionId',
-    'dshSessionId',
-    'agySessionId'
-] as const
+const SIMPLE_RESUME_TOKENS: readonly NativeSessionIdField[] = AGENT_FLAVORS
+    .map((flavor) => getNativeSessionIdField(flavor))
+    .filter((field): field is NativeSessionIdField => field !== null)
 
 // Hub-owned metadata that must survive sparse CLI metadata replacements.
 // `null` remains the explicit-clear sentinel handled by carryForwardIfMissing.
@@ -138,10 +129,11 @@ function preserveCursorProtocolPair(
     next: Record<string, unknown>,
     merged: Record<string, unknown> | null
 ): Record<string, unknown> | null {
-    // If next explicitly sets cursorSessionId, the protocol is tied to
-    // the new id — never carry over the prior protocol. The next write
-    // can include its own cursorSessionProtocol if it knows the protocol.
-    if (next.cursorSessionId !== undefined) {
+    // If next explicitly sets the declared cursor id field, the protocol is
+    // tied to the new id. Never carry over the prior protocol; the next
+    // write can include its own cursorSessionProtocol if it knows it.
+    const cursorIdField = getNativeSessionIdField('cursor')!
+    if (next[cursorIdField] !== undefined) {
         return merged
     }
     // Otherwise next is silent on the id (and possibly the protocol);

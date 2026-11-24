@@ -1,7 +1,7 @@
-import { mergeClaudeSessionIdHistory, mergeReadState } from '@hapi/protocol'
+import { AGENT_FLAVORS, Flavors, getNativeSessionIdField, mergeClaudeSessionIdHistory, mergeReadState, type NativeSessionIdField } from '@hapi/protocol'
 import { SESSION_LIFECYCLE_IDLE, SESSION_LIFECYCLE_RUNNING } from '@hapi/protocol'
 import { AgentStateSchema, ExternalRefsSchema, MetadataSchema, SessionPatchSchema, TeamStateSchema } from '@hapi/protocol/schemas'
-import type { BackgroundTask, CodexCollaborationMode, CopilotAgentMode, ExternalRef, PermissionMode, Session, SessionPatch } from '@hapi/protocol/types'
+import type { AgentFlavor, BackgroundTask, CodexCollaborationMode, CopilotAgentMode, ExternalRef, PermissionMode, Session, SessionPatch } from '@hapi/protocol/types'
 import type { SessionTurnEndReason, SessionTurnTrigger, Store } from '../store'
 import type { TransferSessionJobsResult } from '../store/sessionJobs'
 import { clampAliveTime } from './aliveTime'
@@ -153,25 +153,61 @@ export function mergeSessionMetadataForSessionMerge(
     return changed ? merged : newMetadata
 }
 
+// Fixed priority for choosing one native id when a row carries several.
+const NATIVE_ID_READ_PRIORITY: readonly AgentFlavor[] = [
+    'codex', 'claude', 'gemini', 'opencode', 'grok', 'cursor', 'pi', 'agy', 'copilot', 'kimi', 'dsh'
+]
+
+const NATIVE_ID_FLAVOR_BY_FIELD = new Map<NativeSessionIdField, AgentFlavor>(
+    AGENT_FLAVORS.flatMap((flavor) => {
+        const field = getNativeSessionIdField(flavor)
+        return field === null ? [] : [[field, flavor] as const]
+    })
+)
+
+function isMachineScopedNativeIdField(field: NativeSessionIdField): boolean {
+    const flavor = NATIVE_ID_FLAVOR_BY_FIELD.get(field)
+    return flavor !== undefined && Flavors[flavor].machineScopedNativeId
+}
+
+// TEMPORARY (commit 2): the cache historically ignored these declared fields.
+const CACHE_OMITTED_NATIVE_ID_FLAVORS: ReadonlySet<string> = new Set(['kimi', 'dsh'])
+const CACHE_NATIVE_ID_FIELDS: readonly NativeSessionIdField[] = NATIVE_ID_READ_PRIORITY
+    .filter((flavor) => !CACHE_OMITTED_NATIVE_ID_FLAVORS.has(flavor))
+    .map((flavor) => getNativeSessionIdField(flavor))
+    .filter((field): field is NativeSessionIdField => field !== null)
+
+// TEMPORARY (commit 2): the cache's dedupe key historically scoped the declared
+// set minus these fields.
+const CACHE_MACHINE_SCOPE_EXCLUDED: ReadonlySet<NativeSessionIdField> = new Set(['claudeSessionId', 'codexSessionId'])
+
+function isCacheMachineScoped(field: NativeSessionIdField): boolean {
+    return isMachineScopedNativeIdField(field) && !CACHE_MACHINE_SCOPE_EXCLUDED.has(field)
+}
+
+// TEMPORARY (commit 2): the merge guard historically machine-scoped the declared
+// set minus these fields.
+const DISTINCT_IDENTITY_MACHINE_SCOPE_EXCLUDED: ReadonlySet<NativeSessionIdField> = new Set(['opencodeSessionId', 'piSessionId'])
+
+// TEMPORARY (commit 2): the merge guard historically machine-scoped these
+// fields beyond the declared set.
+const DISTINCT_IDENTITY_MACHINE_SCOPE_EXTRA: ReadonlySet<NativeSessionIdField> = new Set(['cursorSessionId'])
+
 /**
- * Codex and Claude keep their native session files on one machine, and
- * local-session import binds a HAPI session to the machine it read the
- * transcript from. Two sessions recorded on different machines are
- * therefore separate conversations even when the native ids collide
- * (copied or shared agent homes): dedup must not merge one into the other.
- * Cursor follows the same machine boundary. Rows without a machine keep the
- * id-only match. Pi and OpenCode are scoped strictly by their dedupe key
- * instead.
+ * Machine-scoped native ids on different machines are separate conversations
+ * even when the ids collide. Rows without a machine keep the id-only match.
+ * An attached Codex projection is never the same native thread.
  */
 function isDistinctNativeIdentity(
-    field: string,
+    field: NativeSessionIdField,
     a: NonNullable<Session['metadata']>,
     b: NonNullable<Session['metadata']>
 ): boolean {
     // An attached projection is not an owned engine or another post-rewrite
     // view of the same native thread. Never merge their transcripts/queues.
     if (field === 'codexSessionId' && a.codexRuntime?.bindingId !== b.codexRuntime?.bindingId) return true
-    if (field !== 'codexSessionId' && field !== 'claudeSessionId' && field !== 'cursorSessionId') return false
+    if (!DISTINCT_IDENTITY_MACHINE_SCOPE_EXTRA.has(field)
+        && (DISTINCT_IDENTITY_MACHINE_SCOPE_EXCLUDED.has(field) || !isMachineScopedNativeIdField(field))) return false
     return typeof a.machineId === 'string'
         && typeof b.machineId === 'string'
         && a.machineId !== b.machineId
@@ -2931,9 +2967,9 @@ export class SessionCache {
 
     private extractAgentSessionId(
         metadata: NonNullable<Session['metadata']>
-    ): { field: 'codexSessionId' | 'claudeSessionId' | 'geminiSessionId' | 'opencodeSessionId' | 'grokSessionId' | 'cursorSessionId' | 'piSessionId' | 'agySessionId' | 'copilotSessionId'; value: string; dedupeKey: string; machineId?: string } | null {
-        const scoped = (field: 'codexSessionId' | 'claudeSessionId' | 'geminiSessionId' | 'opencodeSessionId' | 'grokSessionId' | 'cursorSessionId' | 'piSessionId' | 'agySessionId' | 'copilotSessionId', value: string) => {
-            const machineScoped = field === 'piSessionId' || field === 'opencodeSessionId'
+    ): { field: NativeSessionIdField; value: string; dedupeKey: string; machineId?: string } | null {
+        const scoped = (field: NativeSessionIdField, value: string) => {
+            const machineScoped = isCacheMachineScoped(field)
             return {
                 field,
                 value,
@@ -2941,15 +2977,10 @@ export class SessionCache {
                 ...(machineScoped && metadata.machineId ? { machineId: metadata.machineId } : {})
             }
         }
-        if (metadata.codexSessionId) return scoped('codexSessionId', metadata.codexSessionId)
-        if (metadata.claudeSessionId) return scoped('claudeSessionId', metadata.claudeSessionId)
-        if (metadata.geminiSessionId) return scoped('geminiSessionId', metadata.geminiSessionId)
-        if (metadata.opencodeSessionId) return scoped('opencodeSessionId', metadata.opencodeSessionId)
-        if (metadata.grokSessionId) return scoped('grokSessionId', metadata.grokSessionId)
-        if (metadata.cursorSessionId) return scoped('cursorSessionId', metadata.cursorSessionId)
-        if (metadata.piSessionId) return scoped('piSessionId', metadata.piSessionId)
-        if (metadata.agySessionId) return scoped('agySessionId', metadata.agySessionId)
-        if (metadata.copilotSessionId) return scoped('copilotSessionId', metadata.copilotSessionId)
+        for (const field of CACHE_NATIVE_ID_FIELDS) {
+            const value = metadata[field]
+            if (value) return scoped(field, value)
+        }
         return null
     }
 
@@ -3001,7 +3032,7 @@ export class SessionCache {
                 const passSession = currentSession ?? session
                 const passMetadata = currentSession?.metadata ?? session.metadata
                 const candidates: { id: string; session: Session }[] = []
-                const machineScoped = agentId.field === 'piSessionId' || agentId.field === 'opencodeSessionId'
+                const machineScoped = isCacheMachineScoped(agentId.field)
                 if (currentSession?.metadata && currentSession.metadata[agentId.field] === agentId.value) {
                     if (!machineScoped || currentSession.metadata.machineId === agentId.machineId) {
                         candidates.push({ id: passSessionId, session: currentSession })

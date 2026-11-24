@@ -7,7 +7,7 @@
  * - No E2E encryption; data is stored as JSON in SQLite
  */
 
-import { type SessionReadStateRequest, isKnownFlavor, matchesClaudeSessionId, isLiveLifecycleState, isSteeringSupportedForSession, MACHINE_CAPABILITIES, type LocalResumeTarget, type ResumableSession, type SessionEndReason } from '@hapi/protocol'
+import { AGENT_FLAVORS, Flavors, getNativeSessionId, getNativeSessionIdField, type SessionReadStateRequest, isKnownFlavor, matchesClaudeSessionId, isLiveLifecycleState, isSteeringSupportedForSession, MACHINE_CAPABILITIES, type LocalResumeTarget, type NativeSessionIdField, type ResumableSession, type SessionEndReason } from '@hapi/protocol'
 import {
     cliBinaryUpdatedOnDisk,
     isMachineCapabilitySkewed,
@@ -103,6 +103,13 @@ import {
 } from '../config/autoBridgeTransientModelErrors'
 import { getConfiguration } from '../configuration'
 import { getSettingsFile, readSettingsOrThrowCached } from '../config/settings'
+
+// TEMPORARY (commit 2): the engine historically ignored this declared field.
+const ENGINE_OMITTED_NATIVE_ID_FLAVORS: ReadonlySet<string> = new Set(['dsh'])
+const ENGINE_NATIVE_ID_FIELDS: readonly NativeSessionIdField[] = AGENT_FLAVORS
+    .filter((flavor) => !ENGINE_OMITTED_NATIVE_ID_FLAVORS.has(flavor))
+    .map((flavor) => getNativeSessionIdField(flavor))
+    .filter((field): field is NativeSessionIdField => field !== null)
 
 type PiResumeAttempt = NonNullable<NonNullable<Session['metadata']>['piResumeAttempt']>
 type PtyResumeAttempt = NonNullable<NonNullable<Session['metadata']>['ptyResumeAttempt']>
@@ -4930,23 +4937,17 @@ export class SyncEngine {
             return null
         }
 
+        // Only the resolved flavor's declared id is honored; a stale id from
+        // another flavor cannot become this session's resume target.
         const flavor = this.resolveFlavor(session)
-        if (flavor === 'codex') {
-            return metadata.codexSessionId ?? this.recoverCodexSessionIdFromMessages(session.id, namespace)
-        }
-        if (flavor === 'gemini') return metadata.geminiSessionId ?? null
-        if (flavor === 'opencode') return metadata.opencodeSessionId ?? null
-        if (flavor === 'grok') return metadata.grokSessionId ?? null
-        if (flavor === 'agy') return metadata.agySessionId ?? null
-        if (flavor === 'cursor') return metadata.cursorSessionId ?? null
-        if (flavor === 'kimi') return metadata.kimiSessionId ?? null
-        if (flavor === 'copilot') return metadata.copilotSessionId ?? null
-        if (flavor === 'pi') return metadata.piSessionId ?? null
-        // Current DSH ACP profiles resume persisted sessions through their
-        // `session/resume` method. Never fall through to a stale cross-flavor id.
-        if (flavor === 'dsh') return metadata.dshSessionId ?? null
+        const nativeId = getNativeSessionId(metadata, flavor)
+        if (nativeId !== undefined) return nativeId
 
-        return metadata.claudeSessionId ?? this.recoverClaudeSessionIdFromMessages(session.id, namespace)
+        const field = getNativeSessionIdField(flavor)
+        if (field === null || !Flavors[flavor].recoversNativeIdFromMessages) return null
+        return field === 'codexSessionId'
+            ? this.recoverCodexSessionIdFromMessages(session.id, namespace)
+            : this.recoverClaudeSessionIdFromMessages(session.id, namespace)
     }
 
     resolveLocalResumeTarget(sessionId: string, namespace: string): LocalResumeTargetResult {
@@ -6132,7 +6133,7 @@ export class SyncEngine {
             const found = this.extractClaudeSessionId(messages[i].content)
             if (!found) continue
 
-            return this.persistRecoveredAgentSessionId(sessionId, namespace, 'claudeSessionId', found)
+            return this.persistRecoveredAgentSessionId(sessionId, namespace, getNativeSessionIdField('claude')!, found)
         }
         return null
     }
@@ -6146,7 +6147,7 @@ export class SyncEngine {
             const found = this.extractCodexParentThreadId(content)
             if (!found) continue
 
-            return this.persistRecoveredAgentSessionId(sessionId, namespace, 'codexSessionId', found)
+            return this.persistRecoveredAgentSessionId(sessionId, namespace, getNativeSessionIdField('codex')!, found)
         }
         return null
     }
@@ -6227,7 +6228,7 @@ export class SyncEngine {
     private persistRecoveredAgentSessionId(
         sessionId: string,
         namespace: string,
-        field: 'claudeSessionId' | 'codexSessionId',
+        field: NativeSessionIdField,
         agentSessionId: string
     ): string {
         for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -6269,16 +6270,7 @@ export class SyncEngine {
         prev: Session['metadata'] | null,
         next: NonNullable<Session['metadata']>
     ): boolean {
-        return (prev?.codexSessionId ?? null) === (next.codexSessionId ?? null)
-            && (prev?.claudeSessionId ?? null) === (next.claudeSessionId ?? null)
-            && (prev?.geminiSessionId ?? null) === (next.geminiSessionId ?? null)
-            && (prev?.opencodeSessionId ?? null) === (next.opencodeSessionId ?? null)
-            && (prev?.grokSessionId ?? null) === (next.grokSessionId ?? null)
-            && (prev?.cursorSessionId ?? null) === (next.cursorSessionId ?? null)
-            && (prev?.piSessionId ?? null) === (next.piSessionId ?? null)
-            && (prev?.kimiSessionId ?? null) === (next.kimiSessionId ?? null)
-            && (prev?.agySessionId ?? null) === (next.agySessionId ?? null)
-            && (prev?.copilotSessionId ?? null) === (next.copilotSessionId ?? null)
+        return ENGINE_NATIVE_ID_FIELDS.every((field) => (prev?.[field] ?? null) === (next[field] ?? null))
     }
 
     private canRunCursorDedup(session: Session): boolean {
