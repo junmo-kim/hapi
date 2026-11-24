@@ -160,9 +160,9 @@ function isMachineScopedNativeIdField(field: NativeSessionIdField): boolean {
 }
 
 /**
- * Machine-scoped native ids on different machines are separate conversations
- * even when the ids collide. Rows without a machine keep the id-only match.
- * An attached Codex projection is never the same native thread.
+ * Machine-scoped native ids are one conversation only when both rows carry the
+ * same machine. Rows without a machine never match. An attached Codex
+ * projection is never the same native thread.
  */
 function isDistinctNativeIdentity(
     field: NativeSessionIdField,
@@ -173,9 +173,10 @@ function isDistinctNativeIdentity(
     // view of the same native thread. Never merge their transcripts/queues.
     if (usesCodexThreadId(getFlavorForNativeIdField(field)) && a.codexRuntime?.bindingId !== b.codexRuntime?.bindingId) return true
     if (!isMachineScopedNativeIdField(field)) return false
-    return typeof a.machineId === 'string'
-        && typeof b.machineId === 'string'
-        && a.machineId !== b.machineId
+    const machineA = typeof a.machineId === 'string' && a.machineId.length > 0 ? a.machineId : null
+    const machineB = typeof b.machineId === 'string' && b.machineId.length > 0 ? b.machineId : null
+    if (machineA === null || machineB === null) return true
+    return machineA !== machineB
 }
 
 export class SessionCache {
@@ -2955,6 +2956,9 @@ export class SessionCache {
 
         const agentId = this.extractAgentSessionId(session.metadata)
         if (!agentId) return
+        // A machine-scoped row without a machine id cannot be matched to any
+        // other row, so it must not enter a dedup pass at all.
+        if (isMachineScopedNativeIdField(agentId.field) && !agentId.machineId) return
 
         // Guard: if another dedup for this agent ID is already in progress,
         // coalesce this trigger and run one more pass afterwards. This matters

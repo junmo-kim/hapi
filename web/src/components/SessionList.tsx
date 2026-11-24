@@ -396,8 +396,13 @@ export function getSessionDedupKey(session: SessionSummary): string | null {
     // These native ids live in one machine's local store, and the hub keeps
     // sessions recorded on different machines apart: hiding one behind the
     // other would make an imported session look deleted.
-    const machineId = isMachineScopedNativeId(flavor) ? session.metadata?.machineId : undefined
-    return machineId ? `${flavor}:${machineId}:${agentId}` : `${flavor}:${agentId}`
+    if (isMachineScopedNativeId(flavor)) {
+        const machineId = session.metadata?.machineId
+        return typeof machineId === 'string' && machineId.length > 0
+            ? `${flavor}:${machineId}:${agentId}`
+            : null
+    }
+    return `${flavor}:${agentId}`
 }
 
 export function deduplicateSessionsByAgentId(sessions: SessionSummary[], selectedSessionId?: string | null): SessionSummary[] {

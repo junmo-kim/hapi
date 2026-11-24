@@ -145,6 +145,24 @@ describe('deduplicateSessionsByAgentId', () => {
         }
     })
 
+    it('keeps machine-scoped rows without a machine id separate', () => {
+        const sessions = [
+            makeSession({ id: 'a', metadata: { path: '/p', agentSessionId: 'native-1', flavor: 'codex' }, updatedAt: 100 }),
+            makeSession({ id: 'b', metadata: { path: '/p', agentSessionId: 'native-1', flavor: 'codex' }, updatedAt: 200 })
+        ]
+        expect(getSessionDedupKey(sessions[0])).toBeNull()
+        expect(getSessionDedupKey(sessions[1])).toBeNull()
+        expect(deduplicateSessionsByAgentId(sessions).map((session) => session.id).sort()).toEqual(['a', 'b'])
+    })
+
+    it('does not collapse a machine-scoped row without a machine id into a scoped row', () => {
+        const sessions = [
+            makeSession({ id: 'scoped', metadata: { path: '/p', machineId: 'm1', agentSessionId: 'native-1', flavor: 'codex' }, updatedAt: 100 }),
+            makeSession({ id: 'unscoped', metadata: { path: '/p', agentSessionId: 'native-1', flavor: 'codex' }, updatedAt: 200 })
+        ]
+        expect(deduplicateSessionsByAgentId(sessions).map((session) => session.id).sort()).toEqual(['scoped', 'unscoped'])
+    })
+
     it('keeps active session over inactive duplicate', () => {
         const sessions = [
             makeSession({ id: 'a', active: true, metadata: { path: '/p', agentSessionId: 'thread-1' }, updatedAt: 100 }),
@@ -160,13 +178,13 @@ describe('deduplicateSessionsByAgentId', () => {
             makeSession({
                 id: 'winner-active',
                 active: true,
-                metadata: { path: '/p', agentSessionId: 'thread-1', flavor: 'codex' },
+                metadata: { path: '/p', machineId: 'm1', agentSessionId: 'thread-1', flavor: 'codex' },
                 updatedAt: 300,
             }),
             makeSession({
                 id: 'job-loser',
                 active: false,
-                metadata: { path: '/p', agentSessionId: 'thread-1', flavor: 'codex' },
+                metadata: { path: '/p', machineId: 'm1', agentSessionId: 'thread-1', flavor: 'codex' },
                 updatedAt: 100,
                 attachedJob: {
                     key: 'beets',
@@ -184,9 +202,9 @@ describe('deduplicateSessionsByAgentId', () => {
 
     it('keeps every live Claude duplicate visible (hub does not merge two live rows)', () => {
         const sessions = [
-            makeSession({ id: 'runner', active: true, metadata: { path: '/p', agentSessionId: 'claude-1', flavor: 'claude' }, updatedAt: 100 }),
-            makeSession({ id: 'terminal', active: true, metadata: { path: '/p', agentSessionId: 'claude-1', flavor: 'claude' }, updatedAt: 200 }),
-            makeSession({ id: 'old', metadata: { path: '/p', agentSessionId: 'claude-1', flavor: 'claude' }, updatedAt: 300 })
+            makeSession({ id: 'runner', active: true, metadata: { path: '/p', machineId: 'm1', agentSessionId: 'claude-1', flavor: 'claude' }, updatedAt: 100 }),
+            makeSession({ id: 'terminal', active: true, metadata: { path: '/p', machineId: 'm1', agentSessionId: 'claude-1', flavor: 'claude' }, updatedAt: 200 }),
+            makeSession({ id: 'old', metadata: { path: '/p', machineId: 'm1', agentSessionId: 'claude-1', flavor: 'claude' }, updatedAt: 300 })
         ]
         const result = deduplicateSessionsByAgentId(sessions)
         expect(result.map((s) => s.id)).toEqual(['terminal', 'runner'])
@@ -194,8 +212,8 @@ describe('deduplicateSessionsByAgentId', () => {
 
     it('still collapses live Codex duplicates', () => {
         const sessions = [
-            makeSession({ id: 'a', active: true, metadata: { path: '/p', agentSessionId: 'thread-1', flavor: 'codex' }, updatedAt: 100 }),
-            makeSession({ id: 'b', active: true, metadata: { path: '/p', agentSessionId: 'thread-1', flavor: 'codex' }, updatedAt: 200 })
+            makeSession({ id: 'a', active: true, metadata: { path: '/p', machineId: 'm1', agentSessionId: 'thread-1', flavor: 'codex' }, updatedAt: 100 }),
+            makeSession({ id: 'b', active: true, metadata: { path: '/p', machineId: 'm1', agentSessionId: 'thread-1', flavor: 'codex' }, updatedAt: 200 })
         ]
         expect(deduplicateSessionsByAgentId(sessions).map((s) => s.id)).toEqual(['b'])
     })
@@ -255,12 +273,12 @@ describe('deduplicateSessionsByAgentId', () => {
             makeSession({
                 id: 'a',
                 active: true,
-                metadata: { path: '/p', flavor: 'cursor', agentSessionId: 'acp-thread-1' },
+                metadata: { path: '/p', machineId: 'm1', flavor: 'cursor', agentSessionId: 'acp-thread-1' },
                 updatedAt: 100
             }),
             makeSession({
                 id: 'b',
-                metadata: { path: '/p', flavor: 'cursor', agentSessionId: 'acp-thread-1' },
+                metadata: { path: '/p', machineId: 'm1', flavor: 'cursor', agentSessionId: 'acp-thread-1' },
                 updatedAt: 200
             })
         ]
@@ -285,18 +303,18 @@ describe('deduplicateSessionsByAgentId', () => {
         const sessions = [
             makeSession({
                 id: 'codex',
-                metadata: { path: '/p', flavor: 'codex', agentSessionId: 'stale-shared-id' },
+                metadata: { path: '/p', machineId: 'm1', flavor: 'codex', agentSessionId: 'stale-shared-id' },
                 updatedAt: 100
             }),
             makeSession({
                 id: 'cursor',
-                metadata: { path: '/p', flavor: 'cursor', agentSessionId: 'stale-shared-id' },
+                metadata: { path: '/p', machineId: 'm1', flavor: 'cursor', agentSessionId: 'stale-shared-id' },
                 updatedAt: 200
             })
         ]
 
-        expect(getSessionDedupKey(sessions[0])).toBe('codex:stale-shared-id')
-        expect(getSessionDedupKey(sessions[1])).toBe('cursor:stale-shared-id')
+        expect(getSessionDedupKey(sessions[0])).toBe('codex:m1:stale-shared-id')
+        expect(getSessionDedupKey(sessions[1])).toBe('cursor:m1:stale-shared-id')
         expect(deduplicateSessionsByAgentId(sessions).map(session => session.id).sort()).toEqual(['codex', 'cursor'])
         expect(prepareSidebarSessions(sessions).map(session => session.id).sort()).toEqual(['codex', 'cursor'])
     })

@@ -234,13 +234,13 @@ describe('session model', () => {
 
         const oldSession = cache.getOrCreateSession(
             'agy-dup-old',
-            { path: '/tmp/project', host: 'localhost', flavor: 'agy', agySessionId: 'brain-uuid-1' },
+            { path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'agy', agySessionId: 'brain-uuid-1' },
             null,
             'default'
         )
         const newSession = cache.getOrCreateSession(
             'agy-dup-new',
-            { path: '/tmp/project', host: 'localhost', flavor: 'agy', agySessionId: 'brain-uuid-1' },
+            { path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'agy', agySessionId: 'brain-uuid-1' },
             null,
             'default'
         )
@@ -265,13 +265,13 @@ describe('session model', () => {
 
         const oldSession = cache.getOrCreateSession(
             'agy-merge-hook-old',
-            { path: '/tmp/project', host: 'localhost', flavor: 'agy', agySessionId: 'brain-uuid-hook' },
+            { path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'agy', agySessionId: 'brain-uuid-hook' },
             null,
             'default'
         )
         const newSession = cache.getOrCreateSession(
             'agy-merge-hook-new',
-            { path: '/tmp/project', host: 'localhost', flavor: 'agy', agySessionId: 'brain-uuid-hook' },
+            { path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'agy', agySessionId: 'brain-uuid-hook' },
             null,
             'default'
         )
@@ -4411,7 +4411,7 @@ describe('session model', () => {
 
             const s1 = cache.getOrCreateSession(
                 'tag-1',
-                { path: '/tmp/project', host: 'localhost', flavor: 'codex', codexSessionId: 'thread-X' },
+                { path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'codex', codexSessionId: 'thread-X' },
                 null,
                 'default'
             )
@@ -4421,7 +4421,7 @@ describe('session model', () => {
 
             const s2 = cache.getOrCreateSession(
                 'tag-2',
-                { path: '/tmp/project', host: 'localhost', flavor: 'codex', codexSessionId: 'thread-X' },
+                { path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'codex', codexSessionId: 'thread-X' },
                 null,
                 'default'
             )
@@ -4468,13 +4468,13 @@ describe('session model', () => {
 
             const s1 = cache.getOrCreateSession(
                 'tag-1',
-                { path: '/tmp/project', host: 'localhost', flavor: 'codex', codexSessionId: 'thread-X' },
+                { path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'codex', codexSessionId: 'thread-X' },
                 null,
                 'default'
             )
             const s2 = cache.getOrCreateSession(
                 'tag-2',
-                { path: '/tmp/project', host: 'localhost', flavor: 'codex', codexSessionId: 'thread-Y' },
+                { path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'codex', codexSessionId: 'thread-Y' },
                 null,
                 'default'
             )
@@ -4655,6 +4655,32 @@ describe('session model', () => {
             store.close()
         })
 
+        it('does not merge machine-scoped duplicates when neither row has a machine id', async () => {
+            const store = new Store(':memory:')
+            const events: SyncEvent[] = []
+            const cache = new SessionCache(store, createPublisher(events))
+            const s1 = cache.getOrCreateSession(
+                'unscoped-1',
+                { path: '/tmp/project', host: 'localhost', flavor: 'codex', codexSessionId: 'thread-unscoped' },
+                null,
+                'default'
+            )
+            const s2 = cache.getOrCreateSession(
+                'unscoped-2',
+                { path: '/tmp/project', host: 'localhost', flavor: 'codex', codexSessionId: 'thread-unscoped' },
+                null,
+                'default'
+            )
+            store.messages.addMessage(s1.id, { text: 'history from s1' }, 'local-s1')
+
+            await cache.deduplicateByAgentSessionId(s2.id)
+
+            expect(cache.getSession(s1.id)).toBeDefined()
+            expect(cache.getSession(s2.id)).toBeDefined()
+            expect(store.messages.getMessages(s2.id, 100)).toHaveLength(0)
+            store.close()
+        })
+
         it('does not merge across namespaces', async () => {
             const store = new Store(':memory:')
             const events: SyncEvent[] = []
@@ -4703,7 +4729,7 @@ describe('session model', () => {
 
             const s1 = cache.getOrCreateSession(
                 'tag-1',
-                { path: '/tmp/project', host: 'localhost', flavor: 'codex', codexSessionId: 'thread-X' },
+                { path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'codex', codexSessionId: 'thread-X' },
                 {
                     requests: { 'req-from-active-duplicate': { tool: 'Bash', arguments: {} } },
                     completedRequests: {}
@@ -4716,7 +4742,7 @@ describe('session model', () => {
 
             const s2 = cache.getOrCreateSession(
                 'tag-2',
-                { path: '/tmp/project', host: 'localhost', flavor: 'codex', codexSessionId: 'thread-X' },
+                { path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'codex', codexSessionId: 'thread-X' },
                 {
                     requests: { 'req-from-target': { tool: 'Read', arguments: {} } },
                     completedRequests: {}
@@ -4804,13 +4830,13 @@ describe('session model', () => {
             try {
                 const s1 = engine.getOrCreateSession(
                     'tag-1',
-                    { path: '/tmp/project', host: 'localhost', flavor: 'codex', codexSessionId: 'thread-X' },
+                    { path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'codex', codexSessionId: 'thread-X' },
                     null,
                     'default'
                 )
                 const s2 = engine.getOrCreateSession(
                     'tag-2',
-                    { path: '/tmp/project', host: 'localhost', flavor: 'codex', codexSessionId: 'thread-X' },
+                    { path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'codex', codexSessionId: 'thread-X' },
                     null,
                     'default'
                 )
@@ -4846,13 +4872,13 @@ describe('session model', () => {
 
             const s1 = cache.getOrCreateSession(
                 'tag-1',
-                { path: '/tmp/project', host: 'localhost', flavor: 'codex', codexSessionId: 'thread-X' },
+                { path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'codex', codexSessionId: 'thread-X' },
                 null,
                 'default'
             )
             const s2 = cache.getOrCreateSession(
                 'tag-2',
-                { path: '/tmp/project', host: 'localhost', flavor: 'codex', codexSessionId: 'thread-X' },
+                { path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'codex', codexSessionId: 'thread-X' },
                 null,
                 'default'
             )
@@ -4890,7 +4916,7 @@ describe('session model', () => {
 
             const s1 = cache.getOrCreateSession(
                 'tag-1',
-                { path: '/tmp/project', host: 'localhost', flavor: 'codex', codexSessionId: 'thread-X' },
+                { path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'codex', codexSessionId: 'thread-X' },
                 {
                     requests: {
                         'req-1': { tool: 'Bash', arguments: {} },
@@ -4902,7 +4928,7 @@ describe('session model', () => {
             )
             const s2 = cache.getOrCreateSession(
                 'tag-2',
-                { path: '/tmp/project', host: 'localhost', flavor: 'codex', codexSessionId: 'thread-X' },
+                { path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'codex', codexSessionId: 'thread-X' },
                 {
                     requests: {
                         'req-3': { tool: 'Bash', arguments: {} }
@@ -4936,7 +4962,7 @@ describe('session model', () => {
 
             const s1 = cache.getOrCreateSession(
                 'tag-1',
-                { path: '/tmp/project', host: 'localhost', flavor: 'pi', piSessionId: 'pi-sess-A' },
+                { path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'pi', piSessionId: 'pi-sess-A' },
                 null,
                 'default'
             )
@@ -4945,7 +4971,7 @@ describe('session model', () => {
 
             const s2 = cache.getOrCreateSession(
                 'tag-2',
-                { path: '/tmp/project', host: 'localhost', flavor: 'pi', piSessionId: 'pi-sess-A' },
+                { path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'pi', piSessionId: 'pi-sess-A' },
                 null,
                 'default'
             )
