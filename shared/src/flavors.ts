@@ -15,6 +15,15 @@ export type NativeSessionIdField =
     | 'opencodeSessionId'
     | 'piSessionId'
 
+/** Runtime binding that participates in native identity; null when the id alone identifies the conversation. */
+export type NativeIdentityBinding = 'codex-runtime' | null
+
+/** Native transcript import offered for stopped sessions; null when none is offered. */
+export type NativeTranscriptImport = 'codex' | 'pi' | null
+
+/** On-disk chat store holding the native id; null when the id is not stored there. */
+export type NativeChatStore = 'cursor' | null
+
 /** Stored message format that can recover a missing native id. */
 export const NativeIdRecovery = {
     Codex: 'codex',
@@ -55,6 +64,12 @@ type FlavorTraits = {
     readonly steering: SteeringCapability | null
     /** Metadata key holding this flavor's native resume id; null when it has none. */
     readonly nativeSessionIdField: NativeSessionIdField | null
+    /** Runtime binding that participates in native identity; null when the id alone identifies the conversation. */
+    readonly nativeIdentityBinding: NativeIdentityBinding
+    /** Native transcript import offered for stopped sessions; null when none is offered. */
+    readonly nativeTranscriptImport: NativeTranscriptImport
+    /** On-disk chat store holding the native id; null when the id is not stored there. */
+    readonly nativeChatStore: NativeChatStore
     /** True when the same native id on another machine is a different conversation. */
     readonly machineScopedNativeId: boolean
     /** True when a missing native id can be recovered from stored messages. */
@@ -83,6 +98,9 @@ type FlavorSpec<
     creatable: boolean
     steering: SteeringCapability | null
     nativeSessionIdField: TNativeSessionIdField
+    nativeIdentityBinding: NativeIdentityBinding
+    nativeTranscriptImport: NativeTranscriptImport
+    nativeChatStore: NativeChatStore
     machineScopedNativeId: boolean
     recoversNativeIdFromMessages: boolean
     nativeIdRecoveryFromMessages: NativeIdRecoverySource | null
@@ -128,6 +146,9 @@ function defineFlavor<
         creatable: spec.creatable,
         steering: spec.steering,
         nativeSessionIdField: spec.nativeSessionIdField,
+        nativeIdentityBinding: spec.nativeIdentityBinding,
+        nativeTranscriptImport: spec.nativeTranscriptImport,
+        nativeChatStore: spec.nativeChatStore,
         machineScopedNativeId: spec.machineScopedNativeId,
         recoversNativeIdFromMessages: spec.recoversNativeIdFromMessages,
         nativeIdRecoveryFromMessages: spec.nativeIdRecoveryFromMessages,
@@ -150,6 +171,9 @@ function isCursorAcpSession(metadata: SteeringSessionMetadata): boolean {
 const agy = defineFlavor({
     label: 'Antigravity',
     nativeSessionIdField: 'agySessionId',
+    nativeIdentityBinding: null,
+    nativeTranscriptImport: null,
+    nativeChatStore: null,
     machineScopedNativeId: true,
     recoversNativeIdFromMessages: false,
     nativeIdRecoveryFromMessages: null,
@@ -169,6 +193,9 @@ const agy = defineFlavor({
 const claude = defineFlavor({
     label: 'Claude',
     nativeSessionIdField: 'claudeSessionId',
+    nativeIdentityBinding: null,
+    nativeTranscriptImport: null,
+    nativeChatStore: null,
     machineScopedNativeId: true,
     recoversNativeIdFromMessages: true,
     nativeIdRecoveryFromMessages: NativeIdRecovery.Claude,
@@ -188,6 +215,9 @@ const claude = defineFlavor({
 const codex = defineFlavor({
     label: 'Codex',
     nativeSessionIdField: 'codexSessionId',
+    nativeIdentityBinding: 'codex-runtime',
+    nativeTranscriptImport: 'codex',
+    nativeChatStore: null,
     machineScopedNativeId: true,
     recoversNativeIdFromMessages: true,
     nativeIdRecoveryFromMessages: NativeIdRecovery.Codex,
@@ -207,6 +237,9 @@ const codex = defineFlavor({
 const dsh = defineFlavor({
     label: 'DeepSeek Harness',
     nativeSessionIdField: 'dshSessionId',
+    nativeIdentityBinding: null,
+    nativeTranscriptImport: null,
+    nativeChatStore: null,
     machineScopedNativeId: true,
     recoversNativeIdFromMessages: false,
     nativeIdRecoveryFromMessages: null,
@@ -226,6 +259,9 @@ const dsh = defineFlavor({
 const copilot = defineFlavor({
     label: 'Copilot',
     nativeSessionIdField: 'copilotSessionId',
+    nativeIdentityBinding: null,
+    nativeTranscriptImport: null,
+    nativeChatStore: null,
     machineScopedNativeId: false,
     recoversNativeIdFromMessages: false,
     nativeIdRecoveryFromMessages: null,
@@ -244,6 +280,9 @@ const copilot = defineFlavor({
 const cursor = defineFlavor({
     label: 'Cursor',
     nativeSessionIdField: 'cursorSessionId',
+    nativeIdentityBinding: null,
+    nativeTranscriptImport: null,
+    nativeChatStore: 'cursor',
     machineScopedNativeId: true,
     recoversNativeIdFromMessages: false,
     nativeIdRecoveryFromMessages: null,
@@ -263,6 +302,9 @@ const cursor = defineFlavor({
 const gemini = defineFlavor({
     label: 'Gemini',
     nativeSessionIdField: 'geminiSessionId',
+    nativeIdentityBinding: null,
+    nativeTranscriptImport: null,
+    nativeChatStore: null,
     machineScopedNativeId: false,
     recoversNativeIdFromMessages: false,
     nativeIdRecoveryFromMessages: null,
@@ -282,6 +324,9 @@ const gemini = defineFlavor({
 const grok = defineFlavor({
     label: 'Grok Build',
     nativeSessionIdField: 'grokSessionId',
+    nativeIdentityBinding: null,
+    nativeTranscriptImport: null,
+    nativeChatStore: null,
     machineScopedNativeId: true,
     recoversNativeIdFromMessages: false,
     nativeIdRecoveryFromMessages: null,
@@ -301,6 +346,9 @@ const grok = defineFlavor({
 const kimi = defineFlavor({
     label: 'Kimi',
     nativeSessionIdField: 'kimiSessionId',
+    nativeIdentityBinding: null,
+    nativeTranscriptImport: null,
+    nativeChatStore: null,
     machineScopedNativeId: true,
     recoversNativeIdFromMessages: false,
     nativeIdRecoveryFromMessages: null,
@@ -319,6 +367,9 @@ const kimi = defineFlavor({
 const opencode = defineFlavor({
     label: 'OpenCode',
     nativeSessionIdField: 'opencodeSessionId',
+    nativeIdentityBinding: null,
+    nativeTranscriptImport: null,
+    nativeChatStore: null,
     machineScopedNativeId: true,
     recoversNativeIdFromMessages: false,
     nativeIdRecoveryFromMessages: null,
@@ -338,6 +389,9 @@ const opencode = defineFlavor({
 const pi = defineFlavor({
     label: 'Pi',
     nativeSessionIdField: 'piSessionId',
+    nativeIdentityBinding: null,
+    nativeTranscriptImport: 'pi',
+    nativeChatStore: null,
     machineScopedNativeId: true,
     recoversNativeIdFromMessages: false,
     // Legacy rows predate Pi; an unknown flavor must not infer a Pi identity from a stale field.
@@ -395,6 +449,9 @@ const UNKNOWN_FLAVOR_TRAITS: FlavorTraits = {
     creatable: false,
     steering: null,
     nativeSessionIdField: null,
+    nativeIdentityBinding: null,
+    nativeTranscriptImport: null,
+    nativeChatStore: null,
     machineScopedNativeId: false,
     recoversNativeIdFromMessages: false,
     nativeIdRecoveryFromMessages: null,
@@ -447,19 +504,16 @@ export function getNativeIdRecoverySource(flavor: string | null | undefined): Na
     return traitsOf(flavor).nativeIdRecoveryFromMessages
 }
 
-/** Whether the flavor's native id is a Codex thread id, so Codex bindings apply. */
-export function usesCodexThreadId(flavor: string | null | undefined): boolean {
-    return getNativeSessionIdField(flavor) === 'codexSessionId'
+export function getNativeIdentityBinding(flavor: string | null | undefined): NativeIdentityBinding {
+    return traitsOf(flavor).nativeIdentityBinding
 }
 
-/** Whether the flavor's native id is a Pi thread id. */
-export function usesPiThreadId(flavor: string | null | undefined): boolean {
-    return getNativeSessionIdField(flavor) === 'piSessionId'
+export function getNativeTranscriptImport(flavor: string | null | undefined): NativeTranscriptImport {
+    return traitsOf(flavor).nativeTranscriptImport
 }
 
-/** Whether the flavor's native id is stored in the Cursor on-disk chat store. */
-export function usesCursorChatStore(flavor: string | null | undefined): boolean {
-    return getNativeSessionIdField(flavor) === 'cursorSessionId'
+export function getNativeChatStore(flavor: string | null | undefined): NativeChatStore {
+    return traitsOf(flavor).nativeChatStore
 }
 
 /** All declared native id keys in the fixed order used when a row carries several. */

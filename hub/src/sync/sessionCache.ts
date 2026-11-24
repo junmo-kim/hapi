@@ -1,4 +1,4 @@
-import { getFlavorForNativeIdField, getNativeIdFieldsInReadOrder, isMachineScopedNativeId, mergeClaudeSessionIdHistory, mergeReadState, usesCodexThreadId, type NativeSessionIdField } from '@hapi/protocol'
+import { getFlavorForNativeIdField, getNativeIdFieldsInReadOrder, getNativeIdentityBinding, isMachineScopedNativeId, mergeClaudeSessionIdHistory, mergeReadState, type NativeSessionIdField } from '@hapi/protocol'
 import { SESSION_LIFECYCLE_IDLE, SESSION_LIFECYCLE_RUNNING } from '@hapi/protocol'
 import { AgentStateSchema, ExternalRefsSchema, MetadataSchema, SessionPatchSchema, TeamStateSchema } from '@hapi/protocol/schemas'
 import type { BackgroundTask, CodexCollaborationMode, CopilotAgentMode, ExternalRef, PermissionMode, Session, SessionPatch } from '@hapi/protocol/types'
@@ -171,7 +171,7 @@ function isDistinctNativeIdentity(
 ): boolean {
     // An attached projection is not an owned engine or another post-rewrite
     // view of the same native thread. Never merge their transcripts/queues.
-    if (usesCodexThreadId(getFlavorForNativeIdField(field)) && a.codexRuntime?.bindingId !== b.codexRuntime?.bindingId) return true
+    if (getNativeIdentityBinding(getFlavorForNativeIdField(field)) === 'codex-runtime' && a.codexRuntime?.bindingId !== b.codexRuntime?.bindingId) return true
     if (!isMachineScopedNativeIdField(field)) return false
     const machineA = typeof a.machineId === 'string' && a.machineId.length > 0 ? a.machineId : null
     const machineB = typeof b.machineId === 'string' && b.machineId.length > 0 ? b.machineId : null

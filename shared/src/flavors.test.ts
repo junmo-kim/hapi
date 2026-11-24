@@ -5,10 +5,13 @@ import {
     getFlavorForNativeIdField,
     getFlavorLabel,
     getLegacyNativeIdFieldsInReadOrder,
+    getNativeChatStore,
     getNativeIdFieldsInReadOrder,
+    getNativeIdentityBinding,
     getNativeIdRecoverySource,
     getNativeSessionId,
     getNativeSessionIdField,
+    getNativeTranscriptImport,
     getPermissionModesForFlavor,
     getPermissionReplyStyle,
     getYoloToggleMigrationMode,
@@ -22,10 +25,7 @@ import {
     resolveHapiYoloPermissionMode,
     supportsEffort,
     supportsModelChange,
-    usesCodexThreadId,
-    usesCursorChatStore,
     usesNativePermissionSelect,
-    usesPiThreadId,
     usesSharedPermissionModeState,
 } from './flavors'
 import {
@@ -253,18 +253,20 @@ describe('native id queries', () => {
         expect(getNativeIdRecoverySource('pi')).toBeNull()
     })
 
-    test('names the flavor-specific native id stores', () => {
-        expect(AGENT_FLAVORS.filter(usesCodexThreadId)).toEqual(['codex'])
-        expect(AGENT_FLAVORS.filter(usesPiThreadId)).toEqual(['pi'])
-        expect(AGENT_FLAVORS.filter(usesCursorChatStore)).toEqual(['cursor'])
+    test('names the native id capabilities only the owning flavors declare', () => {
+        const declaring = (query: (flavor: string) => string | null) =>
+            AGENT_FLAVORS.flatMap((flavor) => query(flavor) === null ? [] : [[flavor, query(flavor)]])
+        expect(declaring(getNativeIdentityBinding)).toEqual([['codex', 'codex-runtime']])
+        expect(declaring(getNativeTranscriptImport)).toEqual([['codex', 'codex'], ['pi', 'pi']])
+        expect(declaring(getNativeChatStore)).toEqual([['cursor', 'cursor']])
     })
 
     test.each(UNREGISTERED)('%p has no native id behavior', (flavor) => {
         expect(isMachineScopedNativeId(flavor)).toBe(false)
         expect(recoversNativeIdFromMessages(flavor)).toBe(false)
         expect(getNativeIdRecoverySource(flavor)).toBeNull()
-        expect(usesCodexThreadId(flavor)).toBe(false)
-        expect(usesPiThreadId(flavor)).toBe(false)
-        expect(usesCursorChatStore(flavor)).toBe(false)
+        expect(getNativeIdentityBinding(flavor)).toBeNull()
+        expect(getNativeTranscriptImport(flavor)).toBeNull()
+        expect(getNativeChatStore(flavor)).toBeNull()
     })
 })

@@ -31,10 +31,9 @@ import { useSessionInputTranslation } from '@/hooks/useSessionInputTranslation'
 import {
     DEFAULT_PR_CHIP_DISPLAY,
     getNativeSessionId,
+    getNativeTranscriptImport,
     getPrimaryGithubPrRef,
-    resolveGithubPrChipDisplay,
-    usesCodexThreadId,
-    usesPiThreadId
+    resolveGithubPrChipDisplay
 } from '@hapi/protocol'
 import { formatGithubPrChipDetailParts } from '@/components/SessionPrChip'
 import { useMachines } from '@/hooks/queries/useMachines'
@@ -222,8 +221,9 @@ export function SessionHeader(props: {
     const createdAtLabel = headerMetadata.createdAt ? formatSessionHeaderTimestamp(session.createdAt, locale) : null
     const updatedAtLabel = headerMetadata.updatedAt ? formatSessionHeaderTimestamp(session.updatedAt, locale) : null
     const nativeId = getNativeSessionId(session.metadata, agentFlavor)?.trim() || null
-    const codexSessionId = usesCodexThreadId(agentFlavor) ? nativeId : null
-    const piSessionId = usesPiThreadId(agentFlavor) ? nativeId : null
+    const nativeTranscriptImport = getNativeTranscriptImport(agentFlavor)
+    const codexSessionId = nativeTranscriptImport === 'codex' ? nativeId : null
+    const piSessionId = nativeTranscriptImport === 'pi' ? nativeId : null
     const { machines } = useMachines(api, Boolean(api))
     const machineLabelsById = useMachineLabels(machines)
     const machineLabel = useMemo(
