@@ -1,4 +1,8 @@
 import type { PermissionMode, SteeringCapability, SteeringSessionMetadata, SteeringSessionState } from './modes'
+import type { Metadata } from './schemas'
+
+/** Metadata keys that can hold a flavor's native resume id. */
+export type NativeSessionIdField = Extract<keyof Metadata, `${string}SessionId`>
 
 export const Capabilities = {
     ModelChange: 'model-change',
@@ -30,9 +34,18 @@ type FlavorTraits = {
     readonly creatable: boolean
     /** How a queued message is delivered into an active turn; null if the flavor cannot steer. */
     readonly steering: SteeringCapability | null
+    /** Metadata key holding this flavor's native resume id; null when it has none. */
+    readonly nativeSessionIdField: NativeSessionIdField | null
+    /** True when the same native id on another machine is a different conversation. */
+    readonly machineScopedNativeId: boolean
+    /** True when a missing native id can be recovered from stored messages. */
+    readonly recoversNativeIdFromMessages: boolean
 }
 
-type FlavorSpec<TModes extends readonly PermissionMode[]> = {
+type FlavorSpec<
+    TModes extends readonly PermissionMode[],
+    TNativeSessionIdField extends NativeSessionIdField | null
+> = {
     label: string
     capabilities: ReadonlySet<Capability>
     permissionReplyStyle: PermissionReplyStyle
@@ -44,16 +57,29 @@ type FlavorSpec<TModes extends readonly PermissionMode[]> = {
     migratesYoloToggle: boolean
     creatable: boolean
     steering: SteeringCapability | null
+    nativeSessionIdField: TNativeSessionIdField
+    machineScopedNativeId: boolean
+    recoversNativeIdFromMessages: boolean
 }
 
 const AUTO_APPROVE_MODES: readonly PermissionMode[] = ['yolo', 'bypassPermissions', 'always-proceed']
 
-function defineFlavor<const TModes extends readonly PermissionMode[]>(
-    spec: FlavorSpec<TModes>
-): Omit<FlavorTraits, 'permissionModes' | 'allowsPermissionMode'> & {
+/** Traits inferred from a flavor declaration, preserving its literal fields. */
+export type FlavorOf<
+    TModes extends readonly PermissionMode[],
+    TNativeSessionIdField extends NativeSessionIdField | null
+> = Omit<FlavorTraits, 'permissionModes' | 'allowsPermissionMode' | 'nativeSessionIdField'> & {
     readonly permissionModes: TModes
+    readonly nativeSessionIdField: TNativeSessionIdField
     allowsPermissionMode(mode: string): mode is TModes[number]
-} {
+}
+
+function defineFlavor<
+    const TModes extends readonly PermissionMode[],
+    const TNativeSessionIdField extends NativeSessionIdField | null
+>(
+    spec: FlavorSpec<TModes, TNativeSessionIdField>
+): FlavorOf<TModes, TNativeSessionIdField> {
     const autoApproveModes = spec.permissionModes.filter((mode) => AUTO_APPROVE_MODES.includes(mode))
     if (autoApproveModes.length > 1) {
         throw new Error(`Flavor ${spec.label} lists more than one auto-approve mode: ${autoApproveModes.join(', ')}`)
@@ -73,6 +99,9 @@ function defineFlavor<const TModes extends readonly PermissionMode[]>(
         decisionToolNamePrefix: spec.decisionToolNamePrefix,
         creatable: spec.creatable,
         steering: spec.steering,
+        nativeSessionIdField: spec.nativeSessionIdField,
+        machineScopedNativeId: spec.machineScopedNativeId,
+        recoversNativeIdFromMessages: spec.recoversNativeIdFromMessages,
     }
 }
 
@@ -89,6 +118,9 @@ function isCursorAcpSession(metadata: SteeringSessionMetadata): boolean {
 
 const agy = defineFlavor({
     label: 'Antigravity',
+    nativeSessionIdField: 'agySessionId',
+    machineScopedNativeId: false,
+    recoversNativeIdFromMessages: false,
     capabilities: new Set([Capabilities.ModelChange, Capabilities.Effort]),
     permissionReplyStyle: 'generic',
     permissionModes: ['request-review', 'acceptEdits', 'plan', 'always-proceed'],
@@ -102,6 +134,9 @@ const agy = defineFlavor({
 
 const claude = defineFlavor({
     label: 'Claude',
+    nativeSessionIdField: 'claudeSessionId',
+    machineScopedNativeId: true,
+    recoversNativeIdFromMessages: true,
     capabilities: new Set([Capabilities.ModelChange, Capabilities.Effort]),
     permissionReplyStyle: 'allowTools',
     permissionModes: ['default', 'acceptEdits', 'auto', 'bypassPermissions', 'plan'],
@@ -115,6 +150,9 @@ const claude = defineFlavor({
 
 const codex = defineFlavor({
     label: 'Codex',
+    nativeSessionIdField: 'codexSessionId',
+    machineScopedNativeId: true,
+    recoversNativeIdFromMessages: true,
     capabilities: new Set([Capabilities.ModelChange]),
     permissionReplyStyle: 'decision',
     permissionModes: ['default', 'read-only', 'autoReview', 'yolo'],
@@ -128,6 +166,9 @@ const codex = defineFlavor({
 
 const dsh = defineFlavor({
     label: 'DeepSeek Harness',
+    nativeSessionIdField: 'dshSessionId',
+    machineScopedNativeId: false,
+    recoversNativeIdFromMessages: false,
     capabilities: new Set([Capabilities.ModelChange]),
     permissionReplyStyle: 'generic',
     // DSH applies its own server-side permission policy, so no modes are offered.
@@ -141,6 +182,9 @@ const dsh = defineFlavor({
 
 const copilot = defineFlavor({
     label: 'Copilot',
+    nativeSessionIdField: 'copilotSessionId',
+    machineScopedNativeId: false,
+    recoversNativeIdFromMessages: false,
     capabilities: new Set([Capabilities.ModelChange, Capabilities.Effort]),
     permissionReplyStyle: 'decision',
     permissionModes: ['default', 'read-only', 'safe-yolo', 'yolo'],
@@ -153,6 +197,9 @@ const copilot = defineFlavor({
 
 const cursor = defineFlavor({
     label: 'Cursor',
+    nativeSessionIdField: 'cursorSessionId',
+    machineScopedNativeId: false,
+    recoversNativeIdFromMessages: false,
     capabilities: new Set([Capabilities.ModelChange]),
     permissionReplyStyle: 'decision',
     permissionModes: ['default', 'plan', 'ask', 'debug', 'autoReview', 'yolo'],
@@ -166,6 +213,9 @@ const cursor = defineFlavor({
 
 const gemini = defineFlavor({
     label: 'Gemini',
+    nativeSessionIdField: 'geminiSessionId',
+    machineScopedNativeId: false,
+    recoversNativeIdFromMessages: false,
     capabilities: new Set([Capabilities.ModelChange]),
     permissionReplyStyle: 'decision',
     permissionModes: ['default', 'read-only', 'safe-yolo', 'yolo'],
@@ -179,6 +229,9 @@ const gemini = defineFlavor({
 
 const grok = defineFlavor({
     label: 'Grok Build',
+    nativeSessionIdField: 'grokSessionId',
+    machineScopedNativeId: false,
+    recoversNativeIdFromMessages: false,
     capabilities: new Set([Capabilities.ModelChange, Capabilities.Effort]),
     permissionReplyStyle: 'decision',
     permissionModes: ['default', 'auto', 'plan', 'bypassPermissions'],
@@ -192,6 +245,9 @@ const grok = defineFlavor({
 
 const kimi = defineFlavor({
     label: 'Kimi',
+    nativeSessionIdField: 'kimiSessionId',
+    machineScopedNativeId: false,
+    recoversNativeIdFromMessages: false,
     capabilities: new Set([Capabilities.ModelChange, Capabilities.Effort]),
     permissionReplyStyle: 'decision',
     permissionModes: ['default', 'read-only', 'safe-yolo', 'yolo'],
@@ -204,6 +260,9 @@ const kimi = defineFlavor({
 
 const opencode = defineFlavor({
     label: 'OpenCode',
+    nativeSessionIdField: 'opencodeSessionId',
+    machineScopedNativeId: true,
+    recoversNativeIdFromMessages: false,
     capabilities: new Set([Capabilities.ModelChange]),
     permissionReplyStyle: 'decision',
     permissionModes: ['default', 'plan', 'yolo'],
@@ -217,6 +276,9 @@ const opencode = defineFlavor({
 
 const pi = defineFlavor({
     label: 'Pi',
+    nativeSessionIdField: 'piSessionId',
+    machineScopedNativeId: true,
+    recoversNativeIdFromMessages: false,
     capabilities: new Set([Capabilities.ModelChange, Capabilities.Effort]),
     permissionReplyStyle: 'generic',
     // Pi RPC always auto-approves, so no modes are offered.
@@ -259,6 +321,9 @@ const UNKNOWN_FLAVOR_TRAITS: FlavorTraits = {
     decisionToolNamePrefix: null,
     creatable: false,
     steering: null,
+    nativeSessionIdField: null,
+    machineScopedNativeId: false,
+    recoversNativeIdFromMessages: false,
 }
 
 function traitsOf(flavor: string | null | undefined): FlavorTraits {
@@ -276,6 +341,20 @@ export function hasCapability(flavor: string | null | undefined, cap: Capability
 
 export function getFlavorLabel(flavor: string | null | undefined): string {
     return traitsOf(flavor).label
+}
+
+export function getNativeSessionIdField(flavor: string | null | undefined): NativeSessionIdField | null {
+    return traitsOf(flavor).nativeSessionIdField
+}
+
+export function getNativeSessionId(
+    metadata: Metadata | null | undefined,
+    flavor: string | null | undefined
+): string | undefined {
+    const field = getNativeSessionIdField(flavor)
+    if (!field || !metadata) return undefined
+    const value = metadata[field]
+    return typeof value === 'string' ? value : undefined
 }
 
 // --- Convenience functions ---

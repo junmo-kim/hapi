@@ -3,6 +3,8 @@ import {
     Capabilities,
     Flavors,
     getFlavorLabel,
+    getNativeSessionId,
+    getNativeSessionIdField,
     getPermissionModesForFlavor,
     getPermissionReplyStyle,
     getYoloToggleMigrationMode,
@@ -184,5 +186,24 @@ describe('getPermissionModeOptionsForFlavor', () => {
 
     test('is empty for a flavor without modes', () => {
         expect(getPermissionModeOptionsForFlavor('pi')).toEqual([])
+    })
+})
+
+describe('getNativeSessionId', () => {
+    test('reads only the requested flavor field when a row carries several ids', () => {
+        const metadata = { path: '/p', host: 'h', claudeSessionId: 'cl-1', codexSessionId: 'cx-1', cursorSessionId: 'cu-1' }
+        expect(getNativeSessionId(metadata, 'claude')).toBe('cl-1')
+        expect(getNativeSessionId(metadata, 'codex')).toBe('cx-1')
+        expect(getNativeSessionId(metadata, 'pi')).toBeUndefined()
+    })
+
+    test('missing metadata reads no field', () => {
+        expect(getNativeSessionId(null, 'claude')).toBeUndefined()
+        expect(getNativeSessionId(undefined, 'codex')).toBeUndefined()
+    })
+
+    test.each(UNREGISTERED)('%p has no native id field', (flavor) => {
+        expect(getNativeSessionIdField(flavor)).toBeNull()
+        expect(getNativeSessionId({ path: '/p', host: 'h', claudeSessionId: 'cl-1' }, flavor)).toBeUndefined()
     })
 })
