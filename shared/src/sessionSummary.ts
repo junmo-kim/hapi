@@ -1,8 +1,7 @@
 import type { AgentState, AttachedJob, ExternalRef, Metadata, Session, TodoItem, WorktreeMetadata } from './schemas'
 import type { SessionReadState } from './sessionReadState'
 import type { ConversationHistoryCapabilities } from './conversationHistory'
-import { isKnownFlavor } from './flavors'
-import type { AgentFlavor } from './modes'
+import { getNativeSessionId, isKnownFlavor, type NativeSessionIdField } from './flavors'
 
 export type ForkSessionSummary = {
     text: string
@@ -215,43 +214,25 @@ export function computeTodoProgress(todos: TodoItem[] | undefined): SessionSumma
     }
 }
 
-const AGENT_SESSION_ID_FIELD_BY_FLAVOR: Partial<Record<AgentFlavor, keyof Metadata>> = {
-    claude: 'claudeSessionId',
-    codex: 'codexSessionId',
-    gemini: 'geminiSessionId',
-    opencode: 'opencodeSessionId',
-    grok: 'grokSessionId',
-    agy: 'agySessionId',
-    cursor: 'cursorSessionId',
-    kimi: 'kimiSessionId',
-    copilot: 'copilotSessionId',
-    pi: 'piSessionId',
-    dsh: 'dshSessionId'
-}
+// Legacy fallback only applies when the stored flavor is missing or unknown.
+// This is its fixed read priority, not a declaration of which field a flavor owns.
+const LEGACY_AGENT_SESSION_ID_FIELDS: readonly NativeSessionIdField[] = [
+    'codexSessionId', 'claudeSessionId', 'geminiSessionId', 'opencodeSessionId',
+    'grokSessionId', 'agySessionId', 'cursorSessionId', 'kimiSessionId',
+    'copilotSessionId', 'dshSessionId'
+]
 
 function getSummaryAgentSessionId(metadata: Metadata): string | undefined {
-    const flavor = metadata.flavor
-    if (isKnownFlavor(flavor)) {
-        const flavorField = AGENT_SESSION_ID_FIELD_BY_FLAVOR[flavor]
-        if (!flavorField) return undefined
-        const flavorSessionId = metadata[flavorField]
-        return typeof flavorSessionId === 'string' && flavorSessionId.trim()
-            ? flavorSessionId.trim()
-            : undefined
+    if (isKnownFlavor(metadata.flavor)) {
+        const flavorSessionId = getNativeSessionId(metadata, metadata.flavor)
+        return flavorSessionId?.trim() || undefined
     }
 
-    // Legacy fallback only applies when the stored flavor is missing or unknown.
-    return metadata.codexSessionId
-        ?? metadata.claudeSessionId
-        ?? metadata.geminiSessionId
-        ?? metadata.opencodeSessionId
-        ?? metadata.grokSessionId
-        ?? metadata.agySessionId
-        ?? metadata.cursorSessionId
-        ?? metadata.kimiSessionId
-        ?? metadata.copilotSessionId
-        ?? metadata.dshSessionId
-        ?? undefined
+    for (const field of LEGACY_AGENT_SESSION_ID_FIELDS) {
+        const legacySessionId = metadata[field]
+        if (legacySessionId !== undefined) return legacySessionId
+    }
+    return undefined
 }
 
 export function toSessionSummaryMetadata(metadata: Metadata | null | undefined): SessionSummaryMetadata | null {
