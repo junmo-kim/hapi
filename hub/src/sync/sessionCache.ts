@@ -170,28 +170,9 @@ function isMachineScopedNativeIdField(field: NativeSessionIdField): boolean {
     return flavor !== undefined && Flavors[flavor].machineScopedNativeId
 }
 
-// TEMPORARY (commit 2): the cache historically ignored these declared fields.
-const CACHE_OMITTED_NATIVE_ID_FLAVORS: ReadonlySet<string> = new Set(['kimi', 'dsh'])
 const CACHE_NATIVE_ID_FIELDS: readonly NativeSessionIdField[] = NATIVE_ID_READ_PRIORITY
-    .filter((flavor) => !CACHE_OMITTED_NATIVE_ID_FLAVORS.has(flavor))
     .map((flavor) => getNativeSessionIdField(flavor))
     .filter((field): field is NativeSessionIdField => field !== null)
-
-// TEMPORARY (commit 2): the cache's dedupe key historically scoped the declared
-// set minus these fields.
-const CACHE_MACHINE_SCOPE_EXCLUDED: ReadonlySet<NativeSessionIdField> = new Set(['claudeSessionId', 'codexSessionId'])
-
-function isCacheMachineScoped(field: NativeSessionIdField): boolean {
-    return isMachineScopedNativeIdField(field) && !CACHE_MACHINE_SCOPE_EXCLUDED.has(field)
-}
-
-// TEMPORARY (commit 2): the merge guard historically machine-scoped the declared
-// set minus these fields.
-const DISTINCT_IDENTITY_MACHINE_SCOPE_EXCLUDED: ReadonlySet<NativeSessionIdField> = new Set(['opencodeSessionId', 'piSessionId'])
-
-// TEMPORARY (commit 2): the merge guard historically machine-scoped these
-// fields beyond the declared set.
-const DISTINCT_IDENTITY_MACHINE_SCOPE_EXTRA: ReadonlySet<NativeSessionIdField> = new Set(['cursorSessionId'])
 
 /**
  * Machine-scoped native ids on different machines are separate conversations
@@ -206,8 +187,7 @@ function isDistinctNativeIdentity(
     // An attached projection is not an owned engine or another post-rewrite
     // view of the same native thread. Never merge their transcripts/queues.
     if (field === 'codexSessionId' && a.codexRuntime?.bindingId !== b.codexRuntime?.bindingId) return true
-    if (!DISTINCT_IDENTITY_MACHINE_SCOPE_EXTRA.has(field)
-        && (DISTINCT_IDENTITY_MACHINE_SCOPE_EXCLUDED.has(field) || !isMachineScopedNativeIdField(field))) return false
+    if (!isMachineScopedNativeIdField(field)) return false
     return typeof a.machineId === 'string'
         && typeof b.machineId === 'string'
         && a.machineId !== b.machineId
@@ -2969,7 +2949,7 @@ export class SessionCache {
         metadata: NonNullable<Session['metadata']>
     ): { field: NativeSessionIdField; value: string; dedupeKey: string; machineId?: string } | null {
         const scoped = (field: NativeSessionIdField, value: string) => {
-            const machineScoped = isCacheMachineScoped(field)
+            const machineScoped = isMachineScopedNativeIdField(field)
             return {
                 field,
                 value,
@@ -3032,7 +3012,7 @@ export class SessionCache {
                 const passSession = currentSession ?? session
                 const passMetadata = currentSession?.metadata ?? session.metadata
                 const candidates: { id: string; session: Session }[] = []
-                const machineScoped = isCacheMachineScoped(agentId.field)
+                const machineScoped = isMachineScopedNativeIdField(agentId.field)
                 if (currentSession?.metadata && currentSession.metadata[agentId.field] === agentId.value) {
                     if (!machineScoped || currentSession.metadata.machineId === agentId.machineId) {
                         candidates.push({ id: passSessionId, session: currentSession })

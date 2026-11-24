@@ -4558,7 +4558,7 @@ describe('session model', () => {
                 store.close()
             })
 
-            it(`still merges the same ${flavor} session id when one side has no machine`, async () => {
+            it(`does not merge the same ${flavor} session id when one side has no machine`, async () => {
                 const store = new Store(':memory:')
                 const events: SyncEvent[] = []
                 const cache = new SessionCache(store, createPublisher(events))
@@ -4577,7 +4577,8 @@ describe('session model', () => {
 
                 await cache.deduplicateByAgentSessionId(s2.id)
 
-                expect([cache.getSession(s1.id), cache.getSession(s2.id)].filter(Boolean)).toHaveLength(1)
+                expect(cache.getSession(s1.id)).toBeDefined()
+                expect(cache.getSession(s2.id)).toBeDefined()
                 store.close()
             })
 

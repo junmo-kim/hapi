@@ -104,10 +104,7 @@ import {
 import { getConfiguration } from '../configuration'
 import { getSettingsFile, readSettingsOrThrowCached } from '../config/settings'
 
-// TEMPORARY (commit 2): the engine historically ignored this declared field.
-const ENGINE_OMITTED_NATIVE_ID_FLAVORS: ReadonlySet<string> = new Set(['dsh'])
 const ENGINE_NATIVE_ID_FIELDS: readonly NativeSessionIdField[] = AGENT_FLAVORS
-    .filter((flavor) => !ENGINE_OMITTED_NATIVE_ID_FLAVORS.has(flavor))
     .map((flavor) => getNativeSessionIdField(flavor))
     .filter((field): field is NativeSessionIdField => field !== null)
 

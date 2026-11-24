@@ -119,7 +119,7 @@ function isCursorAcpSession(metadata: SteeringSessionMetadata): boolean {
 const agy = defineFlavor({
     label: 'Antigravity',
     nativeSessionIdField: 'agySessionId',
-    machineScopedNativeId: false,
+    machineScopedNativeId: true,
     recoversNativeIdFromMessages: false,
     capabilities: new Set([Capabilities.ModelChange, Capabilities.Effort]),
     permissionReplyStyle: 'generic',
@@ -167,7 +167,7 @@ const codex = defineFlavor({
 const dsh = defineFlavor({
     label: 'DeepSeek Harness',
     nativeSessionIdField: 'dshSessionId',
-    machineScopedNativeId: false,
+    machineScopedNativeId: true,
     recoversNativeIdFromMessages: false,
     capabilities: new Set([Capabilities.ModelChange]),
     permissionReplyStyle: 'generic',
@@ -198,7 +198,7 @@ const copilot = defineFlavor({
 const cursor = defineFlavor({
     label: 'Cursor',
     nativeSessionIdField: 'cursorSessionId',
-    machineScopedNativeId: false,
+    machineScopedNativeId: true,
     recoversNativeIdFromMessages: false,
     capabilities: new Set([Capabilities.ModelChange]),
     permissionReplyStyle: 'decision',
@@ -230,7 +230,7 @@ const gemini = defineFlavor({
 const grok = defineFlavor({
     label: 'Grok Build',
     nativeSessionIdField: 'grokSessionId',
-    machineScopedNativeId: false,
+    machineScopedNativeId: true,
     recoversNativeIdFromMessages: false,
     capabilities: new Set([Capabilities.ModelChange, Capabilities.Effort]),
     permissionReplyStyle: 'decision',
@@ -246,7 +246,7 @@ const grok = defineFlavor({
 const kimi = defineFlavor({
     label: 'Kimi',
     nativeSessionIdField: 'kimiSessionId',
-    machineScopedNativeId: false,
+    machineScopedNativeId: true,
     recoversNativeIdFromMessages: false,
     capabilities: new Set([Capabilities.ModelChange, Capabilities.Effort]),
     permissionReplyStyle: 'decision',
