@@ -141,6 +141,31 @@ describe('SyncEngine.handleRealtimeEvent dedup-on-metadata-change', () => {
     })
 })
 
+describe('SyncEngine.handleRealtimeEvent native id dedup outcome', () => {
+    it('keeps duplicates apart when a metadata patch changes no native id', async () => {
+        const engine = new SyncEngine(new Store(':memory:'), {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        const cache = (engine as unknown as { sessionCache: SessionCache }).sessionCache
+        const base = { path: '/tmp', host: 'h', machineId: 'm1', flavor: 'codex', codexSessionId: 'thread-shared' }
+        const first = cache.getOrCreateSession('name-only-1', base, null, 'default')
+        const second = cache.getOrCreateSession('name-only-2', base, null, 'default')
+
+        engine.handleRealtimeEvent({
+            type: 'session-updated',
+            sessionId: second.id,
+            data: {
+                metadata: {
+                    version: second.metadataVersion + 1,
+                    value: { ...base, name: 'renamed' }
+                }
+            }
+        })
+        await new Promise((resolve) => setTimeout(resolve, 50))
+
+        expect(cache.getSession(first.id)).toBeDefined()
+        expect(cache.getSession(second.id)).toBeDefined()
+    })
+})
+
 describe('SyncEngine.handleRealtimeEvent notify → work-graph ingest', () => {
     function makeEngine(): { engine: SyncEngine; store: Store } {
         const store = new Store(':memory:')

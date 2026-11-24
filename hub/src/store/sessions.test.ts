@@ -807,6 +807,36 @@ describe('updateSessionMetadata: protocol resume token preservation', () => {
         expect(metadata?.[field]).toBe(value)
     })
 
+    it('carries forward native ids but not other omitted id-like fields', () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            'resume-token-lookalikes',
+            {
+                path: '/tmp/project',
+                host: 'example',
+                codexSessionId: 'codex-thread-x',
+                codexSourceSessionId: 'codex-source-x',
+                claudeSessionIdHistory: ['claude-old']
+            },
+            null,
+            'default'
+        )
+
+        const result = store.sessions.updateSessionMetadata(
+            session.id,
+            { path: '/tmp/project', host: 'example', lifecycleState: 'archived' },
+            session.metadataVersion,
+            'default'
+        )
+        expect(result.result).toBe('success')
+
+        const metadata = getMetadata(store, session.id) as Record<string, unknown> | null
+        expect(metadata?.codexSessionId).toBe('codex-thread-x')
+        expect('codexSourceSessionId' in (metadata ?? {})).toBe(false)
+        expect('claudeSessionIdHistory' in (metadata ?? {})).toBe(false)
+        store.close()
+    })
+
     it('preserves agySessionId across a sparse metadata write and clears it on explicit null', () => {
         const store = makeStore()
         const agyId = '7f3c1e9a-2b4d-4c6e-8a1f-5d9b0e3c7a21'
@@ -1393,6 +1423,33 @@ describe('updateSessionMetadata: protocol resume token preservation', () => {
         const metadata = getMetadata(store, session.id) as Record<string, unknown> | null
         expect(metadata?.cursorSessionId).toBe('new-id')
         expect(metadata?.cursorSessionProtocol).toBeUndefined()
+    })
+
+    it('drops cursorSessionProtocol along with an explicitly nulled cursorSessionId', () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            'cursor-protocol-pair-null-id',
+            {
+                path: '/tmp/project',
+                host: 'example',
+                cursorSessionId: 'old-id',
+                cursorSessionProtocol: 'acp'
+            },
+            null,
+            'default'
+        )
+
+        const result = store.sessions.updateSessionMetadata(
+            session.id,
+            { path: '/tmp/project', host: 'example', cursorSessionId: null },
+            session.metadataVersion,
+            'default'
+        )
+        expect(result.result).toBe('success')
+
+        const metadata = getMetadata(store, session.id) as Record<string, unknown> | null
+        expect('cursorSessionId' in (metadata ?? {})).toBe(false)
+        expect('cursorSessionProtocol' in (metadata ?? {})).toBe(false)
     })
 
     it('preserves cursorSessionProtocol when neither id nor protocol is in the next write', () => {
