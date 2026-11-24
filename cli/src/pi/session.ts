@@ -2,6 +2,7 @@ import type { ApiClient, ApiSessionClient } from '@/lib';
 import { SESSION_KEEP_ALIVE_INTERVAL_MS } from '@/api/keepAlive';
 import type { Metadata } from '@/api/types';
 import type { PiCommandSummary, PiThinkingLevel } from './types';
+import { withNativeSessionId } from '@hapi/protocol';
 import type { PiModelSummary } from '@hapi/protocol/apiTypes';
 import type { PiRpcResolver } from './loop';
 
@@ -301,13 +302,8 @@ export class PiSession {
         this.currentNativeSessionFile = identity.sessionFile;
         this.applyNativeRuntimeState(runtime);
         this.updateMetadata((metadata) => {
-            let next = metadataUpdater?.({
-                ...metadata,
-                piSessionId: identity.sessionId,
-            }) ?? {
-                ...metadata,
-                piSessionId: identity.sessionId,
-            };
+            const withId = withNativeSessionId(metadata, 'pi', identity.sessionId);
+            let next = metadataUpdater ? metadataUpdater(withId) : withId;
             // A get_state model/provider pair is the authoritative provider-
             // qualified selection for the newly active native branch. Preserve
             // existing metadata only when an older Pi omitted both fields.

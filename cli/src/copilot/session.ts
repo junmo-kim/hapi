@@ -2,6 +2,7 @@ import { ApiClient, ApiSessionClient } from '@/lib';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { AgentSessionBase } from '@/agent/sessionBase';
 import type { CopilotMode, PermissionMode } from './types';
+import { withNativeSessionId } from '@hapi/protocol';
 import type { CopilotAgentMode } from '@hapi/protocol';
 import type { LocalLaunchExitReason } from '@/agent/localLaunchPolicy';
 
@@ -41,10 +42,7 @@ export class CopilotSession extends AgentSessionBase<CopilotMode> {
             mode: opts.mode,
             sessionLabel: 'CopilotSession',
             sessionIdLabel: 'Copilot',
-            applySessionIdToMetadata: (metadata, sessionId) => ({
-                ...metadata,
-                copilotSessionId: sessionId
-            }),
+            applySessionIdToMetadata: (metadata, sessionId) => withNativeSessionId(metadata, 'copilot', sessionId),
             permissionMode: opts.permissionMode
         });
 

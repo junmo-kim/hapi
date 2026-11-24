@@ -1,3 +1,4 @@
+import { withNativeSessionId } from '@hapi/protocol';
 import { ApiClient, ApiSessionClient } from '@/lib';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { AgentSessionBase } from '@/agent/sessionBase';
@@ -38,10 +39,7 @@ export class KimiSession extends AgentSessionBase<KimiMode> {
             mode: opts.mode,
             sessionLabel: 'KimiSession',
             sessionIdLabel: 'Kimi',
-            applySessionIdToMetadata: (metadata, sessionId) => ({
-                ...metadata,
-                kimiSessionId: sessionId
-            }),
+            applySessionIdToMetadata: (metadata, sessionId) => withNativeSessionId(metadata, 'kimi', sessionId),
             permissionMode: opts.permissionMode
         });
 

@@ -1,3 +1,4 @@
+import { withNativeSessionId } from '@hapi/protocol';
 import { ApiClient, ApiSessionClient } from '@/lib';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { AgentSessionBase } from '@/agent/sessionBase';
@@ -50,10 +51,7 @@ export class OpencodeSession extends AgentSessionBase<OpencodeMode> {
             mode: opts.mode,
             sessionLabel: 'OpencodeSession',
             sessionIdLabel: 'OpenCode',
-            applySessionIdToMetadata: (metadata, sessionId) => ({
-                ...metadata,
-                opencodeSessionId: sessionId
-            }),
+            applySessionIdToMetadata: (metadata, sessionId) => withNativeSessionId(metadata, 'opencode', sessionId),
             permissionMode: opts.permissionMode,
             modelReasoningEffort: opts.modelReasoningEffort
         });

@@ -1,3 +1,4 @@
+import { withNativeSessionId } from '@hapi/protocol'
 import { ApiClient, ApiSessionClient } from '@/lib'
 import { MessageQueue2 } from '@/utils/MessageQueue2'
 import { AgentSessionBase } from '@/agent/sessionBase'
@@ -41,10 +42,7 @@ export class GrokSession extends AgentSessionBase<GrokMode> {
             mode: opts.mode,
             sessionLabel: 'GrokSession',
             sessionIdLabel: 'Grok',
-            applySessionIdToMetadata: (metadata, sessionId) => ({
-                ...metadata,
-                grokSessionId: sessionId
-            }),
+            applySessionIdToMetadata: (metadata, sessionId) => withNativeSessionId(metadata, 'grok', sessionId),
             permissionMode: opts.permissionMode,
             model: opts.model,
             effort: opts.effort

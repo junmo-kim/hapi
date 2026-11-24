@@ -3,7 +3,7 @@ import { ApiClient, ApiSessionClient } from '@/lib';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { logger } from '@/ui/logger';
 import { AgentSessionBase } from '@/agent/sessionBase';
-import { appendClaudeSessionIdHistory } from '@hapi/protocol';
+import { appendClaudeSessionIdHistory, withNativeSessionId } from '@hapi/protocol';
 import type { SessionEffort, SessionModel } from '@/api/types';
 import type { EnhancedMode } from './loop';
 import type { PermissionMode } from './loop';
@@ -88,11 +88,8 @@ export class Session extends AgentSessionBase<EnhancedMode> {
                     metadata.claudeSessionId,
                     sessionId
                 );
-                return {
-                    ...metadata,
-                    claudeSessionId: sessionId,
-                    ...(history.length > 0 ? { claudeSessionIdHistory: history } : {})
-                };
+                const next = withNativeSessionId(metadata, 'claude', sessionId);
+                return history.length > 0 ? { ...next, claudeSessionIdHistory: history } : next;
             },
             permissionMode: opts.permissionMode,
             model: opts.model,

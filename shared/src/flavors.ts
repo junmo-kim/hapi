@@ -298,6 +298,14 @@ export const Flavors = {
 
 export type AgentFlavor = keyof typeof Flavors
 
+/** Flavor keys whose declarations include a native id field. */
+export type NativeIdFlavor = {
+    [K in AgentFlavor]: typeof Flavors[K]['nativeSessionIdField'] extends NativeSessionIdField ? K : never
+}[AgentFlavor]
+
+/** Native id metadata key declared by a flavor. */
+export type NativeIdFieldOf<T extends NativeIdFlavor> = typeof Flavors[T]['nativeSessionIdField']
+
 // Object.keys is not typed per key and z.enum needs a non-empty tuple.
 export const AGENT_FLAVORS = Object.keys(Flavors) as unknown as readonly [AgentFlavor, ...AgentFlavor[]]
 
@@ -355,6 +363,16 @@ export function getNativeSessionId(
     if (!field || !metadata) return undefined
     const value = metadata[field]
     return typeof value === 'string' ? value : undefined
+}
+
+/** Returns metadata with `id` stored in the flavor's declared native id field. */
+export function withNativeSessionId<T extends NativeIdFlavor>(
+    metadata: Metadata,
+    flavor: T,
+    id: string
+): Metadata & Record<NativeIdFieldOf<T>, string> {
+    const field: NativeIdFieldOf<T> = Flavors[flavor].nativeSessionIdField
+    return { ...metadata, [field]: id } as Metadata & Record<NativeIdFieldOf<T>, string>
 }
 
 // --- Convenience functions ---

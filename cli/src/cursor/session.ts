@@ -1,3 +1,4 @@
+import { withNativeSessionId } from '@hapi/protocol';
 import { ApiClient, ApiSessionClient } from '@/lib';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { AgentSessionBase } from '@/agent/sessionBase';
@@ -56,8 +57,7 @@ export class CursorSession extends AgentSessionBase<EnhancedMode> {
             sessionLabel: 'CursorSession',
             sessionIdLabel: 'Cursor',
             applySessionIdToMetadata: (metadata, sessionId, extras) => ({
-                ...metadata,
-                cursorSessionId: sessionId,
+                ...withNativeSessionId(metadata, 'cursor', sessionId),
                 ...extras
             }),
             permissionMode: opts.permissionMode

@@ -14,6 +14,7 @@ import { runtimePath } from '@/projectPath'
 import { getInvokedCwd } from '@/utils/invokedCwd'
 import { getProcessStartMarker } from '@/utils/process'
 import { readWorktreeEnv } from '@/utils/worktreeEnv'
+import { AGENT_FLAVORS, getNativeSessionIdField } from '@hapi/protocol'
 import { CURRENT_MACHINE_CAPABILITIES } from '@hapi/protocol/runnerCapabilities'
 import { exportHapiSessionEnv } from '@/agent/hapiSessionEnv'
 import packageJson from '../../package.json'
@@ -159,21 +160,14 @@ function pickExistingSessionMetadata(metadata: Metadata | null | undefined): Par
     if (metadata.name !== undefined) preserved.name = metadata.name
     if (metadata.summary !== undefined) preserved.summary = metadata.summary
     if (metadata.acpManualTitle !== undefined) preserved.acpManualTitle = metadata.acpManualTitle
-    if (metadata.claudeSessionId !== undefined) preserved.claudeSessionId = metadata.claudeSessionId
+    for (const flavor of AGENT_FLAVORS) {
+        const field = getNativeSessionIdField(flavor)
+        if (field !== null && metadata[field] !== undefined) preserved[field] = metadata[field]
+    }
     if (metadata.claudeSessionIdHistory !== undefined) preserved.claudeSessionIdHistory = metadata.claudeSessionIdHistory
-    if (metadata.codexSessionId !== undefined) preserved.codexSessionId = metadata.codexSessionId
     if (metadata.codexRuntime !== undefined) preserved.codexRuntime = metadata.codexRuntime
     if (metadata.codexSourceSessionId !== undefined) preserved.codexSourceSessionId = metadata.codexSourceSessionId
-    if (metadata.geminiSessionId !== undefined) preserved.geminiSessionId = metadata.geminiSessionId
-    if (metadata.opencodeSessionId !== undefined) preserved.opencodeSessionId = metadata.opencodeSessionId
-    if (metadata.grokSessionId !== undefined) preserved.grokSessionId = metadata.grokSessionId
-    if (metadata.agySessionId !== undefined) preserved.agySessionId = metadata.agySessionId
-    if (metadata.cursorSessionId !== undefined) preserved.cursorSessionId = metadata.cursorSessionId
     if (metadata.cursorSessionProtocol !== undefined) preserved.cursorSessionProtocol = metadata.cursorSessionProtocol
-    if (metadata.kimiSessionId !== undefined) preserved.kimiSessionId = metadata.kimiSessionId
-    if (metadata.copilotSessionId !== undefined) preserved.copilotSessionId = metadata.copilotSessionId
-    if (metadata.piSessionId !== undefined) preserved.piSessionId = metadata.piSessionId
-    if (metadata.dshSessionId !== undefined) preserved.dshSessionId = metadata.dshSessionId
     if (metadata.piResumeAttempt !== undefined) preserved.piResumeAttempt = metadata.piResumeAttempt
     if (metadata.ptyResumeAttempt !== undefined) preserved.ptyResumeAttempt = metadata.ptyResumeAttempt
     if (metadata.preferredPermissionMode !== undefined) preserved.preferredPermissionMode = metadata.preferredPermissionMode

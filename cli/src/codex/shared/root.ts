@@ -8,6 +8,7 @@ import { logger } from '@/ui/logger';
 import { listSlashCommands } from '@/modules/common/slashCommands';
 import { normalizeCodexModel } from '@/modules/common/codexModels';
 import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
+import { withNativeSessionId } from '@hapi/protocol';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { ImplementCodexPlanRequestSchema, type ImplementCodexPlanResult } from '@hapi/protocol/apiTypes';
 import { CodexAppServerClient, isIndeterminateError } from '../codexAppServerClient';
@@ -293,7 +294,7 @@ export class SharedCodexRoot {
         this.projection = new SharedCodexProjection(this.session, threadId, (id, content) => this.queue.committed(id, content),
             undefined, async () => record(await this.client.request('thread/read', { threadId, includeTurns: false })).thread,
             (threadId, item) => this.asyncQuestions.observeItem(threadId, item));
-        this.session.updateMetadata(metadata => ({ ...metadata, codexSessionId: threadId, capabilities: {
+        this.session.updateMetadata(metadata => ({ ...withNativeSessionId(metadata, 'codex', threadId), capabilities: {
             ...metadata.capabilities, concurrentClients: true, terminal: !this.host.attached,
             // In-place rewind needs a native + hub commit barrier. Do not
             // advertise a destructive operation we cannot make atomic yet.

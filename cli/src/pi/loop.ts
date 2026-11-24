@@ -1,3 +1,4 @@
+import { withNativeSessionId } from '@hapi/protocol';
 import { logger } from '@/ui/logger';
 import { convertAgentMessage } from '@/agent/messageConverter';
 import { createNativeSessionTitleMetadataSync } from '@/agent/nativeSessionTitle';
@@ -152,7 +153,8 @@ function applyGetState(
     }
 
     if (data.sessionId) {
-        session.updateMetadata((meta) => ({ ...meta, piSessionId: data.sessionId }));
+        const nativeSessionId = data.sessionId;
+        session.updateMetadata((meta) => withNativeSessionId(meta, 'pi', nativeSessionId));
         logger.debug(`[pi] Session ID persisted to metadata: ${data.sessionId}`);
     }
 

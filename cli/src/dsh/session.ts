@@ -1,3 +1,4 @@
+import { withNativeSessionId } from '@hapi/protocol'
 import { ApiClient, ApiSessionClient } from '@/lib'
 import { MessageQueue2 } from '@/utils/MessageQueue2'
 import { AgentSessionBase } from '@/agent/sessionBase'
@@ -39,10 +40,7 @@ export class DshSession extends AgentSessionBase<DshMode> {
             sessionIdLabel: 'DeepSeek Harness ACP',
             // Current DSH ACP profiles persist sessions and resume them through
             // `session/resume`. Keep the native id separate from the HAPI row id.
-            applySessionIdToMetadata: (metadata, sessionId) => ({
-                ...metadata,
-                dshSessionId: sessionId
-            })
+            applySessionIdToMetadata: (metadata, sessionId) => withNativeSessionId(metadata, 'dsh', sessionId)
         })
         this.startedBy = opts.startedBy
     }
