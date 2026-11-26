@@ -50,6 +50,8 @@ type FlavorTraits = {
 
 type FlavorSpec<TModes extends readonly PermissionMode[]> = {
     label: string
+    /** Whether the flavor accepts a model change on a running session. */
+    supportsModelChange: boolean
     modelField: AgentConfigFieldShape | null
     settingsFields: readonly AgentConfigSettingField[]
     effort: FlavorEffortTrait | null
@@ -77,7 +79,8 @@ function defineFlavor<const TModes extends readonly PermissionMode[]>(
         throw new Error(`Flavor ${spec.label} lists more than one auto-approve mode: ${autoApproveModes.join(', ')}`)
     }
     const yoloPermissionMode = autoApproveModes[0] ?? null
-    const capabilities = new Set<Capability>(['model-change'])
+    const capabilities = new Set<Capability>()
+    if (spec.supportsModelChange) capabilities.add('model-change')
     if (spec.effort?.wireField === 'effort') capabilities.add('effort-change')
     return {
         label: spec.label,
@@ -112,6 +115,7 @@ function isCursorAcpSession(metadata: SteeringSessionMetadata): boolean {
 
 const agy = defineFlavor({
     label: 'Antigravity',
+    supportsModelChange: true,
     modelField: { kind: 'select', optionSource: 'machine' },
     settingsFields: [],
     effort: { wireField: 'effort', valueSource: 'runtime-first', field: { kind: 'select', optionSource: 'model' }, displayWireField: 'effort', defaultWhenUnset: false, withModelChange: true },
@@ -127,6 +131,7 @@ const agy = defineFlavor({
 
 const claude = defineFlavor({
     label: 'Claude',
+    supportsModelChange: true,
     modelField: { kind: 'select', optionSource: 'static' },
     settingsFields: [],
     effort: { wireField: 'effort', valueSource: 'runtime-first', field: { kind: 'select', optionSource: 'static' }, displayWireField: 'effort', defaultWhenUnset: true, withModelChange: true },
@@ -142,6 +147,7 @@ const claude = defineFlavor({
 
 const codex = defineFlavor({
     label: 'Codex',
+    supportsModelChange: true,
     modelField: { kind: 'select', optionSource: 'machine' },
     settingsFields: [
         { id: 'serviceTier', kind: 'select', optionSource: 'model' },
@@ -160,6 +166,7 @@ const codex = defineFlavor({
 
 const dsh = defineFlavor({
     label: 'DeepSeek Harness',
+    supportsModelChange: true,
     modelField: null,
     settingsFields: [],
     effort: { wireField: 'modelReasoningEffort', valueSource: 'fixed-presets', field: null, displayWireField: null, defaultWhenUnset: false, withModelChange: false },
@@ -175,6 +182,7 @@ const dsh = defineFlavor({
 
 const copilot = defineFlavor({
     label: 'Copilot',
+    supportsModelChange: true,
     modelField: { kind: 'select', optionSource: 'directory' },
     settingsFields: [],
     effort: { wireField: 'effort', valueSource: 'runtime', field: null, displayWireField: 'effort', defaultWhenUnset: false, withModelChange: false },
@@ -189,6 +197,7 @@ const copilot = defineFlavor({
 
 const cursor = defineFlavor({
     label: 'Cursor',
+    supportsModelChange: true,
     modelField: { kind: 'dependent-select', optionSource: 'machine' },
     settingsFields: [],
     effort: null,
@@ -204,6 +213,7 @@ const cursor = defineFlavor({
 
 const gemini = defineFlavor({
     label: 'Gemini',
+    supportsModelChange: true,
     modelField: { kind: 'select', optionSource: 'static' },
     settingsFields: [],
     effort: null,
@@ -219,6 +229,7 @@ const gemini = defineFlavor({
 
 const grok = defineFlavor({
     label: 'Grok Build',
+    supportsModelChange: true,
     modelField: { kind: 'select', optionSource: 'directory' },
     settingsFields: [],
     effort: { wireField: 'effort', valueSource: 'runtime-first', field: { kind: 'select', optionSource: 'model' }, displayWireField: 'effort', defaultWhenUnset: true, withModelChange: false },
@@ -234,6 +245,7 @@ const grok = defineFlavor({
 
 const kimi = defineFlavor({
     label: 'Kimi',
+    supportsModelChange: true,
     modelField: { kind: 'select', optionSource: 'directory' },
     settingsFields: [],
     effort: { wireField: 'effort', valueSource: 'runtime', field: null, displayWireField: 'effort', defaultWhenUnset: false, withModelChange: false },
@@ -248,6 +260,7 @@ const kimi = defineFlavor({
 
 const opencode = defineFlavor({
     label: 'OpenCode',
+    supportsModelChange: true,
     modelField: { kind: 'select', optionSource: 'directory' },
     settingsFields: [],
     effort: { wireField: 'modelReasoningEffort', valueSource: 'runtime', field: { kind: 'select', optionSource: 'model' }, displayWireField: 'modelReasoningEffort', defaultWhenUnset: true, withModelChange: false },
@@ -263,6 +276,7 @@ const opencode = defineFlavor({
 
 const pi = defineFlavor({
     label: 'Pi',
+    supportsModelChange: true,
     modelField: { kind: 'grouped-select', optionSource: 'machine' },
     settingsFields: [],
     effort: { wireField: 'effort', valueSource: 'runtime-first', field: { kind: 'select', optionSource: 'static' }, displayWireField: 'effort', defaultWhenUnset: false, withModelChange: false },
