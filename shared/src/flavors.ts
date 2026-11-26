@@ -19,6 +19,8 @@ export type FlavorEffortTrait = {
     readonly defaultWhenUnset: boolean
     /** Effort may be sent in the same request as a model change. */
     readonly withModelChange: boolean
+    /** Launch effort is sent only when the selected model advertises support for it. */
+    readonly launchGatedBySelectedModel: boolean
 }
 
 type FlavorTraits = {
@@ -118,7 +120,7 @@ const agy = defineFlavor({
     supportsModelChange: true,
     modelField: { kind: 'select', optionSource: 'machine' },
     settingsFields: [],
-    effort: { wireField: 'effort', valueSource: 'runtime-first', field: { kind: 'select', optionSource: 'model' }, displayWireField: 'effort', defaultWhenUnset: false, withModelChange: true },
+    effort: { wireField: 'effort', valueSource: 'runtime-first', field: { kind: 'select', optionSource: 'model' }, displayWireField: 'effort', defaultWhenUnset: false, withModelChange: true, launchGatedBySelectedModel: true },
     permissionReplyStyle: 'generic',
     permissionModes: ['request-review', 'acceptEdits', 'plan', 'always-proceed'],
     decisionToolNamePrefix: null,
@@ -134,7 +136,7 @@ const claude = defineFlavor({
     supportsModelChange: true,
     modelField: { kind: 'select', optionSource: 'static' },
     settingsFields: [],
-    effort: { wireField: 'effort', valueSource: 'runtime-first', field: { kind: 'select', optionSource: 'static' }, displayWireField: 'effort', defaultWhenUnset: true, withModelChange: true },
+    effort: { wireField: 'effort', valueSource: 'runtime-first', field: { kind: 'select', optionSource: 'static' }, displayWireField: 'effort', defaultWhenUnset: true, withModelChange: true, launchGatedBySelectedModel: false },
     permissionReplyStyle: 'allowTools',
     permissionModes: ['default', 'acceptEdits', 'auto', 'bypassPermissions', 'plan'],
     decisionToolNamePrefix: null,
@@ -153,7 +155,7 @@ const codex = defineFlavor({
         { id: 'serviceTier', kind: 'select', optionSource: 'model' },
         { id: 'collaborationMode', kind: 'select', optionSource: 'static' },
     ],
-    effort: { wireField: 'modelReasoningEffort', valueSource: 'runtime-first', field: { kind: 'select', optionSource: 'model' }, displayWireField: 'modelReasoningEffort', defaultWhenUnset: true, withModelChange: false },
+    effort: { wireField: 'modelReasoningEffort', valueSource: 'runtime-first', field: { kind: 'select', optionSource: 'model' }, displayWireField: 'modelReasoningEffort', defaultWhenUnset: true, withModelChange: false, launchGatedBySelectedModel: false },
     permissionReplyStyle: 'decision',
     permissionModes: ['default', 'read-only', 'autoReview', 'yolo'],
     decisionToolNamePrefix: 'Codex',
@@ -169,7 +171,7 @@ const dsh = defineFlavor({
     supportsModelChange: true,
     modelField: null,
     settingsFields: [],
-    effort: { wireField: 'modelReasoningEffort', valueSource: 'fixed-presets', field: null, displayWireField: null, defaultWhenUnset: false, withModelChange: false },
+    effort: { wireField: 'modelReasoningEffort', valueSource: 'fixed-presets', field: null, displayWireField: null, defaultWhenUnset: false, withModelChange: false, launchGatedBySelectedModel: false },
     permissionReplyStyle: 'generic',
     // DSH applies its own server-side permission policy, so no modes are offered.
     permissionModes: [],
@@ -185,7 +187,7 @@ const copilot = defineFlavor({
     supportsModelChange: true,
     modelField: { kind: 'select', optionSource: 'directory' },
     settingsFields: [],
-    effort: { wireField: 'effort', valueSource: 'runtime', field: null, displayWireField: 'effort', defaultWhenUnset: false, withModelChange: false },
+    effort: { wireField: 'effort', valueSource: 'runtime', field: null, displayWireField: 'effort', defaultWhenUnset: false, withModelChange: false, launchGatedBySelectedModel: false },
     permissionReplyStyle: 'decision',
     permissionModes: ['default', 'read-only', 'safe-yolo', 'yolo'],
     decisionToolNamePrefix: 'Copilot',
@@ -232,7 +234,7 @@ const grok = defineFlavor({
     supportsModelChange: true,
     modelField: { kind: 'select', optionSource: 'directory' },
     settingsFields: [],
-    effort: { wireField: 'effort', valueSource: 'runtime-first', field: { kind: 'select', optionSource: 'model' }, displayWireField: 'effort', defaultWhenUnset: true, withModelChange: false },
+    effort: { wireField: 'effort', valueSource: 'runtime-first', field: { kind: 'select', optionSource: 'model' }, displayWireField: 'effort', defaultWhenUnset: true, withModelChange: false, launchGatedBySelectedModel: false },
     permissionReplyStyle: 'decision',
     permissionModes: ['default', 'auto', 'plan', 'bypassPermissions'],
     decisionToolNamePrefix: null,
@@ -248,7 +250,7 @@ const kimi = defineFlavor({
     supportsModelChange: true,
     modelField: { kind: 'select', optionSource: 'directory' },
     settingsFields: [],
-    effort: { wireField: 'effort', valueSource: 'runtime', field: null, displayWireField: 'effort', defaultWhenUnset: false, withModelChange: false },
+    effort: { wireField: 'effort', valueSource: 'runtime', field: null, displayWireField: 'effort', defaultWhenUnset: false, withModelChange: false, launchGatedBySelectedModel: false },
     permissionReplyStyle: 'decision',
     permissionModes: ['default', 'read-only', 'safe-yolo', 'yolo'],
     decisionToolNamePrefix: null,
@@ -263,7 +265,7 @@ const opencode = defineFlavor({
     supportsModelChange: true,
     modelField: { kind: 'select', optionSource: 'directory' },
     settingsFields: [],
-    effort: { wireField: 'modelReasoningEffort', valueSource: 'runtime', field: { kind: 'select', optionSource: 'model' }, displayWireField: 'modelReasoningEffort', defaultWhenUnset: true, withModelChange: false },
+    effort: { wireField: 'modelReasoningEffort', valueSource: 'runtime', field: { kind: 'select', optionSource: 'model' }, displayWireField: 'modelReasoningEffort', defaultWhenUnset: true, withModelChange: false, launchGatedBySelectedModel: false },
     permissionReplyStyle: 'decision',
     permissionModes: ['default', 'plan', 'yolo'],
     decisionToolNamePrefix: 'OpenCode',
@@ -279,7 +281,7 @@ const pi = defineFlavor({
     supportsModelChange: true,
     modelField: { kind: 'grouped-select', optionSource: 'machine' },
     settingsFields: [],
-    effort: { wireField: 'effort', valueSource: 'runtime-first', field: { kind: 'select', optionSource: 'static' }, displayWireField: 'effort', defaultWhenUnset: false, withModelChange: false },
+    effort: { wireField: 'effort', valueSource: 'runtime-first', field: { kind: 'select', optionSource: 'static' }, displayWireField: 'effort', defaultWhenUnset: false, withModelChange: false, launchGatedBySelectedModel: false },
     permissionReplyStyle: 'generic',
     // Pi RPC always auto-approves, so no modes are offered.
     permissionModes: [],
@@ -351,12 +353,22 @@ export function getEffortConfigField(flavor: string | null | undefined): AgentCo
     return traitsOf(flavor).effort?.field ?? null
 }
 
+/** Request wire field that carries the create-form effort; null when the form has no effort field. */
+export function getEffortRequestWireField(flavor: string | null | undefined): 'effort' | 'modelReasoningEffort' | null {
+    const effort = traitsOf(flavor).effort
+    return effort?.field != null ? effort.wireField : null
+}
+
 export function usesModelReasoningEffort(flavor: string | null | undefined): boolean {
     return traitsOf(flavor).effort?.wireField === 'modelReasoningEffort'
 }
 
 export function usesEffortWithModelChange(flavor: string | null | undefined): boolean {
     return traitsOf(flavor).effort?.withModelChange === true
+}
+
+export function isEffortLaunchGatedBySelectedModel(flavor: string | null | undefined): boolean {
+    return traitsOf(flavor).effort?.launchGatedBySelectedModel === true
 }
 
 export function showsDefaultEffortLabel(flavor: string | null | undefined): boolean {

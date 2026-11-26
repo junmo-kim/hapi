@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import type { ApiClient } from '@/api/client'
 import { apiErrorMessage } from '@/api/client'
 import type { CodexDuplicateSessionGroup, CodexLocalSessionSummary, Machine, OpencodeLocalSessionSummary, PiLocalSessionSummary } from '@/types/api'
-import { CREATABLE_AGENT_FLAVORS, getYoloToggleMigrationMode, usesNativePermissionSelect, usesSharedPermissionModeState, usesSessionModelReasoningEffort, getAgyModelChoices, splitAgyModelSelection, getClaudeEffortLevelsForModel, resolveClaudeEffortForModel } from '@hapi/protocol'
+import { CREATABLE_AGENT_FLAVORS, getYoloToggleMigrationMode, usesNativePermissionSelect, usesSharedPermissionModeState, getEffortConfigField, getEffortRequestWireField, isEffortLaunchGatedBySelectedModel, getAgyModelChoices, splitAgyModelSelection, getClaudeEffortLevelsForModel, resolveClaudeEffortForModel } from '@hapi/protocol'
 import type { AgentAvailabilityEntry, CodexCollaborationMode, PermissionModeOf, Flavors, PermissionMode, CopilotAgentMode } from '@hapi/protocol'
 import { codexModelAdvertisesFastTier } from '@/components/AssistantChat/codexFastMode'
 import { usePlatform } from '@/hooks/usePlatform'
@@ -2027,12 +2027,15 @@ export function NewSession(props: {
                         : agent === 'cursor'
                         ? (model === 'auto' || !model ? 'auto' : model)
                         : (model !== 'auto' ? model : undefined)
-            const resolvedEffort = (agent === 'claude' || agent === 'grok' || agent === 'pi'
-                || (agent === 'agy' && agySelectedModel !== null
-                    && (!agySelectedChoice || agySelectedChoice.supportedEfforts.some((level) => level === effort)))) && effort !== 'auto'
+            const hasEffortField = getEffortConfigField(agent) !== null
+            const effortWireField = getEffortRequestWireField(agent)
+            const launchGatedByModel = isEffortLaunchGatedBySelectedModel(agent)
+            const resolvedEffort = hasEffortField && effortWireField === 'effort' && effort !== 'auto'
+                && (!launchGatedByModel || (agySelectedModel !== null
+                    && (!agySelectedChoice || agySelectedChoice.supportedEfforts.some((level) => level === effort))))
                 ? effort
                 : undefined
-            const resolvedModelReasoningEffort = usesSessionModelReasoningEffort(agent) && modelReasoningEffort !== 'default'
+            const resolvedModelReasoningEffort = hasEffortField && effortWireField === 'modelReasoningEffort' && modelReasoningEffort !== 'default'
                 ? modelReasoningEffort
                 : undefined
             const preferredLaunchSettings = {

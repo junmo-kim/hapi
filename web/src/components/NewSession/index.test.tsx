@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => ({
     ].map((agent) => ({ agent, available: true })) as AgentAvailabilityEntry[],
     codexModelsLoading: false,
     agyModelsLoading: false,
+    agyModelsError: null as string | null,
     agyModels: [{ modelId: 'gemini-3.6-flash-low', name: 'Gemini 3.6 Flash (Low)' }],
     dshModels: [] as Array<{ modelId: string; name?: string }>,
     dshModelsLoading: false,
@@ -125,7 +126,7 @@ vi.mock('@/hooks/queries/useAgyModels', () => ({
         availableModels: mocks.agyModels,
         currentModelId: null,
         isLoading: mocks.agyModelsLoading,
-        error: null,
+        error: mocks.agyModelsError,
         refetch: vi.fn()
     })
 }))
@@ -392,6 +393,7 @@ describe('NewSession launch preferences', () => {
         )
         mocks.codexModelsLoading = false
         mocks.agyModelsLoading = false
+        mocks.agyModelsError = null
         mocks.agyModels = [{ modelId: 'gemini-3.6-flash-low', name: 'Gemini 3.6 Flash (Low)' }]
         mocks.directoryExists = true
         mocks.copilotModels = []
@@ -2681,5 +2683,93 @@ describe('NewSession launch preferences', () => {
             agent: 'agy',
             model: 'hub-agy-model'
         }))
+    })
+
+    describe('effort launch payload rules', () => {
+        async function launchWithSettings(
+            agent: Parameters<typeof savePreferredAgent>[0],
+            model: string,
+            effort: string,
+            modelReasoningEffort: string
+        ) {
+            savePreferredAgent(agent)
+            savePreferredLaunchSettings('machine-1', agent, {
+                model,
+                cursorSelectedBase: 'auto',
+                effort,
+                modelReasoningEffort
+            })
+            mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'launched-session' })
+            renderWithQuery(
+                <NewSession
+                    api={api}
+                    machines={[machine]}
+                    initialMachineId="machine-1"
+                    initialDirectory="C:\\repo"
+                    onSuccess={mocks.onSuccess}
+                    onCancel={() => {}}
+                />
+            )
+            await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
+            fireEvent.click(screen.getByTestId('create'))
+            await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('launched-session'))
+            return mocks.spawnSession.mock.calls.at(-1)?.[0] as Record<string, unknown>
+        }
+
+        it('sends effort on the effort wire when the form declares an effort field', async () => {
+            const payload = await launchWithSettings('claude', 'auto', 'high', 'default')
+            expect(payload).toMatchObject({ agent: 'claude', effort: 'high' })
+            expect(payload.modelReasoningEffort).toBeUndefined()
+        })
+
+        it('sends reasoning effort on the modelReasoningEffort wire when the form declares an effort field', async () => {
+            const payload = await launchWithSettings('codex', 'gpt-5.6-sol', 'auto', 'high')
+            expect(payload).toMatchObject({ agent: 'codex', modelReasoningEffort: 'high' })
+            expect(payload.effort).toBeUndefined()
+        })
+
+        it('sends neither effort wire when the form declares no effort field', async () => {
+            const payload = await launchWithSettings('copilot', 'auto', 'high', 'max')
+            expect(payload).toMatchObject({ agent: 'copilot' })
+            expect(payload.effort).toBeUndefined()
+            expect(payload.modelReasoningEffort).toBeUndefined()
+        })
+
+        it('gates AGY effort on the selected model choice', async () => {
+            savePreferredAgent('agy')
+            mocks.agyModels = [
+                { modelId: 'gemini-4-argon-medium', name: 'Gemini 4 Argon (Medium)' },
+                { modelId: 'gemini-4-argon-high', name: 'Gemini 4 Argon (High)' },
+                { modelId: 'gpt-oss-120b-medium', name: 'GPT OSS 120B (Medium)' }
+            ]
+            mocks.agyModelsError = 'catalog refresh failed'
+            savePreferredLaunchSettings('machine-1', 'agy', {
+                model: 'gpt-oss-120b-medium',
+                cursorSelectedBase: 'auto',
+                effort: 'high',
+                modelReasoningEffort: 'default'
+            })
+            mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'launched-session' })
+            renderWithQuery(
+                <NewSession
+                    api={api}
+                    machines={[machine]}
+                    initialMachineId="machine-1"
+                    initialDirectory="C:\\repo"
+                    onSuccess={mocks.onSuccess}
+                    onCancel={() => {}}
+                />
+            )
+            await waitFor(() => expect(screen.getByTestId('agy-model-select')).toHaveValue('gpt-oss-120b-medium'))
+            await waitFor(() => expect(screen.getByTestId('launch-effort')).toHaveTextContent('high'))
+            await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
+            fireEvent.click(screen.getByTestId('create'))
+            await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('launched-session'))
+            expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({
+                agent: 'agy',
+                model: 'gpt-oss-120b-medium',
+                effort: undefined
+            }))
+        })
     })
 })
